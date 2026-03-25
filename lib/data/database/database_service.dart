@@ -1,27 +1,35 @@
+import 'package:flutter/foundation.dart';
 import 'package:isar/isar.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:rxdart/rxdart.dart';
 
 import '../models/memo_entry.dart';
 
 /// 本地数据库服务（单例）
 ///
 /// 封装 Isar 数据库的 CRUD 操作，所有写操作在保存前自动提取标签。
+/// 通过静态方法对外暴露接口，内部使用懒加载单例保证只开一个 DB 实例。
 class DatabaseService {
   DatabaseService._();
 
+  /// 持有唯一 Isar 实例（null 表示尚未初始化）
   static Isar? _isar;
 
-  /// 获取已初始化的 Isar 实例（懒加载）
+  /// 获取已初始化的 Isar 实例（懒加载，首次调用时打开数据库）
   static Future<Isar> get db async {
     return _isar ??= await _open();
   }
 
+  /// 打开数据库文件
   static Future<Isar> _open() async {
     final dir = await getApplicationDocumentsDirectory();
-    return Isar.open(
+    debugPrint('[DB] 打开数据库，路径：${dir.path}');
+    final isar = await Isar.open(
       [MemoEntrySchema],
       directory: dir.path,
     );
+    debugPrint('[DB] 数据库已就绪');
+    return isar;
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -36,51 +44,156 @@ class DatabaseService {
   static Future<int> saveMemo(MemoEntry memo,
       {bool skipTimestamp = false}) async {
     final isar = await db;
+    // 每次保存前重新解析正文中的标签
     memo.tags = extractTags(memo.content);
     if (!skipTimestamp) memo.updatedAt = DateTime.now();
-    return isar.writeTxn(() => isar.memoEntrys.put(memo));
+    final id = await isar.writeTxn(() => isar.memoEntrys.put(memo));
+    debugPrint(
+        '[DB] saveMemo → id=$id, tags=${memo.tags}, skipTimestamp=$skipTimestamp');
+    return id;
   }
 
   /// 软删除（将 isDeleted 置为 true，syncStatus 置为 pending）。
+  ///
+  /// 软删除后条目仍保留在数据库，等待下次同步时推送删除到远端，
+  /// 确认远端删除成功后再执行 [hardDelete]。
   static Future<void> softDelete(int id) async {
     final isar = await db;
     final memo = await isar.memoEntrys.get(id);
-    if (memo == null) return;
+    if (memo == null) {
+      debugPrint('[DB] softDelete: id=$id 不存在，跳过');
+      return;
+    }
     await isar.writeTxn(() async {
       memo.isDeleted = true;
       memo.syncStatus = SyncStatus.pending;
       memo.updatedAt = DateTime.now();
       await isar.memoEntrys.put(memo);
     });
+    debugPrint('[DB] softDelete: id=$id 已标记软删除');
   }
 
   /// 物理删除（仅用于已确认远端同步删除后的清理）。
+  ///
+  /// ⚠️ 物理删除不可恢复，调用前请确认远端已同步删除。
   static Future<bool> hardDelete(int id) async {
     final isar = await db;
-    return isar.writeTxn(() => isar.memoEntrys.delete(id));
+    final deleted = await isar.writeTxn(() => isar.memoEntrys.delete(id));
+    debugPrint('[DB] hardDelete: id=$id, 成功=$deleted');
+    return deleted;
   }
 
   // ────────────────────────────────────────────────────────────────
-  // 读操作
+  // 读操作 — 全量（同步引擎、标签统计等内部用途）
   // ────────────────────────────────────────────────────────────────
 
   /// 获取所有未删除的日记，按创建时间倒序。
+  ///
+  /// ⚠️ 此方法会返回全量数据，仅供同步引擎、内部统计等场景使用。
+  /// UI 时间线展示请改用 [getMemosPaged]。
   static Future<List<MemoEntry>> getAllMemos() async {
     final isar = await db;
-    return isar.memoEntrys
+    final result = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
         .sortByCreatedAtDesc()
         .findAll();
+    debugPrint('[DB] getAllMemos → ${result.length} 条');
+    return result;
   }
 
-  /// 根据本地 id 获取单条日记。
+  // ────────────────────────────────────────────────────────────────
+  // 读操作 — 分页（时间线 UI 使用）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 分页获取未删除日记，按创建时间倒序。
+  ///
+  /// [offset]：跳过条数（第 1 页传 0，第 2 页传 [pageSize]，以此类推）
+  /// [limit]：每页条数（默认 50）
+  ///
+  /// 返回条数小于 [limit] 时表示已到最后一页。
+  static Future<List<MemoEntry>> getMemosPaged({
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final isar = await db;
+    final result = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .sortByCreatedAtDesc()
+        .offset(offset)
+        .limit(limit)
+        .findAll();
+    debugPrint('[DB] getMemosPaged offset=$offset limit=$limit → ${result.length} 条');
+    return result;
+  }
+
+  /// 获取未删除日记总条数（用于分页判断是否还有下一页）。
+  static Future<int> getMemoCount() async {
+    final isar = await db;
+    final count = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .count();
+    debugPrint('[DB] getMemoCount → $count 条');
+    return count;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 读操作 — 日历专用（按月/日精确查询）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 获取指定月份中有日记的「天」集合（仅返回天数整数，不含完整日期）。
+  ///
+  /// 比 [getDatesWithMemos] 轻量得多：只查当月范围，返回简单的 int 集合。
+  /// 日历渲染用此方法判断哪些格子需要高亮圆点。
+  ///
+  /// 示例：2025 年 12 月有日记的天 → `{7, 9, 10, 11}`
+  static Future<Set<int>> getDaysWithMemoInMonth(int year, int month) async {
+    final start = DateTime(year, month, 1);
+    // month+1 会由 DateTime 自动处理跨年（如 12+1=13 → 次年 1 月）
+    final end = DateTime(year, month + 1, 1);
+    final isar = await db;
+    final memos = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .createdAtBetween(start, end)
+        .findAll();
+    final days = memos.map((m) => m.createdAt.day).toSet();
+    debugPrint('[DB] getDaysWithMemoInMonth $year-$month → 有记录天数：$days');
+    return days;
+  }
+
+  /// 获取指定日期当天的所有未删除日记，按创建时间倒序。
+  ///
+  /// 日历点击某天后调用此方法加载当天详情列表。
+  static Future<List<MemoEntry>> getMemosByDate(DateTime date) async {
+    final start = DateTime(date.year, date.month, date.day);
+    final end = start.add(const Duration(days: 1));
+    final isar = await db;
+    final result = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .createdAtBetween(start, end)
+        .sortByCreatedAtDesc()
+        .findAll();
+    debugPrint('[DB] getMemosByDate(${date.toLocal()}) → ${result.length} 条');
+    return result;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 读操作 — 其他
+  // ────────────────────────────────────────────────────────────────
+
+  /// 根据本地 id 获取单条日记（id 不存在时返回 null）。
   static Future<MemoEntry?> getMemoById(int id) async {
     final isar = await db;
-    return isar.memoEntrys.get(id);
+    final memo = await isar.memoEntrys.get(id);
+    debugPrint('[DB] getMemoById(id=$id) → ${memo == null ? "未找到" : "找到"}');
+    return memo;
   }
 
-  /// 根据远端资源名获取日记。
+  /// 根据远端资源名获取日记（如 "memos/42"）。
   static Future<MemoEntry?> getMemoByMemosName(String memosName) async {
     final isar = await db;
     return isar.memoEntrys
@@ -89,37 +202,30 @@ class DatabaseService {
         .findFirst();
   }
 
-  /// 获取指定日期当天的所有未删除日记，按创建时间倒序。
-  static Future<List<MemoEntry>> getMemosByDate(DateTime date) async {
-    final start = DateTime(date.year, date.month, date.day);
-    final end = start.add(const Duration(days: 1));
-    final isar = await db;
-    return isar.memoEntrys
-        .filter()
-        .isDeletedEqualTo(false)
-        .createdAtBetween(start, end)
-        .sortByCreatedAtDesc()
-        .findAll();
-  }
-
   /// 获取指定标签的所有未删除日记，按创建时间倒序。
   static Future<List<MemoEntry>> getMemosByTag(String tag) async {
     final isar = await db;
-    return isar.memoEntrys
+    final result = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
         .tagsElementEqualTo(tag)
         .sortByCreatedAtDesc()
         .findAll();
+    debugPrint('[DB] getMemosByTag(tag=$tag) → ${result.length} 条');
+    return result;
   }
 
   /// 获取所有待同步（pending）的日记（含软删除条目）。
+  ///
+  /// 同步服务调用此方法获取需要推送到远端的条目列表。
   static Future<List<MemoEntry>> getPendingSyncMemos() async {
     final isar = await db;
-    return isar.memoEntrys
+    final result = await isar.memoEntrys
         .filter()
         .syncStatusEqualTo(SyncStatus.pending)
         .findAll();
+    debugPrint('[DB] getPendingSyncMemos → ${result.length} 条待同步');
+    return result;
   }
 
   /// 统计所有标签的出现次数，返回 {tagName: count} 映射。
@@ -131,29 +237,41 @@ class DatabaseService {
         counts[tag] = (counts[tag] ?? 0) + 1;
       }
     }
+    debugPrint('[DB] getAllTagCounts → ${counts.length} 个标签');
     return counts;
   }
 
-  /// 获取有日记的日期集合（用于日历视图高亮）。
+  /// 获取有日记的日期集合（全量，供同步完成后刷新日历整体用）。
+  ///
+  /// 返回的 DateTime 已截断到天（时分秒为 0），方便日历比较。
+  /// 日历月度渲染请改用更轻量的 [getDaysWithMemoInMonth]。
   static Future<Set<DateTime>> getDatesWithMemos() async {
     final memos = await getAllMemos();
-    return memos
-        .map((m) => DateTime(m.createdAt.year, m.createdAt.month, m.createdAt.day))
+    final dates = memos
+        .map((m) =>
+            DateTime(m.createdAt.year, m.createdAt.month, m.createdAt.day))
         .toSet();
+    debugPrint('[DB] getDatesWithMemos → ${dates.length} 个有记录日期');
+    return dates;
   }
 
   // ────────────────────────────────────────────────────────────────
   // 响应式 Stream
   // ────────────────────────────────────────────────────────────────
 
-  /// 监听所有未删除日记的变化，每次 DB 写操作后自动推送最新列表。
+  /// 监听 DB 写操作事件，带 300ms debounce 节流。
   ///
-  /// [fireImmediately] = true 表示订阅时立即推送当前数据。
-  static Future<Stream<List<MemoEntry>>> watchAllMemos() async {
+  /// 原始 [watchLazy] 在批量写入（如同步 1000 条）时会连续触发数百次，
+  /// debounce 保证最后一次写完后静默 300ms 才推送一次通知，
+  /// 大幅减少高频重查带来的 CPU/内存开销。
+  ///
+  /// 返回的 Stream 只发出"有变化"的信号，不携带数据（由调用方决定查询策略）。
+  static Future<Stream<void>> watchDbChanges() async {
     final isar = await db;
+    debugPrint('[DB] 注册 watchDbChanges（含 debounce）');
     return isar.memoEntrys
         .watchLazy(fireImmediately: true)
-        .asyncMap((_) => getAllMemos());
+        .debounceTime(const Duration(milliseconds: 300));
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -161,15 +279,22 @@ class DatabaseService {
   // ────────────────────────────────────────────────────────────────
 
   /// 若数据库为空，批量写入 [seeds] 作为演示数据。
+  ///
+  /// 仅在数据库中一条数据都没有时才写入，防止重复播种。
   static Future<void> seedIfEmpty(List<MemoEntry> seeds) async {
     final isar = await db;
     final count = await isar.memoEntrys.count();
-    if (count > 0) return;
+    if (count > 0) {
+      debugPrint('[DB] seedIfEmpty: 已有 $count 条数据，跳过播种');
+      return;
+    }
+    debugPrint('[DB] seedIfEmpty: 数据库为空，写入 ${seeds.length} 条 Mock 数据');
     await isar.writeTxn(() async {
       for (final memo in seeds) {
         await isar.memoEntrys.put(memo);
       }
     });
+    debugPrint('[DB] seedIfEmpty: 播种完成');
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -178,14 +303,18 @@ class DatabaseService {
 
   /// 从正文中提取 Memos 风格的标签（兼容 ASCII 和中文，支持 tag/subtag 嵌套格式）。
   ///
+  /// 匹配规则：`#` 后跟至少一个非空白非 `#` 字符，且 `#` 前不能有非空白字符。
+  ///
   /// 示例：`"今天 #想法 #work/project"` → `["想法", "work/project"]`
   static List<String> extractTags(String content) {
-    // 匹配 # 后跟非空白非 # 字符（支持中文、斜杠嵌套路径）
+    // (?<!\S) 确保 # 前是行首或空白，防止 URL 中的 # 被误匹配
     final regex = RegExp(r'(?<!\S)#([^\s#]+)');
-    return regex
+    final tags = regex
         .allMatches(content)
         .map((m) => m.group(1)!)
         .where((tag) => tag.isNotEmpty)
         .toList();
+    if (tags.isNotEmpty) debugPrint('[DB] extractTags: $tags');
+    return tags;
   }
 }

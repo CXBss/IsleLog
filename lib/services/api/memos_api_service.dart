@@ -1,8 +1,14 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 /// Memos API 请求异常
+///
+/// 封装网络请求失败时的错误信息，由 [MemosApiService._wrap] 统一转换。
 class MemosApiException implements Exception {
+  /// 用户可读的错误信息
   final String message;
+
+  /// HTTP 状态码（网络层错误时为 null）
   final int? statusCode;
 
   const MemosApiException(this.message, {this.statusCode});
@@ -11,12 +17,24 @@ class MemosApiException implements Exception {
   String toString() => message;
 }
 
-/// Memos v0.25 REST API 客户端
+/// Memos v0.22+ REST API 客户端
 ///
-/// 使用 Bearer Token 认证，封装 Dio 请求并统一处理错误。
+/// 基于 [Dio] 封装，使用 Bearer Token 认证。
+/// 统一处理分页、错误转换等公共逻辑。
+///
+/// 支持的 API：
+/// - [listMemos] / [listAllMemos]：分页/全量拉取 memo 列表
+/// - [createMemo]：新建 memo
+/// - [updateMemo]：更新 memo（PATCH，只更新指定字段）
+/// - [deleteMemo]：删除 memo
+/// - [testConnection]：测试连接并返回当前用户信息
 class MemosApiService {
   final Dio _dio;
 
+  /// 创建 API 客户端
+  ///
+  /// [baseUrl]：服务器地址（不带末尾斜杠，如 "https://memos.example.com"）
+  /// [token]：Bearer Token（在 Memos → 设置 → Access Tokens 中生成）
   MemosApiService({required String baseUrl, required String token})
       : _dio = Dio(
           BaseOptions(
@@ -33,22 +51,29 @@ class MemosApiService {
   // ── Memo CRUD ─────────────────────────────────────────────────
 
   /// 分页列出 memos
+  ///
+  /// [pageSize]：单页条数（默认 100）
+  /// [pageToken]：分页游标（首页为 null）
+  /// [filter]：服务端过滤表达式（如 `'updateTime >= "2024-01-01T00:00:00Z"'`）
+  ///
+  /// 返回 memos 列表和下一页的 pageToken（最后一页时为 null）。
   Future<({List<Map<String, dynamic>> memos, String? nextPageToken})>
       listMemos({
     int pageSize = 100,
     String? pageToken,
     String? filter,
   }) async {
+    debugPrint('[API] listMemos pageSize=$pageSize, pageToken=$pageToken, filter=$filter');
     try {
       final params = <String, dynamic>{'pageSize': pageSize};
       if (pageToken != null) params['pageToken'] = pageToken;
       if (filter != null) params['filter'] = filter;
 
-      final res =
-          await _dio.get('/api/v1/memos', queryParameters: params);
+      final res = await _dio.get('/api/v1/memos', queryParameters: params);
       final memos =
           List<Map<String, dynamic>>.from(res.data['memos'] ?? []);
       final next = res.data['nextPageToken'] as String?;
+      debugPrint('[API] listMemos 返回 ${memos.length} 条，nextPageToken=$next');
       return (
         memos: memos,
         nextPageToken: (next == null || next.isEmpty) ? null : next,
@@ -59,60 +84,83 @@ class MemosApiService {
   }
 
   /// 自动翻页，获取全部 memos
+  ///
+  /// 内部循环调用 [listMemos]，直到没有下一页为止。
+  /// [filter]：同 [listMemos]，透传给每页请求。
   Future<List<Map<String, dynamic>>> listAllMemos({
     String? filter,
   }) async {
+    debugPrint('[API] listAllMemos 开始全量拉取，filter=$filter');
     final all = <Map<String, dynamic>>[];
     String? pageToken;
     do {
-      final result =
-          await listMemos(pageToken: pageToken, filter: filter);
+      final result = await listMemos(pageToken: pageToken, filter: filter);
       all.addAll(result.memos);
       pageToken = result.nextPageToken;
     } while (pageToken != null);
+    debugPrint('[API] listAllMemos 全量拉取完成，共 ${all.length} 条');
     return all;
   }
 
-  /// 创建 memo
+  /// 在远端新建 memo
+  ///
+  /// [content]：Markdown 正文
+  /// [visibility]：可见性（默认 PRIVATE）
+  ///
+  /// 返回服务端创建的 memo 对象（含 name、createTime 等字段）。
   Future<Map<String, dynamic>> createMemo({
     required String content,
     String visibility = 'PRIVATE',
   }) async {
+    debugPrint('[API] createMemo contentLen=${content.length}');
     try {
       final res = await _dio.post('/api/v1/memos', data: {
         'content': content,
         'visibility': visibility,
       });
-      return Map<String, dynamic>.from(res.data);
+      final result = Map<String, dynamic>.from(res.data);
+      debugPrint('[API] createMemo 成功，name=${result["name"]}');
+      return result;
     } on DioException catch (e) {
       throw _wrap(e);
     }
   }
 
-  /// 更新 memo（PATCH）
+  /// 更新远端 memo（PATCH，只更新指定字段）
   ///
-  /// [name] 为资源名，如 `"memos/1"`
+  /// [name]：资源名，如 `"memos/42"`
+  /// [content]：新的 Markdown 正文
+  /// [visibility]：新的可见性
+  ///
+  /// 通过 `updateMask` 查询参数告知服务端只更新 content 和 visibility。
   Future<Map<String, dynamic>> updateMemo({
     required String name,
     required String content,
     String visibility = 'PRIVATE',
   }) async {
+    debugPrint('[API] updateMemo name=$name, contentLen=${content.length}');
     try {
       final res = await _dio.patch(
         '/api/v1/$name',
         data: {'content': content, 'visibility': visibility},
         queryParameters: {'updateMask': 'content,visibility'},
       );
-      return Map<String, dynamic>.from(res.data);
+      final result = Map<String, dynamic>.from(res.data);
+      debugPrint('[API] updateMemo 成功，name=${result["name"]}');
+      return result;
     } on DioException catch (e) {
       throw _wrap(e);
     }
   }
 
-  /// 删除 memo
+  /// 删除远端 memo
+  ///
+  /// [name]：资源名，如 `"memos/42"`
   Future<void> deleteMemo(String name) async {
+    debugPrint('[API] deleteMemo name=$name');
     try {
       await _dio.delete('/api/v1/$name');
+      debugPrint('[API] deleteMemo 成功，name=$name');
     } on DioException catch (e) {
       throw _wrap(e);
     }
@@ -122,22 +170,31 @@ class MemosApiService {
 
   /// 测试连接：获取当前用户信息
   ///
-  /// 返回用户对象（已解包 `{ "user": {...} }` 外层）
+  /// 优先调用 `/api/v1/auth/me`，若返回 404/405（部分旧版部署不支持该接口），
+  /// 则回退到 `listMemos(pageSize: 1)` 验证 Token 是否有效。
+  ///
+  /// 返回用户对象（已解包 `{ "user": {...} }` 外层结构）。
   Future<Map<String, dynamic>> testConnection() async {
+    debugPrint('[API] testConnection 开始');
     try {
       final res = await _dio.get('/api/v1/auth/me');
-      // v0.25 返回 { "user": { ... } }，取内层
       final data = res.data;
+      // v0.25 返回 { "user": { ... } }，取内层；旧版直接返回用户对象
       if (data is Map && data['user'] is Map) {
-        return Map<String, dynamic>.from(data['user'] as Map);
+        final user = Map<String, dynamic>.from(data['user'] as Map);
+        debugPrint('[API] testConnection 成功（v0.25），name=${user["name"]}');
+        return user;
       }
-      return Map<String, dynamic>.from(data as Map);
+      final user = Map<String, dynamic>.from(data as Map);
+      debugPrint('[API] testConnection 成功，name=${user["name"]}');
+      return user;
     } on DioException catch (e) {
-      // 某些部署没有此接口，回退到拉取首条 memo
-      if (e.response?.statusCode == 404 ||
-          e.response?.statusCode == 405) {
+      // 部分部署没有 auth/me 接口，回退用 listMemos 验证 Token
+      if (e.response?.statusCode == 404 || e.response?.statusCode == 405) {
+        debugPrint('[API] testConnection auth/me 不支持，回退到 listMemos 验证');
         try {
           await listMemos(pageSize: 1);
+          debugPrint('[API] testConnection 回退验证成功');
           return {'name': 'users/me'};
         } on DioException catch (e2) {
           throw _wrap(e2);
@@ -149,8 +206,11 @@ class MemosApiService {
 
   // ── Error Wrapping ────────────────────────────────────────────
 
+  /// 将 [DioException] 包装为用户友好的 [MemosApiException]
   MemosApiException _wrap(DioException e) {
     final code = e.response?.statusCode;
+    debugPrint('[API] 请求失败 statusCode=$code, type=${e.type}, msg=${e.message}');
+
     if (code == 401) {
       return const MemosApiException('Token 无效或已过期，请重新生成',
           statusCode: 401);
