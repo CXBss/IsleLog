@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../features/calendar/calendar_view.dart';
@@ -23,12 +24,47 @@ class _MainScaffoldState extends State<MainScaffold> {
   /// 所有 Tab 页面（使用 IndexedStack 保持状态）
   static const _pages = [HomeView(), CalendarView()];
 
+  /// 移动端平台判断（Android / iOS 需处理系统导航条 inset）
+  bool get _isMobile =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+
   /// 打开新建日记编辑器
   void _openEditor() {
     debugPrint('[MainScaffold] 打开新建日记编辑器');
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const MemoEditorPage()),
+    );
+  }
+
+  Widget _buildNavRow() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceAround,
+      children: [
+        _NavItem(
+          icon: Icons.home_outlined,
+          activeIcon: Icons.home,
+          label: AppStrings.navHome,
+          selected: _currentIndex == 0,
+          onTap: () {
+            debugPrint('[MainScaffold] 切换到主页 Tab');
+            setState(() => _currentIndex = 0);
+          },
+        ),
+        // FAB 占位：避免两侧 NavItem 被压缩
+        const SizedBox(width: AppDimens.fabPlaceholder),
+        _NavItem(
+          icon: Icons.calendar_month_outlined,
+          activeIcon: Icons.calendar_month,
+          label: AppStrings.navCalendar,
+          selected: _currentIndex == 1,
+          onTap: () {
+            debugPrint('[MainScaffold] 切换到日历 Tab');
+            setState(() => _currentIndex = 1);
+          },
+        ),
+      ],
     );
   }
 
@@ -50,40 +86,24 @@ class _MainScaffoldState extends State<MainScaffold> {
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
 
       // 底部导航栏（带缺口容纳 FAB）
+      // 移动端：padding:0 + SafeArea 处理系统导航条；桌面端：默认 padding
       bottomNavigationBar: BottomAppBar(
         shape: const CircularNotchedRectangle(),
         notchMargin: 8,
         elevation: 8,
-        child: SizedBox(
-          height: AppDimens.bottomBarHeight,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _NavItem(
-                icon: Icons.home_outlined,
-                activeIcon: Icons.home,
-                label: AppStrings.navHome,
-                selected: _currentIndex == 0,
-                onTap: () {
-                  debugPrint('[MainScaffold] 切换到主页 Tab');
-                  setState(() => _currentIndex = 0);
-                },
+        padding: _isMobile ? EdgeInsets.zero : null,
+        child: _isMobile
+            ? SafeArea(
+                top: false,
+                child: SizedBox(
+                  height: AppDimens.bottomBarHeight,
+                  child: _buildNavRow(),
+                ),
+              )
+            : SizedBox(
+                height: AppDimens.bottomBarHeight,
+                child: _buildNavRow(),
               ),
-              // FAB 占位：避免两侧 NavItem 被压缩
-              const SizedBox(width: AppDimens.fabPlaceholder),
-              _NavItem(
-                icon: Icons.calendar_month_outlined,
-                activeIcon: Icons.calendar_month,
-                label: AppStrings.navCalendar,
-                selected: _currentIndex == 1,
-                onTap: () {
-                  debugPrint('[MainScaffold] 切换到日历 Tab');
-                  setState(() => _currentIndex = 1);
-                },
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

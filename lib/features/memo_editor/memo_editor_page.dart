@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/database/database_service.dart';
@@ -48,9 +49,13 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         TextEditingController(text: widget.editingMemo?.location ?? '');
     _contentFocus = FocusNode();
 
-    // 等页面过渡动画完成后再请求焦点，避免 macOS 上首次点击失效
+    // macOS 上需延迟请求焦点，避免页面过渡动画期间首次点击失效；
+    // 其他平台直接在下一帧请求，减少响应延迟
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Future.delayed(const Duration(milliseconds: 300), () {
+      final delay = defaultTargetPlatform == TargetPlatform.macOS
+          ? const Duration(milliseconds: 300)
+          : Duration.zero;
+      Future.delayed(delay, () {
         if (mounted) {
           _contentFocus.requestFocus();
           debugPrint('[MemoEditor] 已请求正文焦点');
@@ -165,17 +170,21 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                 ),
         ],
       ),
+      // resizeToAvoidBottomInset=true（默认）让 Scaffold 在键盘弹起时自动收缩，
+      // 底部工具栏随之上移，始终保持可见
       body: Column(
         children: [
           // ── 正文输入区（Markdown 格式提示）──────────────────────
           Expanded(
             child: SingleChildScrollView(
+              // keyboardDismissBehavior：下拉正文区时收起键盘，符合 Android 习惯
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               child: TextField(
                 controller: _contentCtrl,
                 focusNode: _contentFocus,
-                maxLines: null, // 自动换行，不限制行数
-                autofocus: false, // 由 initState 延迟请求焦点
+                maxLines: null,
+                autofocus: false,
                 style: const TextStyle(fontSize: 16, height: 1.7),
                 decoration: const InputDecoration(
                   hintText: AppStrings.editorContentHint,
@@ -189,6 +198,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           const Divider(height: 1),
 
           // ── 底部工具栏：位置输入 ─────────────────────────────────
+          // SafeArea top:false 只处理底部 inset（系统导航条），
+          // 键盘高度由 Scaffold.resizeToAvoidBottomInset 自动处理
           SafeArea(
             top: false,
             child: Padding(

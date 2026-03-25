@@ -206,95 +206,160 @@ class _CalendarViewState extends State<CalendarView> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // ── 日历主体 ────────────────────────────────────────
-          // 月高亮加载时用 0.5 透明度表示刷新中，避免整块区域消失
-          AnimatedOpacity(
-            opacity: _monthLoading ? 0.5 : 1.0,
-            duration: const Duration(milliseconds: 150),
-            child: Container(
-            color: AppColors.surfaceWhite,
-            child: TableCalendar<void>(
-              firstDay: DateTime.utc(2020, 1, 1),
-              lastDay: DateTime.utc(2030, 12, 31),
-              focusedDay: _focusedDay,
-              selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-              // eventLoader 直接查询已缓存的 _daysWithMemo，O(1) 复杂度
-              eventLoader: (day) =>
-                  _daysWithMemo.contains(day.day) ? [null] : [],
-              startingDayOfWeek: StartingDayOfWeek.monday,
-              headerVisible: false,
-              rowHeight: 58,
-              calendarStyle: const CalendarStyle(
-                outsideDaysVisible: false,
-                markerSize: 0,
-              ),
-              calendarBuilders: CalendarBuilders(
-                // ── 中文星期行 ───────────────────────────────
-                dowBuilder: (ctx, day) {
-                  const labels = ['一', '二', '三', '四', '五', '六', '日'];
-                  final isWeekend = day.weekday >= 6;
-                  return Center(
-                    child: Text(
-                      labels[day.weekday - 1],
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: isWeekend
-                            ? Colors.red[300]
-                            : Colors.grey[600],
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  );
-                },
-                defaultBuilder: (ctx, day, _) => _DayCell(
-                  day: day,
-                  lunarLabel: _lunarLabel(day),
-                  hasEvents: _daysWithMemo.contains(day.day),
-                ),
-                selectedBuilder: (ctx, day, _) => _DayCell(
-                  day: day,
-                  lunarLabel: _lunarLabel(day),
-                  hasEvents: _daysWithMemo.contains(day.day),
-                  isSelected: true,
-                ),
-                todayBuilder: (ctx, day, _) => _DayCell(
-                  day: day,
-                  lunarLabel: _lunarLabel(day),
-                  hasEvents: _daysWithMemo.contains(day.day),
-                  isToday: true,
-                ),
-              ),
-              onDaySelected: (selected, focused) {
-                debugPrint('[CalendarView] 选中日期：$selected');
-                setState(() {
-                  _selectedDay = selected;
-                  _focusedDay = focused;
-                });
-                _loadDayData(selected);
-              },
-              onPageChanged: (focused) {
-                debugPrint(
-                    '[CalendarView] 翻页到：${focused.year}-${focused.month}');
-                setState(() => _focusedDay = focused);
-                _loadMonthData(focused.year, focused.month);
-              },
-            ),
-          ),
-          ), // AnimatedOpacity
+      body: LayoutBuilder(
+        builder: (ctx, constraints) {
+          final availW = constraints.maxWidth;
+          final availH = constraints.maxHeight;
 
-          const Divider(height: 1, thickness: 1),
+          // 宽度 >= 720 时切换为横向布局（日历左 / 列表右）
+          const wideBreakpoint = 720.0;
+          final isWide = availW >= wideBreakpoint;
 
-          // ── 选中日期的日记列表 ──────────────────────────────
-          Expanded(child: _buildDayList()),
-        ],
+          if (isWide) {
+            return _buildWideLayout(availW, availH);
+          } else {
+            return _buildNarrowLayout(availW, availH);
+          }
+        },
       ),
     );
   }
 
+  // ── 布局 ──────────────────────────────────────────────────────
+
+  /// 计算日历行高
+  ///
+  /// [calendarW]：日历可用宽度；[maxCalH]：日历允许的最大高度。
+  double _calcRowHeight(double calendarW, double maxCalH) {
+    const dowHeight = 32.0;
+    final byH = ((maxCalH - dowHeight) / 6).floorToDouble();
+    final byW = calendarW / 7 * 1.05;
+    // 取两者较小值后再统一 clamp，避免 min > max 崩溃
+    return byH.clamp(0.0, byW).clamp(44.0, 66.0);
+  }
+
+  /// 构建日历 TableCalendar widget
+  Widget _buildCalendar(double rowHeight) {
+    return AnimatedOpacity(
+      opacity: _monthLoading ? 0.5 : 1.0,
+      duration: const Duration(milliseconds: 150),
+      child: TableCalendar<void>(
+        firstDay: DateTime.utc(2020, 1, 1),
+        lastDay: DateTime.utc(2030, 12, 31),
+        focusedDay: _focusedDay,
+        selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+        eventLoader: (day) =>
+            _daysWithMemo.contains(day.day) ? [null] : [],
+        startingDayOfWeek: StartingDayOfWeek.monday,
+        headerVisible: false,
+        rowHeight: rowHeight,
+        calendarStyle: const CalendarStyle(
+          outsideDaysVisible: false,
+          markerSize: 0,
+        ),
+        calendarBuilders: CalendarBuilders(
+          dowBuilder: (ctx, day) {
+            const labels = ['一', '二', '三', '四', '五', '六', '日'];
+            final isWeekend = day.weekday >= 6;
+            return Center(
+              child: Text(
+                labels[day.weekday - 1],
+                style: TextStyle(
+                  fontSize: 13,
+                  color:
+                      isWeekend ? Colors.red[300] : Colors.grey[600],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            );
+          },
+          defaultBuilder: (ctx, day, _) => _DayCell(
+            day: day,
+            lunarLabel: _lunarLabel(day),
+            hasEvents: _daysWithMemo.contains(day.day),
+            cellHeight: rowHeight,
+          ),
+          selectedBuilder: (ctx, day, _) => _DayCell(
+            day: day,
+            lunarLabel: _lunarLabel(day),
+            hasEvents: _daysWithMemo.contains(day.day),
+            isSelected: true,
+            cellHeight: rowHeight,
+          ),
+          todayBuilder: (ctx, day, _) => _DayCell(
+            day: day,
+            lunarLabel: _lunarLabel(day),
+            hasEvents: _daysWithMemo.contains(day.day),
+            isToday: true,
+            cellHeight: rowHeight,
+          ),
+        ),
+        onDaySelected: (selected, focused) {
+          debugPrint('[CalendarView] 选中日期：$selected');
+          setState(() {
+            _selectedDay = selected;
+            _focusedDay = focused;
+          });
+          _loadDayData(selected);
+        },
+        onPageChanged: (focused) {
+          debugPrint(
+              '[CalendarView] 翻页到：${focused.year}-${focused.month}');
+          setState(() => _focusedDay = focused);
+          _loadMonthData(focused.year, focused.month);
+        },
+      ),
+    );
+  }
+
+  /// 竖向布局（窄屏）：日历在上，列表在下
+  Widget _buildNarrowLayout(double availW, double availH) {
+    const calendarMaxWidth = 560.0;
+    final calendarW = availW.clamp(0.0, calendarMaxWidth);
+    final rowHeight = _calcRowHeight(calendarW, availH * 0.42);
+
+    return Column(
+      children: [
+        Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: calendarMaxWidth),
+            child: _buildCalendar(rowHeight),
+          ),
+        ),
+        const Divider(height: 1, thickness: 1),
+        Expanded(child: _buildDayList(availW)),
+      ],
+    );
+  }
+
+  /// 横向布局（宽屏 >= 720px）：左侧日历，右侧列表，竖向分割线分隔
+  ///
+  /// 日历固定占左侧 42% 宽度（最多 420px），列表占剩余空间。
+  Widget _buildWideLayout(double availW, double availH) {
+    final calendarW = (availW * 0.42).clamp(300.0, 420.0);
+    final rowHeight = _calcRowHeight(calendarW, availH * 0.88);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── 左侧：日历 ──────────────────────────────────────
+        SizedBox(
+          width: calendarW,
+          child: _buildCalendar(rowHeight),
+        ),
+
+        // ── 竖向分割线 ──────────────────────────────────────
+        const VerticalDivider(width: 1, thickness: 1),
+
+        // ── 右侧：当日日记列表 ──────────────────────────────
+        Expanded(child: _buildDayList(availW - calendarW - 1)),
+      ],
+    );
+  }
+
   /// 构建当日日记列表区域
-  Widget _buildDayList() {
+  Widget _buildDayList(double availWidth) {
     if (_dayLoading) {
       return const Center(
         child: CircularProgressIndicator(color: AppColors.primary),
@@ -316,12 +381,23 @@ class _CalendarViewState extends State<CalendarView> {
         ),
       );
     }
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-      itemCount: _selectedMemos.length,
-      itemBuilder: (ctx, i) => MemoTimelineCard(
-        memo: _selectedMemos[i],
-        isLast: i == _selectedMemos.length - 1,
+    // 列表与日历保持相同最大宽度并居中
+    final hPad = availWidth > 600 ? 24.0 : 12.0;
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final bottomPad = 84.0 + bottomInset;
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: ListView.builder(
+          padding: EdgeInsets.fromLTRB(hPad, 12, hPad, bottomPad),
+          itemCount: _selectedMemos.length,
+          itemBuilder: (ctx, i) => MemoTimelineCard(
+            memo: _selectedMemos[i],
+            isLast: i == _selectedMemos.length - 1,
+            showTime: true,
+          ),
+        ),
       ),
     );
   }
@@ -338,10 +414,14 @@ class _DayCell extends StatelessWidget {
   final bool isSelected;
   final bool isToday;
 
+  /// 格子行高，用于自适应字号（由父层传入）
+  final double cellHeight;
+
   const _DayCell({
     required this.day,
     required this.lunarLabel,
     required this.hasEvents,
+    required this.cellHeight,
     this.isSelected = false,
     this.isToday = false,
   });
@@ -370,8 +450,14 @@ class _DayCell extends StatelessWidget {
       lunarColor = Colors.grey[400]!;
     }
 
+    // 根据行高自适应字号，保持格子内内容比例协调
+    // cellHeight 范围 48~72，dayFontSize 范围 13~17
+    final dayFontSize = (cellHeight * 0.25).clamp(13.0, 17.0);
+    final lunarFontSize = (cellHeight * 0.14).clamp(8.0, 11.0);
+    final margin = cellHeight < 56 ? 2.0 : 3.0;
+
     return Container(
-      margin: const EdgeInsets.all(3),
+      margin: EdgeInsets.all(margin),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(8),
@@ -385,7 +471,7 @@ class _DayCell extends StatelessWidget {
           Text(
             '${day.day}',
             style: TextStyle(
-              fontSize: 15,
+              fontSize: dayFontSize,
               fontWeight:
                   isSelected || isToday ? FontWeight.bold : FontWeight.normal,
               color: dayColor,
@@ -393,9 +479,9 @@ class _DayCell extends StatelessWidget {
           ),
           if (lunarLabel.isNotEmpty)
             Text(lunarLabel,
-                style: TextStyle(fontSize: 9, color: lunarColor)),
+                style: TextStyle(fontSize: lunarFontSize, color: lunarColor)),
           if (hasEvents && !isSelected) ...[
-            const SizedBox(height: 2),
+            SizedBox(height: cellHeight < 56 ? 1.0 : 2.0),
             Container(
               width: 4,
               height: 4,

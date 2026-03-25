@@ -110,6 +110,8 @@ class MemoTimelineCard extends StatelessWidget {
                   child: Text(
                     _timeLabel,
                     textAlign: TextAlign.right,
+                    maxLines: 1,
+                    overflow: TextOverflow.clip,
                     style: TextStyle(
                       fontSize: 11,
                       color: Colors.grey[500],
@@ -139,7 +141,7 @@ class MemoTimelineCard extends StatelessWidget {
 }
 
 // 时间标签列宽度（showTime = true 时使用）
-const double _kTimeColumnWidth = 36;
+const double _kTimeColumnWidth = 40;
 // 时间标签与轴线之间的间距
 const double _kTimeGap = 4;
 // 圆点距 Stack 顶部的偏移（与卡片顶部对齐，视觉居中）

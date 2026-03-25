@@ -182,31 +182,41 @@ class _HomeViewState extends State<HomeView> {
 
     final groups = _groupByDay(_memos);
 
-    return Align(
-      alignment: Alignment.topCenter,
-      child: ConstrainedBox(
-        constraints:
-            const BoxConstraints(maxWidth: AppDimens.timelineMaxWidth),
-        child: ListView.builder(
-          controller: _scrollCtrl,
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-          itemCount: groups.length + (_hasMore ? 1 : 0),
-          itemBuilder: (ctx, i) {
-            if (i == groups.length) {
-              return const Padding(
-                padding: EdgeInsets.symmetric(vertical: 16),
-                child: Center(
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: AppColors.primary),
-                ),
-              );
-            }
-            final (key, dayMemos) = groups[i];
-            return _DaySection(
-                dateKey: key, memos: dayMemos, weekdays: _weekdays);
-          },
-        ),
-      ),
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        // 根据可用宽度决定水平内边距：宽屏留更多空白
+        final w = constraints.maxWidth;
+        final hPad = w > 600 ? 24.0 : 12.0;
+        // 底部 padding = BottomAppBar(56) + FAB溢出(~28) + 系统导航条
+        final bottomInset = MediaQuery.paddingOf(context).bottom;
+        final bottomPad = 84.0 + bottomInset;
+        return Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints:
+                const BoxConstraints(maxWidth: AppDimens.timelineMaxWidth),
+            child: ListView.builder(
+              controller: _scrollCtrl,
+              padding: EdgeInsets.fromLTRB(hPad, 12, hPad, bottomPad),
+              itemCount: groups.length + (_hasMore ? 1 : 0),
+              itemBuilder: (ctx, i) {
+                if (i == groups.length) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Center(
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: AppColors.primary),
+                    ),
+                  );
+                }
+                final (key, dayMemos) = groups[i];
+                return _DaySection(
+                    dateKey: key, memos: dayMemos, weekdays: _weekdays);
+              },
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -232,6 +242,14 @@ class _DaySection extends StatelessWidget {
     final date = DateTime.parse(dateKey);
     final weekday = weekdays[date.weekday - 1];
 
+    // 根据屏幕宽度缩放左侧日期列
+    final screenW = MediaQuery.sizeOf(context).width;
+    final isNarrow = screenW < 360;
+    final dateColWidth = isNarrow ? 52.0 : 60.0;
+    final dayFontSize = isNarrow ? 24.0 : 30.0;
+    final monthFontSize = isNarrow ? 11.0 : 12.0;
+    final weekFontSize = isNarrow ? 10.0 : 11.0;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(
@@ -248,7 +266,7 @@ class _DaySection extends StatelessWidget {
             children: [
               // ── 左侧：日期头（仅第一条）+ 时间 ────────────────
               SizedBox(
-                width: 60,
+                width: dateColWidth,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   mainAxisSize: MainAxisSize.min,
@@ -257,8 +275,8 @@ class _DaySection extends StatelessWidget {
                       const SizedBox(height: 18),
                       Text(
                         '${date.day}',
-                        style: const TextStyle(
-                          fontSize: 30,
+                        style: TextStyle(
+                          fontSize: dayFontSize,
                           fontWeight: FontWeight.bold,
                           height: 1.0,
                           color: AppColors.textPrimary,
@@ -266,11 +284,13 @@ class _DaySection extends StatelessWidget {
                       ),
                       Text('${date.month}月',
                           style: TextStyle(
-                              fontSize: 12, color: Colors.grey[600])),
+                              fontSize: monthFontSize,
+                              color: Colors.grey[600])),
                       const SizedBox(height: 2),
                       Text('星期$weekday',
                           style: TextStyle(
-                              fontSize: 11, color: Colors.grey[400])),
+                              fontSize: weekFontSize,
+                              color: Colors.grey[400])),
                       const SizedBox(height: 4),
                     ] else
                       const SizedBox(height: 12),
@@ -279,7 +299,7 @@ class _DaySection extends StatelessWidget {
                       child: Text(
                         '$h:$m',
                         style: TextStyle(
-                          fontSize: 11,
+                          fontSize: isNarrow ? 10.0 : 11.0,
                           color: Colors.grey[500],
                           fontWeight: FontWeight.w500,
                         ),
