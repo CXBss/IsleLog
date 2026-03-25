@@ -120,15 +120,21 @@ class _HomeViewState extends State<HomeView> {
           final groups = _groupByDay(memos);
           final sortedKeys = groups.keys.toList()..sort((a, b) => b.compareTo(a));
 
-          return ListView.builder(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-            itemCount: sortedKeys.length,
-            itemBuilder: (ctx, i) {
-              final key = sortedKeys[i];
-              final dayMemos = groups[key]!
-                ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-              return _DaySection(dateKey: key, memos: dayMemos, weekdays: _weekdays);
-            },
+          return Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 680),
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
+                itemCount: sortedKeys.length,
+                itemBuilder: (ctx, i) {
+                  final key = sortedKeys[i];
+                  final dayMemos = groups[key]!
+                    ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+                  return _DaySection(dateKey: key, memos: dayMemos, weekdays: _weekdays);
+                },
+              ),
+            ),
           );
         },
       ),
@@ -171,50 +177,72 @@ class _DaySection extends StatelessWidget {
     final date = DateTime.parse(dateKey);
     final weekday = weekdays[date.weekday - 1];
 
+    String _fmt(DateTime dt) {
+      final h = dt.hour.toString().padLeft(2, '0');
+      final m = dt.minute.toString().padLeft(2, '0');
+      return '$h:$m';
+    }
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ── 左侧日期列 ──────────────────────────────────────
-          SizedBox(
-            width: 60,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 18, right: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '${date.day}',
-                    style: const TextStyle(
-                      fontSize: 30,
-                      fontWeight: FontWeight.bold,
-                      height: 1.0,
-                      color: Color(0xFF1A1A1A),
-                    ),
+      child: Column(
+        children: memos.asMap().entries.map((e) {
+          final isFirst = e.key == 0;
+          final memo = e.value;
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── 左侧日期/时间列 ────────────────────────────
+              SizedBox(
+                width: 60,
+                child: Padding(
+                  padding: EdgeInsets.only(
+                      top: isFirst ? 18 : 12, right: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (isFirst) ...[
+                        Text(
+                          '${date.day}',
+                          style: const TextStyle(
+                            fontSize: 30,
+                            fontWeight: FontWeight.bold,
+                            height: 1.0,
+                            color: Color(0xFF1A1A1A),
+                          ),
+                        ),
+                        Text('${date.month}月',
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[600])),
+                        const SizedBox(height: 2),
+                        Text('星期$weekday',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.grey[400])),
+                        const SizedBox(height: 4),
+                      ],
+                      Text(
+                        _fmt(memo.createdAt),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey[500],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
-                  Text('${date.month}月',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                  const SizedBox(height: 2),
-                  Text('星期$weekday',
-                      style: TextStyle(fontSize: 11, color: Colors.grey[400])),
-                ],
+                ),
               ),
-            ),
-          ),
 
-          // ── 右侧时间线条目 ──────────────────────────────────
-          Expanded(
-            child: Column(
-              children: memos.asMap().entries.map((e) {
-                return MemoTimelineCard(
-                  memo: e.value,
+              // ── 右侧时间线条目 ──────────────────────────────
+              Expanded(
+                child: MemoTimelineCard(
+                  memo: memo,
                   isLast: e.key == memos.length - 1,
-                );
-              }).toList(),
-            ),
-          ),
-        ],
+                ),
+              ),
+            ],
+          );
+        }).toList(),
       ),
     );
   }

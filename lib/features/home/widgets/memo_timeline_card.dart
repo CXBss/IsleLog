@@ -12,10 +12,14 @@ class MemoTimelineCard extends StatelessWidget {
   /// 是否是当天最后一条（决定时间线下方是否绘制延伸线）
   final bool isLast;
 
+  /// 是否在轴线左侧显示时间（日历视图用）
+  final bool showTime;
+
   const MemoTimelineCard({
     super.key,
     required this.memo,
     this.isLast = false,
+    this.showTime = false,
   });
 
   String get _timeLabel {
@@ -40,6 +44,20 @@ class MemoTimelineCard extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // ── 时间标签（仅日历视图）────────────────────────
+          if (showTime)
+            Padding(
+              padding: const EdgeInsets.only(top: 12, right: 6),
+              child: Text(
+                _timeLabel,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey[500],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+
           // ── 时间轴线 + 圆点 ──────────────────────────────
           SizedBox(
             width: 20,
@@ -61,19 +79,6 @@ class MemoTimelineCard extends StatelessWidget {
           ),
 
           const SizedBox(width: 6),
-
-          // ── 时间标签 ──────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.only(top: 12, right: 8),
-            child: Text(
-              _timeLabel,
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[500],
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
 
           // ── 内容卡片 ──────────────────────────────────────
           Expanded(
