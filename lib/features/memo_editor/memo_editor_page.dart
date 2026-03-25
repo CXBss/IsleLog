@@ -21,6 +21,7 @@ class MemoEditorPage extends StatefulWidget {
 class _MemoEditorPageState extends State<MemoEditorPage> {
   late final TextEditingController _contentCtrl;
   late final TextEditingController _locationCtrl;
+  late final FocusNode _contentFocus;
   bool _saving = false;
 
   bool get _isEditing => widget.editingMemo != null;
@@ -30,12 +31,20 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     super.initState();
     _contentCtrl = TextEditingController(text: widget.editingMemo?.content ?? '');
     _locationCtrl = TextEditingController(text: widget.editingMemo?.location ?? '');
+    _contentFocus = FocusNode();
+    // 等页面过渡动画完成后再请求焦点，避免 macOS 上首次点击失效
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) _contentFocus.requestFocus();
+      });
+    });
   }
 
   @override
   void dispose() {
     _contentCtrl.dispose();
     _locationCtrl.dispose();
+    _contentFocus.dispose();
     super.dispose();
   }
 
@@ -119,14 +128,13 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         children: [
           // ── 正文输入区 ───────────────────────────────────────
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               child: TextField(
                 controller: _contentCtrl,
+                focusNode: _contentFocus,
                 maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
-                autofocus: true,
+                autofocus: false,
                 style: const TextStyle(fontSize: 16, height: 1.7),
                 decoration: const InputDecoration(
                   hintText: '写点什么...\n\n支持 Markdown 格式和 #标签',
