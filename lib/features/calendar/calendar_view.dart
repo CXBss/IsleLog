@@ -59,6 +59,9 @@ class _CalendarViewState extends State<CalendarView> {
   @override
   void initState() {
     super.initState();
+    // 主动触发首次加载，不依赖 watchDbChanges 的 fireImmediately 信号
+    _loadMonthData(_focusedDay.year, _focusedDay.month);
+    _loadDayData(_selectedDay);
     _initDbWatch();
   }
 
@@ -70,7 +73,7 @@ class _CalendarViewState extends State<CalendarView> {
 
   // ── 初始化 & 监听 ─────────────────────────────────────────────
 
-  /// 订阅 DB 变更流（带 debounce），首次触发时加载当前月和当日数据。
+  /// 订阅 DB 变更流（带 debounce），仅监听后续写操作触发刷新。
   Future<void> _initDbWatch() async {
     debugPrint('[CalendarView] 初始化 DB 监听...');
     final stream = await DatabaseService.watchDbChanges();

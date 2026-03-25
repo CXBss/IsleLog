@@ -269,8 +269,9 @@ class DatabaseService {
   static Future<Stream<void>> watchDbChanges() async {
     final isar = await db;
     debugPrint('[DB] 注册 watchDbChanges（含 debounce）');
+    // fireImmediately: false —— 只监听后续写操作，首次加载由调用方主动触发
     return isar.memoEntrys
-        .watchLazy(fireImmediately: true)
+        .watchLazy(fireImmediately: false)
         .debounceTime(const Duration(milliseconds: 300));
   }
 

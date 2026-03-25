@@ -9,26 +9,31 @@ import '../../../shared/constants/app_constants.dart';
 /// 时间线中的单条日记卡片
 ///
 /// 由三部分组成：
-/// - （可选）左侧时间标签（日历视图用，[showTime] = true 时显示）
-/// - 中间时间轴线（竖线 + 圆点，用 [_TimelineBar] CustomPaint 绘制，无需 IntrinsicHeight）
+/// - 左侧时间轴（竖线 + 圆点），用 [_TimelineAxis] 绘制
 /// - 右侧内容卡片 [_MemoCard]
 ///
-/// ## 轴线绘制说明
+/// ## 轴线实现说明
 ///
-/// 原先用 IntrinsicHeight + Expanded 让轴线撑满卡片高度，但 IntrinsicHeight
-/// 嵌套在 ListView 的 Column 中，在快速滚动时会触发 "size: MISSING" 的 hit-test 报错。
+/// 彻底放弃 [IntrinsicHeight]，改用 [_TimelineAxis] + [CustomPaint] 方案：
+/// - [_TimelineAxis] 是一个 [StatefulWidget]，在 [didChangeDependencies] 后
+///   通过 [LayoutBuilder] 获取父 Row 分配给它的高度（由右侧卡片撑开）。
+/// - 实际上：Row 使用 [CrossAxisAlignment.start]，轴线列高度默认等于自身内容高度。
+///   为了让竖线延伸到卡片底部，把轴线列 + 卡片列一起放进一个
+///   [IntrinsicHeight] Row —— 但这正是问题根源。
 ///
-/// 现改用 [Stack] + [_TimelineBar] CustomPainter 方案：
-/// - 外层 Row 使用 crossAxisAlignment.start（不再需要 stretch）
-/// - 轴线列用 [LayoutBuilder] 获取卡片实际渲染高度后由 CustomPaint 画线
-/// - 视觉效果与原来完全一致，彻底消除 IntrinsicHeight 的 layout 竞态问题
+/// 最终可行方案：把竖线画在卡片的 [Stack] 背景层，用 [Positioned.fill] 填满，
+/// 卡片用 [Padding(bottom:12)] 控制间距，竖线延伸到 bottom padding 底部与
+/// 下一条卡片的竖线顶部对齐。圆点单独定位在距顶 20px 处。
+///
+/// 关键：[Stack] 的高度由唯一非 Positioned 子项（Row）决定，Positioned 可以
+/// 用 top/bottom 填满整个 Stack，[Clip.none] 让竖线向下溢出 12px 覆盖间距。
 class MemoTimelineCard extends StatelessWidget {
   final MemoEntry memo;
 
   /// 是否是当天最后一条（决定时间线圆点下方是否绘制延伸线）
   final bool isLast;
 
-  /// 是否在轴线左侧显示时间（日历视图用）
+  /// 是否在轴线左侧显示时间（日历视图用，当前 home_view 已在外层处理时间）
   final bool showTime;
 
   const MemoTimelineCard({
@@ -44,7 +49,6 @@ class MemoTimelineCard extends StatelessWidget {
     return '$h:$m';
   }
 
-  /// 去除正文中的 #标签，保留 Markdown 其余格式
   String get _displayContent {
     var text = memo.content;
     for (final tag in memo.tags) {
@@ -53,141 +57,93 @@ class MemoTimelineCard extends StatelessWidget {
     return text.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
   }
 
+  // 轴线列的固定宽度
+  static const double _axisWidth = 20;
+
   @override
   Widget build(BuildContext context) {
-    return Row(
-      // start：各列独立高度，不强制拉伸，彻底消除对 IntrinsicHeight 的依赖
-      crossAxisAlignment: CrossAxisAlignment.start,
+    // Stack 高度 = 唯一非 Positioned 子项（内容 Row）的高度。
+    // Positioned 的 top/bottom 可以相对 Stack 填满，Clip.none 让竖线向下
+    // 溢出 12px（bottom padding），与下一条卡片竖线顶端平滑连接。
+    return Stack(
+      clipBehavior: Clip.none,
       children: [
-        // ── 时间标签（仅日历视图）────────────────────────────────
-        if (showTime)
-          Padding(
-            padding: const EdgeInsets.only(top: 12, right: 6),
-            child: Text(
-              _timeLabel,
-              style: TextStyle(
-                fontSize: 11,
-                color: Colors.grey[500],
-                fontWeight: FontWeight.w500,
-              ),
+        // ── 背景层：竖线 ─────────────────────────────────────────
+        // left 定位到轴线列中心，top/bottom 填满 Stack 高度并向下溢出
+        Positioned(
+          left: (showTime ? _kTimeColumnWidth + _kTimeGap : 0) +
+              (_axisWidth - AppDimens.timelineBarWidth) / 2,
+          top: 0,
+          bottom: isLast ? null : -12,
+          width: AppDimens.timelineBarWidth,
+          height: isLast
+              ? _kDotOffsetTop + AppDimens.timelineDotSize
+              : null,
+          child: const ColoredBox(color: AppColors.timelineBar),
+        ),
+
+        // ── 背景层：圆点（覆盖在竖线上）────────────────────────
+        Positioned(
+          left: (showTime ? _kTimeColumnWidth + _kTimeGap : 0) +
+              (_axisWidth - AppDimens.timelineDotSize) / 2,
+          top: _kDotOffsetTop,
+          width: AppDimens.timelineDotSize,
+          height: AppDimens.timelineDotSize,
+          child: const DecoratedBox(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.primary,
             ),
           ),
+        ),
 
-        // ── 时间轴列（CustomPaint 画线，随右侧卡片高度自适应）────
-        _TimelineColumn(isLast: isLast),
+        // ── 前景层：内容 Row（决定 Stack 高度）──────────────────
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 时间标签（仅日历视图）
+            if (showTime)
+              SizedBox(
+                width: _kTimeColumnWidth,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 12, right: _kTimeGap),
+                  child: Text(
+                    _timeLabel,
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey[500],
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
 
-        const SizedBox(width: 6),
+            // 轴线占位（透明，宽度与背景层对齐）
+            const SizedBox(width: _axisWidth),
 
-        // ── 内容卡片 ──────────────────────────────────────────────
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: _MemoCard(memo: memo, displayContent: _displayContent),
-          ),
+            const SizedBox(width: 6),
+
+            // 内容卡片
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _MemoCard(memo: memo, displayContent: _displayContent),
+              ),
+            ),
+          ],
         ),
       ],
     );
   }
 }
 
-/// 时间轴列：圆点 + 上方线段 + 下方延伸线
-///
-/// 用 [CustomPaint] 绘制，宽度固定为 20px，高度由父级 Row 决定（与右侧卡片等高）。
-/// 圆点固定在距顶部 20px 处，上方画一小段线，下方若非最后一条则画到底部。
-class _TimelineColumn extends StatelessWidget {
-  final bool isLast;
-  const _TimelineColumn({required this.isLast});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 20,
-      // LayoutBuilder 获取父级给出的高度约束，传给 CustomPaint
-      child: LayoutBuilder(
-        builder: (_, constraints) {
-          // 父级 Row(crossAxisAlignment.start) 的高度由右侧卡片决定，
-          // constraints.maxHeight 即为右侧卡片+底部 padding 的实际高度。
-          // 若约束为无限大（极少数情况），退回到固定值避免绘制异常。
-          final height =
-              constraints.maxHeight.isFinite ? constraints.maxHeight : 60.0;
-          return CustomPaint(
-            size: Size(20, height),
-            painter: _TimelinePainter(
-              isLast: isLast,
-              barColor: AppColors.timelineBar,
-              dotColor: AppColors.primary,
-              dotTopOffset: 20, // 圆点距顶部的距离
-              dotRadius: AppDimens.timelineDotSize / 2,
-              barWidth: AppDimens.timelineBarWidth,
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-/// 时间轴 CustomPainter
-///
-/// 在固定坐标处绘制：
-/// - 顶部 → 圆点：竖线（上方连接线）
-/// - 圆点（实心圆）
-/// - 圆点 → 底部：竖线（下方延伸线，[isLast] 为 true 时不绘制）
-class _TimelinePainter extends CustomPainter {
-  final bool isLast;
-  final Color barColor;
-  final Color dotColor;
-  final double dotTopOffset; // 圆点圆心距顶部距离
-  final double dotRadius;
-  final double barWidth;
-
-  const _TimelinePainter({
-    required this.isLast,
-    required this.barColor,
-    required this.dotColor,
-    required this.dotTopOffset,
-    required this.dotRadius,
-    required this.barWidth,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cx = size.width / 2; // 轴线水平中心
-    final cy = dotTopOffset;   // 圆点圆心 Y 坐标
-
-    final linePaint = Paint()
-      ..color = barColor
-      ..strokeWidth = barWidth
-      ..strokeCap = StrokeCap.round;
-
-    final dotPaint = Paint()..color = dotColor;
-
-    // 上方连接线：从顶部到圆心上边缘
-    canvas.drawLine(
-      Offset(cx, 0),
-      Offset(cx, cy - dotRadius),
-      linePaint,
-    );
-
-    // 圆点
-    canvas.drawCircle(Offset(cx, cy), dotRadius, dotPaint);
-
-    // 下方延伸线：从圆心下边缘到底部（最后一条不画）
-    if (!isLast) {
-      canvas.drawLine(
-        Offset(cx, cy + dotRadius),
-        Offset(cx, size.height),
-        linePaint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_TimelinePainter old) =>
-      old.isLast != isLast ||
-      old.barColor != barColor ||
-      old.dotColor != dotColor;
-}
+// 时间标签列宽度（showTime = true 时使用）
+const double _kTimeColumnWidth = 36;
+// 时间标签与轴线之间的间距
+const double _kTimeGap = 4;
+// 圆点距 Stack 顶部的偏移（与卡片顶部对齐，视觉居中）
+const double _kDotOffsetTop = 20;
 
 /// 日记内容卡片
 class _MemoCard extends StatelessWidget {
@@ -305,8 +261,7 @@ class _MemoCard extends StatelessWidget {
                   ),
                   blockquoteDecoration: BoxDecoration(
                     border: Border(
-                      left:
-                          BorderSide(color: Colors.grey[300]!, width: 3),
+                      left: BorderSide(color: Colors.grey[300]!, width: 3),
                     ),
                   ),
                 ),
