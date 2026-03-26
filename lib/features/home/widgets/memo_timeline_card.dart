@@ -3,11 +3,14 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../../../data/database/database_service.dart';
 import '../../../data/models/attachment_info.dart';
 import '../../../data/models/memo_entry.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+
+import '../../../data/database/database_service.dart' as db_svc;
+import '../../../features/memo_detail/memo_detail_page.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
 import '../../../services/settings/settings_service.dart'; // Bearer Token 用于图片认证
 import '../../../shared/constants/app_constants.dart';
@@ -171,46 +174,62 @@ class _MemoCard extends StatefulWidget {
   State<_MemoCard> createState() => _MemoCardState();
 }
 
-// 折叠时最大显示高度（约 6 行）
-const double _kCollapsedMaxHeight = 140.0;
-
 class _MemoCardState extends State<_MemoCard> {
   MemoEntry get memo => widget.memo;
   String get displayContent => widget.displayContent;
 
-  bool _expanded = false;
+  List<AttachmentInfo> get _imageAttachments =>
+      memo.attachments.where((a) => a.isImage).toList();
+  List<AttachmentInfo> get _audioAttachments =>
+      memo.attachments.where((a) => a.isAudio).toList();
+  List<AttachmentInfo> get _fileAttachments =>
+      memo.attachments.where((a) => !a.isImage && !a.isAudio).toList();
 
-  /// 将单个换行转为 Markdown 换行（两个空格 + 换行），保留已有的双换行段落
+  static const int _kMaxLines = 6;
+
+  bool get _isTruncated => displayContent.split('\n').length > _kMaxLines;
+
   String get _markdownContent {
-    // 先把 \r\n 统一为 \n
     var text = displayContent.replaceAll('\r\n', '\n');
-    // 把双换行（段落分隔）临时占位，避免被处理
+    final lines = text.split('\n');
+    if (lines.length > _kMaxLines) {
+      text = lines.take(_kMaxLines).join('\n');
+    }
+    // 单换行 → Markdown 强制换行
     text = text.replaceAll('\n\n', '\x00');
-    // 单换行 → Markdown 强制换行（末尾两空格 + \n）
     text = text.replaceAll('\n', '  \n');
-    // 恢复段落分隔
     text = text.replaceAll('\x00', '\n\n');
     return text;
   }
 
-  // ── 附件分类 ──────────────────────────────────────────────────
-
-  List<AttachmentInfo> get _imageAttachments {
-    final list = memo.attachments.where((a) => a.isImage).toList();
-    if (memo.attachmentsJson.isNotEmpty) {
-      debugPrint('[MemoCard] id=${memo.id} attachmentsJson=${memo.attachmentsJson.length}条, images=${list.length}');
+  /// 切换第 [lineIndex] 个 todo 行的勾选状态并保存
+  Future<void> _toggleTodo(int lineIndex, bool checked) async {
+    final lines = memo.content.split('\n');
+    if (lineIndex < 0 || lineIndex >= lines.length) return;
+    final line = lines[lineIndex];
+    if (checked) {
+      lines[lineIndex] = line.replaceFirst('- [ ]', '- [x]');
+    } else {
+      lines[lineIndex] = line.replaceFirst('- [x]', '- [ ]');
     }
-    return list;
+    memo.content = lines.join('\n');
+    memo.updatedAt = DateTime.now();
+    memo.syncStatus = SyncStatus.pending;
+    await db_svc.DatabaseService.saveMemo(memo);
+    if (mounted) setState(() {});
   }
 
-  List<AttachmentInfo> get _audioAttachments =>
-      memo.attachments.where((a) => a.isAudio).toList();
+  void _openDetail(BuildContext context) {
+    Navigator.push(context,
+        MaterialPageRoute(builder: (_) => MemoDetailPage(memo: memo)));
+  }
 
-  List<AttachmentInfo> get _fileAttachments =>
-      memo.attachments.where((a) => !a.isImage && !a.isAudio).toList();
+  void _openEdit(BuildContext context) {
+    Navigator.push(context,
+        MaterialPageRoute(builder: (_) => MemoEditorPage(editingMemo: memo)));
+  }
 
   void _showMenu(BuildContext context) {
-    debugPrint('[MemoCard] 显示操作菜单，memo.id=${memo.id}');
     final messenger = ScaffoldMessenger.of(context);
     showModalBottomSheet(
       context: context,
@@ -223,12 +242,7 @@ class _MemoCardState extends State<_MemoCard> {
               title: const Text(AppStrings.cardEdit),
               onTap: () {
                 Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => MemoEditorPage(editingMemo: memo),
-                  ),
-                );
+                _openEdit(context);
               },
             ),
             ListTile(
@@ -291,120 +305,199 @@ class _MemoCardState extends State<_MemoCard> {
     );
   }
 
+  MarkdownStyleSheet _mdStyle(BuildContext context) =>
+      MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+        p: const TextStyle(fontSize: 14, height: 1.6, color: AppColors.textBody),
+        blockquote: const TextStyle(
+            fontSize: 13, color: Colors.grey, fontStyle: FontStyle.italic),
+        blockquoteDecoration: BoxDecoration(
+          border: Border(left: BorderSide(color: Colors.grey[300]!, width: 3)),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(AppDimens.cardRadius),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (displayContent.isNotEmpty)
-              _CollapsibleMarkdown(
-                content: _markdownContent,
-                expanded: _expanded,
-                onToggle: () => setState(() => _expanded = !_expanded),
-                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                  p: const TextStyle(fontSize: 14, height: 1.6, color: AppColors.textBody),
-                  blockquote: const TextStyle(
-                    fontSize: 13,
-                    color: Colors.grey,
-                    fontStyle: FontStyle.italic,
-                  ),
-                  blockquoteDecoration: BoxDecoration(
-                    border: Border(
-                      left: BorderSide(color: Colors.grey[300]!, width: 3),
-                    ),
-                  ),
-                ),
-              ),
-
-            // ── 图片附件区 ────────────────────────────────────
-            if (_imageAttachments.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              _ImageGrid(attachments: _imageAttachments),
-            ],
-
-            // ── 音频附件区 ────────────────────────────────────
-            ..._audioAttachments.map((a) =>
-                AudioPlayerWidget(key: ValueKey(a.localId), attachment: a)),
-
-            // ── 其他文件附件区 ────────────────────────────────
-            if (_fileAttachments.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Wrap(
-                children: _fileAttachments
-                    .map((a) => FileChipWidget(attachment: a))
-                    .toList(),
-              ),
-            ],
-
-            if (memo.location != null && memo.location!.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Icon(Icons.location_on_outlined,
-                      size: 13, color: Colors.blueGrey[400]),
-                  const SizedBox(width: 2),
-                  Flexible(
-                    child: Text(
-                      memo.location!,
-                      style: TextStyle(
-                          fontSize: 12, color: Colors.blueGrey[400]),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            if (memo.tags.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: memo.tags
-                    .map((tag) => _TagChip(
-                          tag: tag,
-                          onTap: widget.onTagTap != null
-                              ? () => widget.onTagTap!(tag)
-                              : null,
-                        ))
-                    .toList(),
-              ),
-            ],
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                GestureDetector(
-                  onTap: () => _showMenu(context),
-                  child: Icon(Icons.more_horiz,
-                      size: 18, color: Colors.grey[400]),
-                ),
-                const SizedBox(width: 14),
-                Icon(Icons.chat_bubble_outline,
-                    size: 14, color: Colors.grey[400]),
-                const SizedBox(width: 3),
-                Text('0',
-                    style: TextStyle(
-                        fontSize: 12, color: Colors.grey[400])),
-              ],
+    return GestureDetector(
+      onTap: () => _openDetail(context),
+      onDoubleTap: () => _openEdit(context),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.circular(AppDimens.cardRadius),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.06),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
             ),
           ],
         ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── 正文预览（Markdown 渲染，超行截断）─────────────
+              if (displayContent.isNotEmpty) ...[
+                _PreviewMarkdown(
+                  content: _markdownContent,
+                  rawContent: memo.content,
+                  styleSheet: _mdStyle(context),
+                  onToggleTodo: _toggleTodo,
+                ),
+                if (_isTruncated)
+                  GestureDetector(
+                    onTap: () => _openDetail(context),
+                    child: const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Text(
+                        '展示更多',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.blue,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+
+              // ── 图片附件区 ────────────────────────────────────
+              if (_imageAttachments.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                _ImageGrid(attachments: _imageAttachments),
+              ],
+
+              // ── 音频附件区 ────────────────────────────────────
+              ..._audioAttachments.map((a) =>
+                  AudioPlayerWidget(key: ValueKey(a.localId), attachment: a)),
+
+              // ── 其他文件附件区 ────────────────────────────────
+              if (_fileAttachments.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Wrap(
+                  children: _fileAttachments
+                      .map((a) => FileChipWidget(attachment: a))
+                      .toList(),
+                ),
+              ],
+
+              if (memo.location != null && memo.location!.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Icon(Icons.location_on_outlined,
+                        size: 13, color: Colors.blueGrey[400]),
+                    const SizedBox(width: 2),
+                    Flexible(
+                      child: Text(
+                        memo.location!,
+                        style: TextStyle(
+                            fontSize: 12, color: Colors.blueGrey[400]),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              if (memo.tags.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: memo.tags
+                      .map((tag) => _TagChip(
+                            tag: tag,
+                            onTap: widget.onTagTap != null
+                                ? () => widget.onTagTap!(tag)
+                                : null,
+                          ))
+                      .toList(),
+                ),
+              ],
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  GestureDetector(
+                    onTap: () => _showMenu(context),
+                    child: Icon(Icons.more_horiz,
+                        size: 18, color: Colors.grey[400]),
+                  ),
+                  const SizedBox(width: 14),
+                  Icon(Icons.chat_bubble_outline,
+                      size: 14, color: Colors.grey[400]),
+                  const SizedBox(width: 3),
+                  Text('0',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.grey[400])),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
+  }
+}
+
+/// Markdown 预览区：固定最大高度，超出截断并显示底部渐变遮罩。
+/// 用 OverflowBox 让内部渲染不受高度约束，避免 flutter_markdown Column overflow。
+/// todo 项支持点击切换状态。
+class _PreviewMarkdown extends StatelessWidget {
+  final String content;
+  final String rawContent; // 原始内容，用于计算 todo 行号
+  final MarkdownStyleSheet styleSheet;
+  final Future<void> Function(int lineIndex, bool checked) onToggleTodo;
+
+  const _PreviewMarkdown({
+    required this.content,
+    required this.rawContent,
+    required this.styleSheet,
+    required this.onToggleTodo,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // checkboxBuilder 没有 index 参数，用外部计数器在 build 时追踪
+    var checkboxIdx = 0;
+    final body = MarkdownBody(
+      data: content,
+      styleSheet: styleSheet,
+      checkboxBuilder: (checked) {
+        final idx = checkboxIdx++;
+        return GestureDetector(
+          onTap: () {
+            final lineIndex = _findTodoLineIndex(rawContent, idx);
+            onToggleTodo(lineIndex, !checked);
+          },
+          child: Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Icon(
+              checked ? Icons.check_box : Icons.check_box_outline_blank,
+              size: 16,
+              color: checked ? AppColors.primary : Colors.grey[500],
+            ),
+          ),
+        );
+      },
+    );
+
+    return body;
+  }
+
+  /// 找到原始内容中第 [checkboxIndex] 个 todo 行的行号
+  static int _findTodoLineIndex(String raw, int checkboxIndex) {
+    final lines = raw.split('\n');
+    int count = -1;
+    for (var i = 0; i < lines.length; i++) {
+      final trimmed = lines[i].trimLeft();
+      if (trimmed.startsWith('- [ ]') || trimmed.startsWith('- [x]')) {
+        count++;
+        if (count == checkboxIndex) return i;
+      }
+    }
+    return -1;
   }
 }
 
@@ -432,116 +525,6 @@ class _TagChip extends StatelessWidget {
     );
     if (onTap == null) return chip;
     return GestureDetector(onTap: onTap, child: chip);
-  }
-}
-
-/// 可折叠 Markdown 内容区
-///
-/// 内容超过 [_kCollapsedMaxHeight] 时截断，底部显示渐变遮罩 + "展开"按钮；
-/// 展开后显示"收起"按钮。
-class _CollapsibleMarkdown extends StatefulWidget {
-  final String content;
-  final bool expanded;
-  final VoidCallback onToggle;
-  final MarkdownStyleSheet styleSheet;
-
-  const _CollapsibleMarkdown({
-    required this.content,
-    required this.expanded,
-    required this.onToggle,
-    required this.styleSheet,
-  });
-
-  @override
-  State<_CollapsibleMarkdown> createState() => _CollapsibleMarkdownState();
-}
-
-class _CollapsibleMarkdownState extends State<_CollapsibleMarkdown> {
-  // 是否内容实际超过折叠高度（通过测量确定）
-  bool _overflow = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final body = MarkdownBody(
-      data: widget.content,
-      styleSheet: widget.styleSheet,
-    );
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 内容区：折叠时限高 + 渐变遮罩
-        LayoutBuilder(
-          builder: (context, constraints) {
-            return Stack(
-              children: [
-                // 用 OverflowBox 测量实际高度
-                ConstrainedBox(
-                  constraints: widget.expanded
-                      ? const BoxConstraints()
-                      : const BoxConstraints(maxHeight: _kCollapsedMaxHeight),
-                  child: ClipRect(child: body),
-                ),
-                // 渐变遮罩（仅折叠且有溢出时）
-                if (!widget.expanded && _overflow)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    height: 36,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.white.withValues(alpha: 0),
-                            Colors.white,
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            );
-          },
-        ),
-        // 溢出检测（不可见）
-        Offstage(
-          child: LayoutBuilder(
-            builder: (ctx, _) {
-              // 在下一帧通知溢出状态
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                final ro = ctx.findRenderObject();
-                if (ro is RenderBox && ro.hasSize) {
-                  final overflows = ro.size.height > _kCollapsedMaxHeight;
-                  if (overflows != _overflow) {
-                    setState(() => _overflow = overflows);
-                  }
-                }
-              });
-              return body;
-            },
-          ),
-        ),
-        // 展开 / 收起按钮
-        if (_overflow)
-          GestureDetector(
-            onTap: widget.onToggle,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text(
-                widget.expanded ? '收起' : '展开',
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
   }
 }
 

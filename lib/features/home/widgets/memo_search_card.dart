@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../data/models/memo_entry.dart';
+import '../../../features/memo_detail/memo_detail_page.dart';
+import '../../../features/memo_editor/memo_editor_page.dart';
 import '../../../shared/constants/app_constants.dart';
 
 /// 搜索结果卡片
@@ -34,7 +36,12 @@ class MemoSearchCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return GestureDetector(
+      onTap: () => Navigator.push(context,
+          MaterialPageRoute(builder: (_) => MemoDetailPage(memo: memo))),
+      onDoubleTap: () => Navigator.push(context,
+          MaterialPageRoute(builder: (_) => MemoEditorPage(editingMemo: memo))),
+      child: Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         color: AppColors.surfaceWhite,
@@ -80,6 +87,7 @@ class MemoSearchCard extends StatelessWidget {
             ],
           ],
         ),
+      ),
       ),
     );
   }
