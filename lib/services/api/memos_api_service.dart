@@ -1,5 +1,9 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:mime/mime.dart';
 
 /// Memos API 请求异常
 ///
@@ -106,18 +110,23 @@ class MemosApiService {
   ///
   /// [content]：Markdown 正文
   /// [visibility]：可见性（默认 PRIVATE）
+  /// [attachmentNames]：已上传附件的资源名列表（如 ["attachments/xxx"]）
   ///
   /// 返回服务端创建的 memo 对象（含 name、createTime 等字段）。
   Future<Map<String, dynamic>> createMemo({
     required String content,
     String visibility = 'PRIVATE',
+    List<String> attachmentNames = const [],
   }) async {
-    debugPrint('[API] createMemo contentLen=${content.length}');
+    debugPrint('[API] createMemo contentLen=${content.length} attachments=${attachmentNames.length}');
     try {
-      final res = await _dio.post('/api/v1/memos', data: {
+      final body = <String, dynamic>{
         'content': content,
         'visibility': visibility,
-      });
+        if (attachmentNames.isNotEmpty)
+          'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+      };
+      final res = await _dio.post('/api/v1/memos', data: body);
       final result = Map<String, dynamic>.from(res.data);
       debugPrint('[API] createMemo 成功，name=${result["name"]}');
       return result;
@@ -131,19 +140,26 @@ class MemosApiService {
   /// [name]：资源名，如 `"memos/42"`
   /// [content]：新的 Markdown 正文
   /// [visibility]：新的可见性
+  /// [attachmentNames]：附件资源名列表（如 ["attachments/xxx"]），传空列表则清空附件
   ///
-  /// 通过 `updateMask` 查询参数告知服务端只更新 content 和 visibility。
+  /// 通过 `updateMask` 告知服务端要更新的字段。
   Future<Map<String, dynamic>> updateMemo({
     required String name,
     required String content,
     String visibility = 'PRIVATE',
+    List<String> attachmentNames = const [],
   }) async {
-    debugPrint('[API] updateMemo name=$name, contentLen=${content.length}');
+    debugPrint('[API] updateMemo name=$name, contentLen=${content.length} attachments=${attachmentNames.length}');
     try {
+      final body = <String, dynamic>{
+        'content': content,
+        'visibility': visibility,
+        'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+      };
       final res = await _dio.patch(
         '/api/v1/$name',
-        data: {'content': content, 'visibility': visibility},
-        queryParameters: {'updateMask': 'content,visibility'},
+        data: body,
+        queryParameters: {'updateMask': 'content,visibility,attachments'},
       );
       final result = Map<String, dynamic>.from(res.data);
       debugPrint('[API] updateMemo 成功，name=${result["name"]}');
@@ -161,6 +177,53 @@ class MemosApiService {
     try {
       await _dio.delete('/api/v1/$name');
       debugPrint('[API] deleteMemo 成功，name=$name');
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  // ── Attachment CRUD (v0.25) ───────────────────────────────────
+
+  /// 上传附件（POST /api/v1/attachments）
+  ///
+  /// v0.25 使用 JSON body，`content` 字段为文件内容的 base64 编码。
+  /// 返回服务端附件对象，含 name / filename / type / size / externalLink 字段。
+  ///
+  /// [memoName]：可选，关联的 memo 资源名（如 "memos/abc123"），
+  ///              传入后附件直接关联到对应 memo。
+  Future<Map<String, dynamic>> uploadAttachment({
+    required File file,
+    required String filename,
+    String? memoName,
+  }) async {
+    final mime = lookupMimeType(file.path) ?? 'application/octet-stream';
+    final bytes = await file.readAsBytes();
+    final base64Content = base64Encode(bytes);
+    debugPrint('[API] uploadAttachment filename=$filename mime=$mime size=${bytes.length}B');
+    try {
+      final body = <String, dynamic>{
+        'filename': filename,
+        'content': base64Content,
+        'type': mime,
+        if (memoName != null) 'memo': memoName,
+      };
+      final res = await _dio.post('/api/v1/attachments', data: body);
+      final result = Map<String, dynamic>.from(res.data as Map);
+      debugPrint('[API] uploadAttachment 成功，name=${result["name"]}');
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 删除远端附件
+  ///
+  /// [name]：附件资源名，如 `"attachments/123"`
+  Future<void> deleteAttachment(String name) async {
+    debugPrint('[API] deleteAttachment name=$name');
+    try {
+      await _dio.delete('/api/v1/$name');
+      debugPrint('[API] deleteAttachment 成功');
     } on DioException catch (e) {
       throw _wrap(e);
     }

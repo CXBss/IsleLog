@@ -17,49 +17,54 @@ const MemoEntrySchema = CollectionSchema(
   name: r'MemoEntry',
   id: 3686757227433931716,
   properties: {
-    r'content': PropertySchema(
+    r'attachmentsJson': PropertySchema(
       id: 0,
+      name: r'attachmentsJson',
+      type: IsarType.stringList,
+    ),
+    r'content': PropertySchema(
+      id: 1,
       name: r'content',
       type: IsarType.string,
     ),
     r'createdAt': PropertySchema(
-      id: 1,
+      id: 2,
       name: r'createdAt',
       type: IsarType.dateTime,
     ),
     r'isDeleted': PropertySchema(
-      id: 2,
+      id: 3,
       name: r'isDeleted',
       type: IsarType.bool,
     ),
     r'lastSyncAt': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'lastSyncAt',
       type: IsarType.dateTime,
     ),
     r'location': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'location',
       type: IsarType.string,
     ),
     r'memosName': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'memosName',
       type: IsarType.string,
     ),
     r'syncStatus': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrysyncStatusEnumValueMap,
     ),
     r'tags': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'tags',
       type: IsarType.stringList,
     ),
     r'updatedAt': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'updatedAt',
       type: IsarType.dateTime,
     )
@@ -124,6 +129,13 @@ int _memoEntryEstimateSize(
   Map<Type, List<int>> allOffsets,
 ) {
   var bytesCount = offsets.last;
+  bytesCount += 3 + object.attachmentsJson.length * 3;
+  {
+    for (var i = 0; i < object.attachmentsJson.length; i++) {
+      final value = object.attachmentsJson[i];
+      bytesCount += value.length * 3;
+    }
+  }
   bytesCount += 3 + object.content.length * 3;
   {
     final value = object.location;
@@ -153,15 +165,16 @@ void _memoEntrySerialize(
   List<int> offsets,
   Map<Type, List<int>> allOffsets,
 ) {
-  writer.writeString(offsets[0], object.content);
-  writer.writeDateTime(offsets[1], object.createdAt);
-  writer.writeBool(offsets[2], object.isDeleted);
-  writer.writeDateTime(offsets[3], object.lastSyncAt);
-  writer.writeString(offsets[4], object.location);
-  writer.writeString(offsets[5], object.memosName);
-  writer.writeByte(offsets[6], object.syncStatus.index);
-  writer.writeStringList(offsets[7], object.tags);
-  writer.writeDateTime(offsets[8], object.updatedAt);
+  writer.writeStringList(offsets[0], object.attachmentsJson);
+  writer.writeString(offsets[1], object.content);
+  writer.writeDateTime(offsets[2], object.createdAt);
+  writer.writeBool(offsets[3], object.isDeleted);
+  writer.writeDateTime(offsets[4], object.lastSyncAt);
+  writer.writeString(offsets[5], object.location);
+  writer.writeString(offsets[6], object.memosName);
+  writer.writeByte(offsets[7], object.syncStatus.index);
+  writer.writeStringList(offsets[8], object.tags);
+  writer.writeDateTime(offsets[9], object.updatedAt);
 }
 
 MemoEntry _memoEntryDeserialize(
@@ -171,18 +184,19 @@ MemoEntry _memoEntryDeserialize(
   Map<Type, List<int>> allOffsets,
 ) {
   final object = MemoEntry();
-  object.content = reader.readString(offsets[0]);
-  object.createdAt = reader.readDateTime(offsets[1]);
+  object.attachmentsJson = reader.readStringList(offsets[0]) ?? [];
+  object.content = reader.readString(offsets[1]);
+  object.createdAt = reader.readDateTime(offsets[2]);
   object.id = id;
-  object.isDeleted = reader.readBool(offsets[2]);
-  object.lastSyncAt = reader.readDateTimeOrNull(offsets[3]);
-  object.location = reader.readStringOrNull(offsets[4]);
-  object.memosName = reader.readStringOrNull(offsets[5]);
+  object.isDeleted = reader.readBool(offsets[3]);
+  object.lastSyncAt = reader.readDateTimeOrNull(offsets[4]);
+  object.location = reader.readStringOrNull(offsets[5]);
+  object.memosName = reader.readStringOrNull(offsets[6]);
   object.syncStatus =
-      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[6])] ??
+      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[7])] ??
           SyncStatus.pending;
-  object.tags = reader.readStringList(offsets[7]) ?? [];
-  object.updatedAt = reader.readDateTime(offsets[8]);
+  object.tags = reader.readStringList(offsets[8]) ?? [];
+  object.updatedAt = reader.readDateTime(offsets[9]);
   return object;
 }
 
@@ -194,23 +208,25 @@ P _memoEntryDeserializeProp<P>(
 ) {
   switch (propertyId) {
     case 0:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringList(offset) ?? []) as P;
     case 1:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 2:
-      return (reader.readBool(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 3:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 4:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 5:
       return (reader.readStringOrNull(offset)) as P;
     case 6:
+      return (reader.readStringOrNull(offset)) as P;
+    case 7:
       return (_MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           SyncStatus.pending) as P;
-    case 7:
-      return (reader.readStringList(offset) ?? []) as P;
     case 8:
+      return (reader.readStringList(offset) ?? []) as P;
+    case 9:
       return (reader.readDateTime(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -627,6 +643,233 @@ extension MemoEntryQueryWhere
 
 extension MemoEntryQueryFilter
     on QueryBuilder<MemoEntry, MemoEntry, QFilterCondition> {
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'attachmentsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'attachmentsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'attachmentsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'attachmentsJson',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'attachmentsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'attachmentsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementContains(String value,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'attachmentsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'attachmentsJson',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'attachmentsJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonElementIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'attachmentsJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonLengthEqualTo(int length) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'attachmentsJson',
+        length,
+        true,
+        length,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'attachmentsJson',
+        0,
+        true,
+        0,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'attachmentsJson',
+        0,
+        false,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonLengthLessThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'attachmentsJson',
+        0,
+        true,
+        length,
+        include,
+      );
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonLengthGreaterThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'attachmentsJson',
+        length,
+        include,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      attachmentsJsonLengthBetween(
+    int lower,
+    int upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'attachmentsJson',
+        lower,
+        includeLower,
+        upper,
+        includeUpper,
+      );
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> contentEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -1788,6 +2031,12 @@ extension MemoEntryQuerySortThenBy
 
 extension MemoEntryQueryWhereDistinct
     on QueryBuilder<MemoEntry, MemoEntry, QDistinct> {
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByAttachmentsJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'attachmentsJson');
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByContent(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -1851,6 +2100,13 @@ extension MemoEntryQueryProperty
   QueryBuilder<MemoEntry, int, QQueryOperations> idProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'id');
+    });
+  }
+
+  QueryBuilder<MemoEntry, List<String>, QQueryOperations>
+      attachmentsJsonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'attachmentsJson');
     });
   }
 

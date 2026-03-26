@@ -1,5 +1,7 @@
 import 'package:isar/isar.dart';
 
+import 'attachment_info.dart';
+
 part 'memo_entry.g.dart';
 
 /// 同步状态
@@ -49,4 +51,23 @@ class MemoEntry {
 
   /// 软删除标记（本地删除但尚未同步到远端时为 true）
   bool isDeleted = false;
+
+  /// 附件列表（JSON 字符串数组，每项为一个 [AttachmentInfo] 的 JSON）
+  ///
+  /// 不建索引，通过扩展方法 [MemoEntryAttachmentExt] 读写强类型列表。
+  List<String> attachmentsJson = [];
+}
+
+/// [MemoEntry] 附件读写扩展
+///
+/// Isar codegen 不支持 collection class 内的自定义 getter/setter，
+/// 因此将强类型附件操作单独放在扩展中。
+extension MemoEntryAttachmentExt on MemoEntry {
+  /// 读取附件列表（反序列化）
+  List<AttachmentInfo> get attachments =>
+      attachmentsJson.map(AttachmentInfo.fromJsonString).toList();
+
+  /// 写入附件列表（序列化）
+  set attachments(List<AttachmentInfo> list) =>
+      attachmentsJson = list.map((a) => a.toJsonString()).toList();
 }

@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/database/database_service.dart';
+import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
+import '../../services/attachment/attachment_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
@@ -33,6 +37,15 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 是否正在保存（控制保存按钮 loading 状态）
   bool _saving = false;
 
+  /// 是否正在上传附件
+  bool _uploading = false;
+
+  /// 本次编辑的附件列表（保存时写入 MemoEntry）
+  final List<AttachmentInfo> _pendingAttachments = [];
+
+  /// 编辑模式下被移除的旧附件（仅保存成功后才真正删除远端资源）
+  final List<AttachmentInfo> _removedAttachments = [];
+
   /// 是否为编辑模式（影响标题文字）
   bool get _isEditing => widget.editingMemo != null;
 
@@ -48,6 +61,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     _locationCtrl =
         TextEditingController(text: widget.editingMemo?.location ?? '');
     _contentFocus = FocusNode();
+
+    // 编辑模式：预加载已有附件
+    if (widget.editingMemo != null) {
+      _pendingAttachments.addAll(widget.editingMemo!.attachments);
+    }
 
     // macOS 上需延迟请求焦点，避免页面过渡动画期间首次点击失效；
     // 其他平台直接在下一帧请求，减少响应延迟
@@ -71,6 +89,95 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     _locationCtrl.dispose();
     _contentFocus.dispose();
     super.dispose();
+  }
+
+  // ── 附件选择与上传 ────────────────────────────────────────────
+
+  /// 弹出附件类型选择菜单，然后选择并处理文件
+  Future<void> _pickAttachment() async {
+    final choice = await showModalBottomSheet<_AttachType>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('图片'),
+              onTap: () => Navigator.pop(context, _AttachType.image),
+            ),
+            ListTile(
+              leading: const Icon(Icons.music_note_outlined),
+              title: const Text('音频'),
+              onTap: () => Navigator.pop(context, _AttachType.audio),
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_file),
+              title: const Text('其他文件'),
+              onTap: () => Navigator.pop(context, _AttachType.file),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null) return;
+
+    FileType fileType;
+    List<String>? allowedExtensions;
+    switch (choice) {
+      case _AttachType.image:
+        fileType = FileType.image;
+      case _AttachType.audio:
+        fileType = FileType.audio;
+      case _AttachType.file:
+        fileType = FileType.any;
+    }
+
+    final result = await FilePicker.platform.pickFiles(
+      type: fileType,
+      allowedExtensions: allowedExtensions,
+      withData: false,
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final picked = result.files.first;
+    if (picked.path == null) return;
+
+    await _processFile(File(picked.path!), picked.name);
+  }
+
+  /// 处理选中的文件：在线上传 or 离线存储
+  Future<void> _processFile(File file, String filename) async {
+    setState(() => _uploading = true);
+    try {
+      final configured = await SettingsService.isConfigured;
+      final AttachmentInfo info;
+
+      if (configured) {
+        info = await AttachmentService.uploadToServer(file, filename: filename);
+      } else {
+        info = await AttachmentService.saveLocally(file, filename: filename);
+      }
+
+      // 附件只存入列表，不插入正文（与 Memos 网页端保持一致）
+      setState(() => _pendingAttachments.add(info));
+      debugPrint('[MemoEditor] 附件已处理：${info.filename}');
+    } catch (e) {
+      debugPrint('[MemoEditor] 附件处理失败：$e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('附件处理失败：$e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  /// 移除一个附件（延迟删除：保存成功后才真正删远端，取消编辑则不删）
+  void _removeAttachment(AttachmentInfo att) {
+    setState(() => _pendingAttachments.remove(att));
+    _removedAttachments.add(att);
   }
 
   /// 保存日记
@@ -99,9 +206,18 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       memo.location = _locationCtrl.text.trim().isEmpty
           ? null
           : _locationCtrl.text.trim();
+      memo.attachments = _pendingAttachments;
+      // 编辑模式必须重置为 pending，否则同步引擎查不到该条目
+      memo.syncStatus = SyncStatus.pending;
 
       await DatabaseService.saveMemo(memo);
       debugPrint('[MemoEditor] 本地保存成功，memo.id=${memo.id}');
+
+      // 保存成功后才删除被移除的附件（避免用户取消编辑时误删）
+      for (final att in _removedAttachments) {
+        if (att.remoteResName != null) AttachmentService.deleteRemote(att.remoteResName!);
+        if (att.localPath != null) AttachmentService.deleteLocal(att.localPath!);
+      }
 
       // 后台静默推送到远端（fire-and-forget，不阻塞 UI 返回）
       final configured = await SettingsService.isConfigured;
@@ -197,18 +313,45 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
           const Divider(height: 1),
 
-          // ── 底部工具栏：位置输入 ─────────────────────────────────
-          // SafeArea top:false 只处理底部 inset（系统导航条），
-          // 键盘高度由 Scaffold.resizeToAvoidBottomInset 自动处理
+          // ── 附件预览条（有附件时展示）────────────────────────────
+          if (_pendingAttachments.isNotEmpty)
+            _AttachmentBar(
+              attachments: _pendingAttachments,
+              onRemove: _removeAttachment,
+            ),
+
+          // ── 底部工具栏：附件按钮 + 位置输入 ──────────────────────
           SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: Row(
                 children: [
+                  // 附件按钮
+                  _uploading
+                      ? const SizedBox(
+                          width: 36,
+                          height: 36,
+                          child: Padding(
+                            padding: EdgeInsets.all(8),
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: AppColors.primary),
+                          ),
+                        )
+                      : IconButton(
+                          icon: const Icon(Icons.attach_file),
+                          color: Colors.grey[600],
+                          iconSize: 22,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 36, minHeight: 36),
+                          tooltip: '添加附件',
+                          onPressed: _pickAttachment,
+                        ),
+                  const SizedBox(width: 4),
                   Icon(Icons.location_on_outlined,
-                      size: 20, color: Colors.grey[500]),
-                  const SizedBox(width: 8),
+                      size: 18, color: Colors.grey[500]),
+                  const SizedBox(width: 4),
                   Expanded(
                     child: TextField(
                       controller: _locationCtrl,
@@ -224,6 +367,142 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                   ),
                 ],
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── 附件类型枚举 ───────────────────────────────────────────────────
+
+enum _AttachType { image, audio, file }
+
+// ── 附件预览条 ─────────────────────────────────────────────────────
+
+/// 编辑器中已添加附件的横向预览条
+///
+/// 图片显示缩略图，音频/文件显示图标+文件名，每项右上角有删除按钮。
+class _AttachmentBar extends StatelessWidget {
+  final List<AttachmentInfo> attachments;
+  final ValueChanged<AttachmentInfo> onRemove;
+
+  const _AttachmentBar({
+    required this.attachments,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 80,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        border: Border(top: BorderSide(color: Colors.grey[200]!)),
+      ),
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: attachments.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (ctx, i) =>
+            _AttachThumb(attachment: attachments[i], onRemove: onRemove),
+      ),
+    );
+  }
+}
+
+class _AttachThumb extends StatelessWidget {
+  final AttachmentInfo attachment;
+  final ValueChanged<AttachmentInfo> onRemove;
+
+  const _AttachThumb({required this.attachment, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Container(
+          width: 64,
+          height: 64,
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.grey[300]!),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: _buildThumbContent(),
+          ),
+        ),
+        // 删除按钮
+        Positioned(
+          top: -6,
+          right: -6,
+          child: GestureDetector(
+            onTap: () => onRemove(attachment),
+            child: Container(
+              width: 18,
+              height: 18,
+              decoration: const BoxDecoration(
+                color: Colors.red,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.close, size: 12, color: Colors.white),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildThumbContent() {
+    if (attachment.isImage) {
+      final url = attachment.remoteUrl;
+      final path = attachment.localPath;
+      if (url != null) {
+        return Image.network(url, fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _iconFallback());
+      } else if (path != null) {
+        final file = File(path);
+        if (file.existsSync()) {
+          return Image.file(file, fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => _iconFallback());
+        }
+      }
+      return _iconFallback();
+    }
+
+    return _iconFallback();
+  }
+
+  Widget _iconFallback() {
+    IconData icon;
+    if (attachment.isAudio) {
+      icon = Icons.music_note;
+    } else if (attachment.mimeType == 'application/pdf') {
+      icon = Icons.picture_as_pdf_outlined;
+    } else if (attachment.isImage) {
+      icon = Icons.image_outlined;
+    } else {
+      icon = Icons.insert_drive_file_outlined;
+    }
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 22, color: Colors.grey[500]),
+          const SizedBox(height: 2),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: Text(
+              attachment.filename,
+              style: TextStyle(fontSize: 8, color: Colors.grey[600]),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+              textAlign: TextAlign.center,
             ),
           ),
         ],

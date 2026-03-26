@@ -1,10 +1,18 @@
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../../../data/database/database_service.dart';
+import '../../../data/models/attachment_info.dart';
 import '../../../data/models/memo_entry.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
+import '../../../services/settings/settings_service.dart'; // Bearer Token 用于图片认证
 import '../../../shared/constants/app_constants.dart';
+import 'audio_player_widget.dart';
+import 'file_chip_widget.dart';
 
 /// 时间线中的单条日记卡片
 ///
@@ -148,11 +156,35 @@ const double _kTimeGap = 4;
 const double _kDotOffsetTop = 20;
 
 /// 日记内容卡片
-class _MemoCard extends StatelessWidget {
+class _MemoCard extends StatefulWidget {
   final MemoEntry memo;
   final String displayContent;
 
   const _MemoCard({required this.memo, required this.displayContent});
+
+  @override
+  State<_MemoCard> createState() => _MemoCardState();
+}
+
+class _MemoCardState extends State<_MemoCard> {
+  MemoEntry get memo => widget.memo;
+  String get displayContent => widget.displayContent;
+
+  // ── 附件分类 ──────────────────────────────────────────────────
+
+  List<AttachmentInfo> get _imageAttachments {
+    final list = memo.attachments.where((a) => a.isImage).toList();
+    if (memo.attachmentsJson.isNotEmpty) {
+      debugPrint('[MemoCard] id=${memo.id} attachmentsJson=${memo.attachmentsJson.length}条, images=${list.length}');
+    }
+    return list;
+  }
+
+  List<AttachmentInfo> get _audioAttachments =>
+      memo.attachments.where((a) => a.isAudio).toList();
+
+  List<AttachmentInfo> get _fileAttachments =>
+      memo.attachments.where((a) => !a.isImage && !a.isAudio).toList();
 
   void _showMenu(BuildContext context) {
     debugPrint('[MemoCard] 显示操作菜单，memo.id=${memo.id}');
@@ -268,6 +300,27 @@ class _MemoCard extends StatelessWidget {
                   ),
                 ),
               ),
+
+            // ── 图片附件区 ────────────────────────────────────
+            if (_imageAttachments.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              _ImageGrid(attachments: _imageAttachments),
+            ],
+
+            // ── 音频附件区 ────────────────────────────────────
+            ..._audioAttachments.map((a) =>
+                AudioPlayerWidget(key: ValueKey(a.localId), attachment: a)),
+
+            // ── 其他文件附件区 ────────────────────────────────
+            if (_fileAttachments.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Wrap(
+                children: _fileAttachments
+                    .map((a) => FileChipWidget(attachment: a))
+                    .toList(),
+              ),
+            ],
+
             if (memo.location != null && memo.location!.isNotEmpty) ...[
               const SizedBox(height: 6),
               Row(
@@ -342,4 +395,359 @@ class _TagChip extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 图片附件网格
+///
+/// 1 张：全宽展示；2 张：左右各半；3+ 张：第一张占左侧，右侧上下两张（最多展示 3 张，多余显示数量角标）。
+/// 点击任意图片打开全屏查看器，支持多图左右翻页。
+class _ImageGrid extends StatelessWidget {
+  final List<AttachmentInfo> attachments;
+
+  const _ImageGrid({required this.attachments});
+
+  void _openViewer(BuildContext context, int index) {
+    Navigator.push(
+      context,
+      PageRouteBuilder(
+        opaque: false,
+        barrierColor: Colors.black87,
+        pageBuilder: (_, __, ___) =>
+            _ImageViewer(attachments: attachments, initialIndex: index),
+        transitionsBuilder: (_, anim, __, child) =>
+            FadeTransition(opacity: anim, child: child),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final count = attachments.length;
+    const radius = BorderRadius.all(Radius.circular(8));
+    const height = 200.0;
+
+    if (count == 1) {
+      return GestureDetector(
+        onTap: () => _openViewer(context, 0),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 300),
+            child: _NetImg(attachment: attachments[0], fit: BoxFit.contain,
+                width: double.infinity),
+          ),
+        ),
+      );
+    }
+
+    if (count == 2) {
+      return SizedBox(
+        height: height,
+        child: Row(
+          children: [
+            Expanded(child: GestureDetector(
+              onTap: () => _openViewer(context, 0),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(8), bottomLeft: Radius.circular(8)),
+                child: _NetImg(attachment: attachments[0],
+                    fit: BoxFit.cover, height: height),
+              ),
+            )),
+            const SizedBox(width: 2),
+            Expanded(child: GestureDetector(
+              onTap: () => _openViewer(context, 1),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.only(
+                    topRight: Radius.circular(8), bottomRight: Radius.circular(8)),
+                child: _NetImg(attachment: attachments[1],
+                    fit: BoxFit.cover, height: height),
+              ),
+            )),
+          ],
+        ),
+      );
+    }
+
+    // 3 张及以上：左大右小布局，最多渲染 3 张
+    final extra = count - 3;
+    return SizedBox(
+      height: height,
+      child: Row(
+        children: [
+          Expanded(
+            flex: 2,
+            child: GestureDetector(
+              onTap: () => _openViewer(context, 0),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(8), bottomLeft: Radius.circular(8)),
+                child: _NetImg(attachment: attachments[0],
+                    fit: BoxFit.cover, height: height),
+              ),
+            ),
+          ),
+          const SizedBox(width: 2),
+          Expanded(
+            flex: 1,
+            child: Column(
+              children: [
+                Expanded(child: GestureDetector(
+                  onTap: () => _openViewer(context, 1),
+                  child: ClipRRect(
+                    borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(8)),
+                    child: _NetImg(attachment: attachments[1],
+                        fit: BoxFit.cover, width: double.infinity),
+                  ),
+                )),
+                const SizedBox(height: 2),
+                Expanded(child: GestureDetector(
+                  onTap: () => _openViewer(context, 2),
+                  child: ClipRRect(
+                    borderRadius: const BorderRadius.only(
+                        bottomRight: Radius.circular(8)),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        _NetImg(attachment: attachments[2],
+                            fit: BoxFit.cover, width: double.infinity),
+                        if (extra > 0)
+                          Container(
+                            color: Colors.black54,
+                            alignment: Alignment.center,
+                            child: Text('+$extra',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                      ],
+                    ),
+                  ),
+                )),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 全屏图片查看器，支持多图左右翻页，点击背景关闭
+class _ImageViewer extends StatefulWidget {
+  final List<AttachmentInfo> attachments;
+  final int initialIndex;
+
+  const _ImageViewer({required this.attachments, required this.initialIndex});
+
+  @override
+  State<_ImageViewer> createState() => _ImageViewerState();
+}
+
+class _ImageViewerState extends State<_ImageViewer> {
+  late final PageController _pageCtrl;
+  late int _current;
+
+  @override
+  void initState() {
+    super.initState();
+    _current = widget.initialIndex;
+    _pageCtrl = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = widget.attachments.length;
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: GestureDetector(
+        onTap: () => Navigator.pop(context),
+        child: Stack(
+          children: [
+            // 背景
+            Container(color: Colors.black87),
+
+            // 图片翻页
+            PageView.builder(
+              controller: _pageCtrl,
+              itemCount: total,
+              onPageChanged: (i) => setState(() => _current = i),
+              itemBuilder: (_, i) => GestureDetector(
+                // 点击图片本身不关闭
+                onTap: () {},
+                child: Center(
+                  child: _NetImg(
+                    attachment: widget.attachments[i],
+                    fit: BoxFit.contain,
+                    width: MediaQuery.sizeOf(context).width,
+                  ),
+                ),
+              ),
+            ),
+
+            // 页码指示（多图时显示）
+            if (total > 1)
+              Positioned(
+                top: MediaQuery.paddingOf(context).top + 12,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${_current + 1} / $total',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                ),
+              ),
+
+            // 关闭按钮
+            Positioned(
+              top: MediaQuery.paddingOf(context).top + 8,
+              right: 12,
+              child: GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: const BoxDecoration(
+                    color: Colors.black54,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close, color: Colors.white, size: 20),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 单张图片（支持本地路径和需认证的远端 URL）
+///
+/// 远端图片用 Dio 携带 Bearer Token 下载字节后用 [Image.memory] 渲染，
+/// 避免 [Image.network] 不支持自定义请求头的问题。
+class _NetImg extends StatefulWidget {
+  final AttachmentInfo attachment;
+  final BoxFit fit;
+  final double? width;
+  final double? height;
+
+  const _NetImg({
+    required this.attachment,
+    required this.fit,
+    this.width,
+    this.height,
+  });
+
+  @override
+  State<_NetImg> createState() => _NetImgState();
+}
+
+class _NetImgState extends State<_NetImg> {
+  Uint8List? _bytes;
+  bool _loading = true;
+  bool _error = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_NetImg old) {
+    super.didUpdateWidget(old);
+    if (old.attachment.remoteUrl != widget.attachment.remoteUrl ||
+        old.attachment.localPath != widget.attachment.localPath) {
+      setState(() { _bytes = null; _loading = true; _error = false; });
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    final url = widget.attachment.remoteUrl;
+    final localPath = widget.attachment.localPath;
+
+    if (localPath != null) {
+      // 本地文件直接读字节
+      final file = File(localPath);
+      if (file.existsSync()) {
+        final bytes = await file.readAsBytes();
+        if (mounted) setState(() { _bytes = bytes; _loading = false; });
+      } else {
+        if (mounted) setState(() { _loading = false; _error = true; });
+      }
+      return;
+    }
+
+    if (url == null || url.isEmpty) {
+      if (mounted) setState(() { _loading = false; _error = true; });
+      return;
+    }
+
+    try {
+      final token = await SettingsService.accessToken;
+      final encodedUrl = Uri.encodeFull(url);
+      final dio = Dio();
+      final resp = await dio.get<List<int>>(
+        encodedUrl,
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: token != null ? {'Authorization': 'Bearer $token'} : null,
+        ),
+      );
+      if (mounted) {
+        setState(() {
+          _bytes = Uint8List.fromList(resp.data!);
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('[NetImg] 加载失败 url=$url err=$e');
+      if (mounted) setState(() { _loading = false; _error = true; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget img;
+    if (_loading) {
+      img = _placeholder();
+    } else if (_error || _bytes == null) {
+      img = _errorWidget();
+    } else {
+      img = Image.memory(_bytes!, fit: widget.fit,
+          width: widget.width, height: widget.height,
+          errorBuilder: (_, __, ___) => _errorWidget());
+    }
+    if (widget.width != null || widget.height != null) {
+      return SizedBox(width: widget.width, height: widget.height, child: img);
+    }
+    return img;
+  }
+
+  Widget _placeholder() => Container(
+      color: Colors.grey[100],
+      child: const Center(
+          child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)));
+
+  Widget _errorWidget() => Container(
+      color: Colors.grey[100],
+      child: Center(child: Icon(Icons.broken_image_outlined,
+          size: 24, color: Colors.grey[400])));
 }

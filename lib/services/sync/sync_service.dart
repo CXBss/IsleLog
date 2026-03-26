@@ -1,9 +1,11 @@
 import 'package:flutter/foundation.dart';
 
 import '../../data/database/database_service.dart';
+import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
 import '../../shared/constants/app_constants.dart';
 import '../api/memos_api_service.dart';
+import '../attachment/attachment_service.dart';
 import '../settings/settings_service.dart';
 
 /// 同步操作结果
@@ -69,8 +71,8 @@ class SyncService {
 
     final api = MemosApiService(baseUrl: url, token: token);
     try {
-      final pushed = await _pushPending(api);
-      final pulled = await _pullUpdates(api);
+      final pushed = await _pushPending(api, url, token);
+      final pulled = await _pullUpdates(api, url);
       await SettingsService.setLastSyncTime(DateTime.now());
       final result = SyncResult(pushed: pushed, pulled: pulled);
       debugPrint('[Sync] syncAll 完成：$result');
@@ -99,7 +101,7 @@ class SyncService {
 
     final api = MemosApiService(baseUrl: url, token: token);
     try {
-      final count = await _pushPending(api);
+      final count = await _pushPending(api, url, token);
       debugPrint('[Sync] pushPendingBackground 完成，推送 $count 条');
     } catch (e) {
       // 静默失败，保持 pending 状态，等待下次手动同步
@@ -113,7 +115,8 @@ class SyncService {
   ///
   /// 单条失败不中断循环，该条保持 pending，等待下次重试。
   /// 返回成功推送的条目数。
-  static Future<int> _pushPending(MemosApiService api) async {
+  static Future<int> _pushPending(
+      MemosApiService api, String url, String token) async {
     final pendingList = await DatabaseService.getPendingSyncMemos();
     debugPrint('[Sync] _pushPending: 待推送 ${pendingList.length} 条');
     int count = 0;
@@ -128,25 +131,43 @@ class SyncService {
           }
           await DatabaseService.hardDelete(memo.id);
           debugPrint('[Sync] 本地物理删除完成 id=${memo.id}');
-        } else if (memo.memosName == null) {
-          // ── 处理新建：推送到远端，将返回的资源名写回本地 ──
-          debugPrint('[Sync] 新建远端 memo id=${memo.id}');
-          final remoteData = await api.createMemo(content: memo.content);
-          memo
-            ..memosName = remoteData['name'] as String?
-            ..syncStatus = SyncStatus.synced
-            ..lastSyncAt = DateTime.now();
-          await DatabaseService.saveMemo(memo, skipTimestamp: true);
-          debugPrint('[Sync] 新建成功，memosName=${memo.memosName}');
         } else {
-          // ── 处理更新：用本地内容覆盖远端 ──
-          debugPrint('[Sync] 更新远端 memo: ${memo.memosName}');
-          await api.updateMemo(name: memo.memosName!, content: memo.content);
-          memo
-            ..syncStatus = SyncStatus.synced
-            ..lastSyncAt = DateTime.now();
-          await DatabaseService.saveMemo(memo, skipTimestamp: true);
-          debugPrint('[Sync] 更新成功，memosName=${memo.memosName}');
+          // ── 补传离线附件（content 推送前先把 localPath 换成 remoteUrl）──
+          await _uploadPendingAttachments(api, memo, url, token);
+
+          // 收集已上传的附件资源名
+          final attachmentNames = memo.attachments
+              .where((a) => a.remoteResName != null)
+              .map((a) => a.remoteResName!)
+              .toList();
+
+          if (memo.memosName == null) {
+            // ── 处理新建：推送到远端，将返回的资源名写回本地 ──
+            debugPrint('[Sync] 新建远端 memo id=${memo.id}，附件 ${attachmentNames.length} 个');
+            final remoteData = await api.createMemo(
+              content: memo.content,
+              attachmentNames: attachmentNames,
+            );
+            memo
+              ..memosName = remoteData['name'] as String?
+              ..syncStatus = SyncStatus.synced
+              ..lastSyncAt = DateTime.now();
+            await DatabaseService.saveMemo(memo, skipTimestamp: true);
+            debugPrint('[Sync] 新建成功，memosName=${memo.memosName}');
+          } else {
+            // ── 处理更新：用本地内容覆盖远端 ──
+            debugPrint('[Sync] 更新远端 memo: ${memo.memosName}，附件 ${attachmentNames.length} 个');
+            await api.updateMemo(
+              name: memo.memosName!,
+              content: memo.content,
+              attachmentNames: attachmentNames,
+            );
+            memo
+              ..syncStatus = SyncStatus.synced
+              ..lastSyncAt = DateTime.now();
+            await DatabaseService.saveMemo(memo, skipTimestamp: true);
+            debugPrint('[Sync] 更新成功，memosName=${memo.memosName}');
+          }
         }
         count++;
       } catch (e) {
@@ -166,7 +187,7 @@ class SyncService {
   /// 优先使用增量同步（基于 lastSyncTime 过滤），
   /// 若服务端不支持 filter 则静默降级为全量拉取。
   /// 返回合并到本地的新/更新条目数。
-  static Future<int> _pullUpdates(MemosApiService api) async {
+  static Future<int> _pullUpdates(MemosApiService api, String baseUrl) async {
     // 尝试增量同步：只拉取自上次同步后有变动的 memo
     final lastSync = await SettingsService.lastSyncTime;
     String? filter;
@@ -208,13 +229,13 @@ class SyncService {
       if (localMemo == null) {
         // 远端有、本地无 → 新增到本地
         debugPrint('[Sync] 新增本地 memo from remote: $remoteName');
-        final newMemo = _buildFromRemote(data);
+        final newMemo = _buildFromRemote(data, baseUrl);
         await DatabaseService.saveMemo(newMemo, skipTimestamp: true);
         count++;
       } else if (localMemo.syncStatus == SyncStatus.synced) {
         // 本地 synced（未修改） → 直接覆盖为远端最新
         debugPrint('[Sync] 更新本地 memo from remote: $remoteName');
-        _applyRemoteData(localMemo, data);
+        _applyRemoteData(localMemo, data, baseUrl);
         await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
         count++;
       } else if (localMemo.syncStatus == SyncStatus.pending) {
@@ -230,12 +251,55 @@ class SyncService {
     return count;
   }
 
+  // ── 离线附件补传 ──────────────────────────────────────────────
+
+  /// 将 memo 中尚未上传的附件批量上传，并替换 content 中的本地路径为远端 URL
+  ///
+  /// 失败的附件标记 uploadFailed=true，不中断整体同步流程。
+  static Future<void> _uploadPendingAttachments(
+    MemosApiService api,
+    MemoEntry memo,
+    String baseUrl,
+    String token,
+  ) async {
+    final attachments = memo.attachments;
+    if (attachments.isEmpty) return;
+
+    bool changed = false;
+    final updated = <AttachmentInfo>[];
+
+    for (final att in attachments) {
+      if (att.remoteUrl != null || att.localPath == null) {
+        // 已上传或无本地文件，无需处理
+        updated.add(att);
+        continue;
+      }
+      debugPrint('[Sync] 补传离线附件 ${att.filename}');
+      final newAtt = await AttachmentService.uploadPendingAttachment(
+          att, baseUrl, token);
+      updated.add(newAtt);
+
+      // 上传成功：将 content 中的 file://本地路径 替换为 remoteUrl
+      if (newAtt.remoteUrl != null && att.localPath != null) {
+        final localUri = 'file://${att.localPath}';
+        memo.content = memo.content.replaceAll(localUri, newAtt.remoteUrl!);
+        changed = true;
+        debugPrint('[Sync] content 中路径已替换：$localUri → ${newAtt.remoteUrl}');
+      }
+    }
+
+    if (changed || updated.any((a) => a != attachments[updated.indexOf(a)])) {
+      memo.attachments = updated;
+      await DatabaseService.saveMemo(memo, skipTimestamp: true);
+    }
+  }
+
   // ── 数据转换 ─────────────────────────────────────────────────
 
   /// 根据远端数据构建一个新的本地 [MemoEntry]
   ///
   /// 解析 createTime / updateTime 字段（UTC → 本地时区）。
-  static MemoEntry _buildFromRemote(Map<String, dynamic> data) {
+  static MemoEntry _buildFromRemote(Map<String, dynamic> data, String baseUrl) {
     final memo = MemoEntry()
       ..memosName = data['name'] as String?
       ..content = data['content'] as String? ?? ''
@@ -250,12 +314,14 @@ class SyncService {
     final ut = data['updateTime'] as String?;
     if (ut != null) memo.updatedAt = DateTime.parse(ut).toLocal();
 
+    memo.attachments = _parseAttachments(data, baseUrl);
+
     return memo;
   }
 
   /// 将远端数据应用到已有本地 [MemoEntry]（覆盖内容和时间戳）
   static void _applyRemoteData(
-      MemoEntry memo, Map<String, dynamic> data) {
+      MemoEntry memo, Map<String, dynamic> data, String baseUrl) {
     memo.content = data['content'] as String? ?? '';
 
     // 只更新 updateTime，createTime 保持本地原始值
@@ -264,6 +330,44 @@ class SyncService {
 
     memo
       ..syncStatus = SyncStatus.synced
-      ..lastSyncAt = DateTime.now();
+      ..lastSyncAt = DateTime.now()
+      ..attachments = _parseAttachments(data, baseUrl);
+  }
+
+  /// 从远端 memo 数据中解析 attachments 列表
+  ///
+  /// [baseUrl]：服务器地址，用于拼接 /file/{resName}/{filename} 访问 URL
+  static List<AttachmentInfo> _parseAttachments(
+      Map<String, dynamic> data, String baseUrl) {
+    final raw = data['attachments'];
+    if (raw == null || raw is! List || raw.isEmpty) return [];
+
+    final result = <AttachmentInfo>[];
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final a = Map<String, dynamic>.from(item);
+      final resName = a['name'] as String? ?? '';
+      final filename = a['filename'] as String? ?? '';
+      final mime = a['type'] as String? ?? 'application/octet-stream';
+      final size = int.tryParse(a['size']?.toString() ?? '0') ?? 0;
+      final externalLink = a['externalLink'] as String? ?? '';
+
+      if (resName.isEmpty) continue;
+
+      final remoteUrl = externalLink.isNotEmpty
+          ? externalLink
+          : '$baseUrl/file/$resName/${Uri.encodeComponent(filename)}';
+
+      result.add(AttachmentInfo(
+        localId: resName, // 用 resName 作为稳定 localId
+        remoteResName: resName,
+        remoteUrl: remoteUrl,
+        filename: filename,
+        mimeType: mime,
+        sizeBytes: size,
+      ));
+    }
+    debugPrint('[Sync] 解析附件 ${result.length} 个');
+    return result;
   }
 }
