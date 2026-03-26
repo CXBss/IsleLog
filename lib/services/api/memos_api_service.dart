@@ -261,6 +261,24 @@ class MemosApiService {
     }
   }
 
+  // ── User Stats ────────────────────────────────────────────────
+
+  /// 获取指定用户的统计信息（标签计数等）
+  ///
+  /// [userName]：用户资源名，如 `"users/1"`（来自 auth/me 的 name 字段）。
+  /// 返回原始响应 Map，含 `tagCount: { "标签名": 条数 }` 字段。
+  Future<Map<String, dynamic>> getUserStats(String userName) async {
+    debugPrint('[API] getUserStats user=$userName');
+    try {
+      final res = await _dio.get('/api/v1/$userName:getStats');
+      final result = Map<String, dynamic>.from(res.data as Map);
+      debugPrint('[API] getUserStats 成功，tagCount keys=${((result["tagCount"] as Map?)?.length ?? 0)}');
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   // ── Connection Test ───────────────────────────────────────────
 
   /// 测试连接：获取当前用户信息

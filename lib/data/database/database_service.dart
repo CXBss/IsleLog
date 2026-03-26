@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:rxdart/rxdart.dart';
 
 import '../models/memo_entry.dart';
+import '../models/tag_stat.dart';
 
 /// 本地数据库服务（单例）
 ///
@@ -25,7 +26,7 @@ class DatabaseService {
     final dir = await getApplicationDocumentsDirectory();
     debugPrint('[DB] 打开数据库，路径：${dir.path}');
     final isar = await Isar.open(
-      [MemoEntrySchema],
+      [MemoEntrySchema, TagStatSchema],
       directory: dir.path,
     );
     debugPrint('[DB] 数据库已就绪');
@@ -320,7 +321,9 @@ class DatabaseService {
     return result;
   }
 
-  /// 统计所有标签的出现次数，返回 {tagName: count} 映射。
+  /// 从本地 Isar 统计所有标签出现次数，返回 {tagName: count} 映射。
+  ///
+  /// 仅作离线降级使用，优先调用 [getCachedTagStats]。
   static Future<Map<String, int>> getAllTagCounts() async {
     final memos = await getAllMemos();
     final counts = <String, int>{};
@@ -329,8 +332,78 @@ class DatabaseService {
         counts[tag] = (counts[tag] ?? 0) + 1;
       }
     }
-    debugPrint('[DB] getAllTagCounts → ${counts.length} 个标签');
+    debugPrint('[DB] getAllTagCounts（本地统计）→ ${counts.length} 个标签');
     return counts;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 标签缓存（TagStat collection）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 读取本地缓存的标签统计，按 count 倒序。
+  ///
+  /// 若缓存为空（首次启动/从未联网），返回空列表；
+  /// 调用方应降级到 [getAllTagCounts]。
+  static Future<List<TagStat>> getCachedTagStats() async {
+    final isar = await db;
+    final result = await isar.tagStats.where().findAll();
+    result.sort((a, b) => b.count.compareTo(a.count));
+    debugPrint('[DB] getCachedTagStats → ${result.length} 个标签');
+    return result;
+  }
+
+  /// 将远端返回的 {tagName: count} 映射写入本地缓存（全量替换）。
+  static Future<void> saveTagStats(Map<String, int> tagCounts) async {
+    final isar = await db;
+    final stats = tagCounts.entries
+        .map((e) => TagStat.of(e.key, e.value))
+        .toList();
+    await isar.writeTxn(() async {
+      await isar.tagStats.clear();
+      await isar.tagStats.putAll(stats);
+    });
+    debugPrint('[DB] saveTagStats → 写入 ${stats.length} 个标签');
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 多标签筛选（支持分页）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 按多个标签联合筛选（AND 语义），分页返回。
+  ///
+  /// [tags]：标签名列表（不含 '#'），所有标签都必须出现在日记中。
+  /// [offset] / [limit]：分页参数。
+  /// 返回条数小于 [limit] 表示已到最后一页。
+  static Future<List<MemoEntry>> getMemosByTags({
+    required List<String> tags,
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    assert(tags.isNotEmpty);
+    final isar = await db;
+
+    // Isar 不支持多值索引的 AND 组合查询，先用第一个标签走索引缩小范围，
+    // 再在 Dart 侧过滤其余标签，最后手动分页。
+    final firstTag = tags.first;
+    final candidates = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .tagsElementEqualTo(firstTag)
+        .sortByCreatedAtDesc()
+        .findAll();
+
+    final remaining = tags.skip(1).toList();
+    final filtered = remaining.isEmpty
+        ? candidates
+        : candidates
+            .where((m) => remaining.every((t) => m.tags.contains(t)))
+            .toList();
+
+    final end = (offset + limit).clamp(0, filtered.length);
+    final page = offset >= filtered.length ? <MemoEntry>[] : filtered.sublist(offset, end);
+    debugPrint('[DB] getMemosByTags tags=$tags offset=$offset limit=$limit → ${page.length}/${filtered.length} 条');
+    return page;
   }
 
   /// 获取有日记的日期集合（全量，供同步完成后刷新日历整体用）。
