@@ -91,7 +91,8 @@ class _MainScaffoldState extends State<MainScaffold> {
         shape: const CircularNotchedRectangle(),
         notchMargin: 8,
         elevation: 8,
-        padding: _isMobile ? EdgeInsets.zero : null,
+        height: 48,
+        padding: EdgeInsets.zero,
         child: _isMobile
             ? SafeArea(
                 top: false,

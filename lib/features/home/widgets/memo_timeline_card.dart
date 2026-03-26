@@ -77,7 +77,7 @@ class MemoTimelineCard extends StatelessWidget {
   }
 
   // 轴线列的固定宽度
-  static const double _axisWidth = 20;
+  static const double _axisWidth = 14;
 
   String get _dateTimeLabel {
     final d = memo.createdAt;
@@ -162,7 +162,7 @@ class MemoTimelineCard extends StatelessWidget {
             // 轴线占位（透明，宽度与背景层对齐）
             const SizedBox(width: _axisWidth),
 
-            const SizedBox(width: 6),
+            const SizedBox(width: 3),
 
             // 内容卡片
             Expanded(

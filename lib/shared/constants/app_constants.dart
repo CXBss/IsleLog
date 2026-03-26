@@ -135,7 +135,7 @@ abstract final class AppDimens {
   static const double fabPlaceholder = 64;
 
   /// 底部导航栏高度
-  static const double bottomBarHeight = 56;
+  static const double bottomBarHeight = 44;
 
   /// 卡片圆角
   static const double cardRadius = 10;
