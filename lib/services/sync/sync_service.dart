@@ -187,6 +187,10 @@ class SyncService {
               ..syncStatus = SyncStatus.synced
               ..lastSyncAt = DateTime.now();
             await DatabaseService.saveMemo(memo, skipTimestamp: true);
+            // 同步置顶状态
+            if (memo.isPinned && memo.memosName != null) {
+              await api.pinMemo(memo.memosName!);
+            }
             debugPrint('[Sync] 新建成功，memosName=${memo.memosName}');
           } else {
             // ── 处理更新 ──
@@ -196,6 +200,12 @@ class SyncService {
               content: memo.content,
               attachmentNames: attachmentNames,
             );
+            // 同步置顶状态
+            if (memo.isPinned) {
+              await api.pinMemo(memo.memosName!);
+            } else {
+              await api.unpinMemo(memo.memosName!);
+            }
             memo
               ..syncStatus = SyncStatus.synced
               ..lastSyncAt = DateTime.now();
@@ -373,6 +383,7 @@ class SyncService {
     final memo = MemoEntry()
       ..memosName = data['name'] as String?
       ..content = data['content'] as String? ?? ''
+      ..isPinned = data['pinned'] as bool? ?? false
       ..syncStatus = SyncStatus.synced
       ..lastSyncAt = DateTime.now();
 
@@ -393,6 +404,7 @@ class SyncService {
   static void _applyRemoteData(
       MemoEntry memo, Map<String, dynamic> data, String baseUrl) {
     memo.content = data['content'] as String? ?? '';
+    memo.isPinned = data['pinned'] as bool? ?? false;
 
     // 只更新 updateTime，createTime 保持本地原始值
     final ut = data['updateTime'] as String?;

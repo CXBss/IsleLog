@@ -50,11 +50,15 @@ class MemoTimelineCard extends StatelessWidget {
   /// 点击标签时的回调（为 null 时标签不可点击）
   final void Function(String tag)? onTagTap;
 
+  /// 是否显示左侧时间轴（竖线 + 圆点）。置顶区块中设为 false。
+  final bool showTimeline;
+
   const MemoTimelineCard({
     super.key,
     required this.memo,
     this.isLast = false,
     this.showTime = false,
+    this.showTimeline = true,
     this.onTagTap,
   });
 
@@ -75,8 +79,28 @@ class MemoTimelineCard extends StatelessWidget {
   // 轴线列的固定宽度
   static const double _axisWidth = 20;
 
+  String get _dateTimeLabel {
+    final d = memo.createdAt;
+    final date =
+        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    return '$date $_timeLabel';
+  }
+
   @override
   Widget build(BuildContext context) {
+    // 无时间轴模式（置顶区块）：直接返回卡片，无 Stack/竖线/圆点
+    if (!showTimeline) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: _MemoCard(
+          memo: memo,
+          displayContent: _displayContent,
+          onTagTap: onTagTap,
+          headerLabel: _dateTimeLabel,
+        ),
+      );
+    }
+
     // Stack 高度 = 唯一非 Positioned 子项（内容 Row）的高度。
     // Positioned 的 top/bottom 可以相对 Stack 填满，Clip.none 让竖线向下
     // 溢出 12px（bottom padding），与下一条卡片竖线顶端平滑连接。
@@ -84,7 +108,6 @@ class MemoTimelineCard extends StatelessWidget {
       clipBehavior: Clip.none,
       children: [
         // ── 背景层：竖线 ─────────────────────────────────────────
-        // left 定位到轴线列中心，top/bottom 填满 Stack 高度并向下溢出
         Positioned(
           left: (showTime ? _kTimeColumnWidth + _kTimeGap : 0) +
               (_axisWidth - AppDimens.timelineBarWidth) / 2,
@@ -167,8 +190,10 @@ class _MemoCard extends StatefulWidget {
   final MemoEntry memo;
   final String displayContent;
   final void Function(String tag)? onTagTap;
+  /// 卡片顶部的日期时间标签（置顶模式使用）
+  final String? headerLabel;
 
-  const _MemoCard({required this.memo, required this.displayContent, this.onTagTap});
+  const _MemoCard({required this.memo, required this.displayContent, this.onTagTap, this.headerLabel});
 
   @override
   State<_MemoCard> createState() => _MemoCardState();
@@ -243,6 +268,22 @@ class _MemoCardState extends State<_MemoCard> {
               onTap: () {
                 Navigator.pop(context);
                 _openEdit(context);
+              },
+            ),
+            ListTile(
+              leading: Icon(memo.isPinned
+                  ? Icons.push_pin_outlined
+                  : Icons.push_pin),
+              title: Text(memo.isPinned ? '取消置顶' : '置顶'),
+              onTap: () async {
+                Navigator.pop(context);
+                if (memo.isPinned) {
+                  await DatabaseService.unpinMemo(memo.id);
+                  messenger.showSnackBar(const SnackBar(content: Text('已取消置顶')));
+                } else {
+                  await DatabaseService.pinMemo(memo.id);
+                  messenger.showSnackBar(const SnackBar(content: Text('已置顶')));
+                }
               },
             ),
             ListTile(
@@ -337,6 +378,18 @@ class _MemoCardState extends State<_MemoCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ── 日期时间头（置顶模式）────────────────────────────
+              if (widget.headerLabel != null) ...[
+                Text(
+                  widget.headerLabel!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[500],
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 6),
+              ],
               // ── 正文预览（Markdown 渲染，超行截断）─────────────
               if (displayContent.isNotEmpty) ...[
                 _PreviewMarkdown(
@@ -419,6 +472,10 @@ class _MemoCardState extends State<_MemoCard> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  if (memo.isPinned) ...[
+                    Icon(Icons.push_pin, size: 13, color: AppColors.primary),
+                    const SizedBox(width: 6),
+                  ],
                   GestureDetector(
                     onTap: () => _showMenu(context),
                     child: Icon(Icons.more_horiz,

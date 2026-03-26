@@ -25,6 +25,10 @@ class _HomeViewState extends State<HomeView> {
   static const _weekdays = ['一', '二', '三', '四', '五', '六', '日'];
   static const _pageSize = 50;
 
+  // ── 置顶条目 ───────────────────────────────────────────────────
+  List<MemoEntry> _pinnedMemos = [];
+  bool _pinnedExpanded = true;
+
   // ── 普通分页模式 ───────────────────────────────────────────────
   final List<MemoEntry> _memos = [];
   int _offset = 0;
@@ -54,6 +58,7 @@ class _HomeViewState extends State<HomeView> {
   void initState() {
     super.initState();
     _scrollCtrl.addListener(_onScroll);
+    _loadPinned();
     _loadNextPage();
     _loadTagStats();
     _initDbWatch();
@@ -70,9 +75,15 @@ class _HomeViewState extends State<HomeView> {
   Future<void> _initDbWatch() async {
     final stream = await DatabaseService.watchDbChanges();
     _dbSub = stream.listen((_) {
+      _loadPinned();
       _resetAndReload();
       _loadTagStats();
     });
+  }
+
+  Future<void> _loadPinned() async {
+    final pinned = await DatabaseService.getPinnedMemos();
+    if (mounted) setState(() => _pinnedMemos = pinned);
   }
 
   // ── 标签统计 ──────────────────────────────────────────────────
@@ -565,6 +576,8 @@ class _HomeViewState extends State<HomeView> {
     }
 
     final groups = _groupByDay(memos);
+    final hasPinned = _pinnedMemos.isNotEmpty;
+    final pinnedOffset = hasPinned ? 1 : 0;
 
     return LayoutBuilder(
       builder: (ctx, constraints) {
@@ -580,9 +593,21 @@ class _HomeViewState extends State<HomeView> {
             child: ListView.builder(
               controller: _scrollCtrl,
               padding: EdgeInsets.fromLTRB(hPad, 12, hPad, bottomPad),
-              itemCount: groups.length + (hasMore ? 1 : 0),
+              itemCount: groups.length + pinnedOffset + (hasMore ? 1 : 0),
               itemBuilder: (ctx, i) {
-                if (i == groups.length) {
+                // 置顶层（第 0 项）
+                if (hasPinned && i == 0) {
+                  return _PinnedSection(
+                    memos: _pinnedMemos,
+                    expanded: _pinnedExpanded,
+                    onToggle: () =>
+                        setState(() => _pinnedExpanded = !_pinnedExpanded),
+                    onTagTap: _toggleTag,
+                  );
+                }
+                final gi = i - pinnedOffset;
+                // 加载更多指示
+                if (gi == groups.length) {
                   return const Padding(
                     padding: EdgeInsets.symmetric(vertical: 16),
                     child: Center(
@@ -591,7 +616,7 @@ class _HomeViewState extends State<HomeView> {
                     ),
                   );
                 }
-                final (key, dayMemos) = groups[i];
+                final (key, dayMemos) = groups[gi];
                 return _DaySection(
                   dateKey: key,
                   memos: dayMemos,
@@ -639,6 +664,109 @@ class _SelectedTagChip extends StatelessWidget {
             onTap: onRemove,
             child: const Icon(Icons.close, size: 14, color: AppColors.primaryDark),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 置顶日记区块（可收起）
+class _PinnedSection extends StatelessWidget {
+  final List<MemoEntry> memos;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final void Function(String tag) onTagTap;
+
+  const _PinnedSection({
+    required this.memos,
+    required this.expanded,
+    required this.onToggle,
+    required this.onTagTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(AppDimens.cardRadius),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── 标题行（点击收起/展开）──────────────────────────
+          InkWell(
+            onTap: onToggle,
+            borderRadius: BorderRadius.vertical(
+              top: const Radius.circular(AppDimens.cardRadius),
+              bottom: expanded
+                  ? Radius.zero
+                  : const Radius.circular(AppDimens.cardRadius),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.push_pin, size: 15, color: AppColors.primary),
+                  const SizedBox(width: 6),
+                  const Text(
+                    '置顶',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primaryDark,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '${memos.length}',
+                      style: const TextStyle(
+                          fontSize: 11, color: AppColors.primaryDark),
+                    ),
+                  ),
+                  const Spacer(),
+                  Icon(
+                    expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: Colors.grey[400],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // ── 日记列表 ─────────────────────────────────────────
+          if (expanded) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: Column(
+                children: memos
+                    .map((m) => MemoTimelineCard(
+                          key: ValueKey(m.id),
+                          memo: m,
+                          isLast: true,
+                          showTimeline: false,
+                          onTagTap: onTagTap,
+                        ))
+                    .toList(),
+              ),
+            ),
+          ],
         ],
       ),
     );

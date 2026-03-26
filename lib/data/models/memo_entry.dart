@@ -55,6 +55,9 @@ class MemoEntry {
   /// 归档标记（归档的 memo 不在时间线显示）
   bool isArchived = false;
 
+  /// 置顶标记（pinned 的 memo 在时间线最顶部显示）
+  bool isPinned = false;
+
   /// 附件列表（JSON 字符串数组，每项为一个 [AttachmentInfo] 的 JSON）
   ///
   /// 不建索引，通过扩展方法 [MemoEntryAttachmentExt] 读写强类型列表。

@@ -186,6 +186,34 @@ class MemosApiService {
     }
   }
 
+  /// 置顶远端 memo（pinned → true）
+  Future<void> pinMemo(String name) async {
+    debugPrint('[API] pinMemo name=$name');
+    try {
+      await _dio.patch(
+        '/api/v1/$name',
+        data: {'pinned': true},
+        queryParameters: {'updateMask': 'pinned'},
+      );
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 取消置顶远端 memo（pinned → false）
+  Future<void> unpinMemo(String name) async {
+    debugPrint('[API] unpinMemo name=$name');
+    try {
+      await _dio.patch(
+        '/api/v1/$name',
+        data: {'pinned': false},
+        queryParameters: {'updateMask': 'pinned'},
+      );
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   /// 取消归档远端 memo（state → NORMAL）
   Future<void> unarchiveMemo(String name) async {
     debugPrint('[API] unarchiveMemo name=$name');

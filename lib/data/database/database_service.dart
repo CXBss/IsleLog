@@ -118,6 +118,34 @@ class DatabaseService {
     debugPrint('[DB] archiveMemo: id=$id');
   }
 
+  /// 置顶（标记 isPinned=true，syncStatus=pending）
+  static Future<void> pinMemo(int id) async {
+    final isar = await db;
+    final memo = await isar.memoEntrys.get(id);
+    if (memo == null) return;
+    await isar.writeTxn(() async {
+      memo.isPinned = true;
+      memo.syncStatus = SyncStatus.pending;
+      memo.updatedAt = DateTime.now();
+      await isar.memoEntrys.put(memo);
+    });
+    debugPrint('[DB] pinMemo: id=$id');
+  }
+
+  /// 取消置顶（标记 isPinned=false，syncStatus=pending）
+  static Future<void> unpinMemo(int id) async {
+    final isar = await db;
+    final memo = await isar.memoEntrys.get(id);
+    if (memo == null) return;
+    await isar.writeTxn(() async {
+      memo.isPinned = false;
+      memo.syncStatus = SyncStatus.pending;
+      memo.updatedAt = DateTime.now();
+      await isar.memoEntrys.put(memo);
+    });
+    debugPrint('[DB] unpinMemo: id=$id');
+  }
+
   /// 取消归档（标记 isArchived=false，syncStatus=pending）
   static Future<void> unarchiveMemo(int id) async {
     final isar = await db;
@@ -149,12 +177,21 @@ class DatabaseService {
   // 读操作 — 分页（时间线 UI 使用）
   // ────────────────────────────────────────────────────────────────
 
-  /// 分页获取未删除日记，按创建时间倒序。
-  ///
-  /// [offset]：跳过条数（第 1 页传 0，第 2 页传 [pageSize]，以此类推）
-  /// [limit]：每页条数（默认 50）
-  ///
-  /// 返回条数小于 [limit] 时表示已到最后一页。
+  /// 获取所有置顶日记，按创建时间倒序。
+  static Future<List<MemoEntry>> getPinnedMemos() async {
+    final isar = await db;
+    final result = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .isPinnedEqualTo(true)
+        .sortByCreatedAtDesc()
+        .findAll();
+    debugPrint('[DB] getPinnedMemos → ${result.length} 条');
+    return result;
+  }
+
+  /// 分页获取未删除、未置顶日记，按创建时间倒序。
   static Future<List<MemoEntry>> getMemosPaged({
     int offset = 0,
     int limit = 50,
@@ -164,6 +201,7 @@ class DatabaseService {
         .filter()
         .isDeletedEqualTo(false)
         .isArchivedEqualTo(false)
+        .isPinnedEqualTo(false)
         .sortByCreatedAtDesc()
         .offset(offset)
         .limit(limit)
@@ -172,13 +210,14 @@ class DatabaseService {
     return result;
   }
 
-  /// 获取未删除日记总条数（用于分页判断是否还有下一页）。
+  /// 获取未删除、未置顶日记总条数（用于分页判断是否还有下一页）。
   static Future<int> getMemoCount() async {
     final isar = await db;
     final count = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
         .isArchivedEqualTo(false)
+        .isPinnedEqualTo(false)
         .count();
     debugPrint('[DB] getMemoCount → $count 条');
     return count;
