@@ -446,7 +446,7 @@ class _ImageGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final count = attachments.length;
     const radius = BorderRadius.all(Radius.circular(8));
-    const height = 200.0;
+    const height = 140.0;
 
     if (count == 1) {
       return GestureDetector(
@@ -454,7 +454,7 @@ class _ImageGrid extends StatelessWidget {
         child: ClipRRect(
           borderRadius: radius,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 300),
+            constraints: const BoxConstraints(maxHeight: 180),
             child: _NetImg(attachment: attachments[0], fit: BoxFit.contain,
                 width: double.infinity),
           ),

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
+import '../../data/models/tag_stat.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
@@ -49,26 +50,49 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 是否为编辑模式（影响标题文字）
   bool get _isEditing => widget.editingMemo != null;
 
+  // ── 标签提示 ──────────────────────────────────────────────────
+
+  /// 当前正在输入的 # 前缀（null = 不显示提示）
+  String? _tagPrefix;
+
+  /// 所有可用标签（从本地缓存加载）
+  List<TagStat> _allTags = [];
+
+  /// 当前过滤后的候选标签
+  List<TagStat> get _tagSuggestions {
+    if (_tagPrefix == null) return [];
+    final prefix = _tagPrefix!.toLowerCase();
+    return _allTags
+        .where((t) => t.name.toLowerCase().startsWith(prefix))
+        .take(6)
+        .toList();
+  }
+
+  /// 内容输入框的 GlobalKey，用于定位浮层位置
+  final GlobalKey _contentFieldKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
     debugPrint('[MemoEditor] 初始化，模式=${_isEditing ? "编辑" : "新建"}，'
         'id=${widget.editingMemo?.id}');
 
-    // 初始化输入控制器（编辑模式预填已有内容）
     _contentCtrl =
         TextEditingController(text: widget.editingMemo?.content ?? '');
     _locationCtrl =
         TextEditingController(text: widget.editingMemo?.location ?? '');
     _contentFocus = FocusNode();
 
-    // 编辑模式：预加载已有附件
     if (widget.editingMemo != null) {
       _pendingAttachments.addAll(widget.editingMemo!.attachments);
     }
 
-    // macOS 上需延迟请求焦点，避免页面过渡动画期间首次点击失效；
-    // 其他平台直接在下一帧请求，减少响应延迟
+    _contentCtrl.addListener(_onContentChanged);
+
+    DatabaseService.getCachedTagStats().then((tags) {
+      if (mounted) setState(() => _allTags = tags);
+    });
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final delay = defaultTargetPlatform == TargetPlatform.macOS
           ? const Duration(milliseconds: 300)
@@ -85,10 +109,64 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   @override
   void dispose() {
     debugPrint('[MemoEditor] 释放资源');
+    _contentCtrl.removeListener(_onContentChanged);
     _contentCtrl.dispose();
     _locationCtrl.dispose();
     _contentFocus.dispose();
     super.dispose();
+  }
+
+  // ── 标签提示逻辑 ──────────────────────────────────────────────
+
+  void _onContentChanged() {
+    final text = _contentCtrl.text;
+    final cursor = _contentCtrl.selection.baseOffset;
+    if (cursor <= 0) {
+      _setTagPrefix(null);
+      return;
+    }
+
+    // 取光标前的文本，找最后一个 # 的位置
+    final before = text.substring(0, cursor);
+    final hashIdx = before.lastIndexOf('#');
+    if (hashIdx == -1) {
+      _setTagPrefix(null);
+      return;
+    }
+
+    final segment = before.substring(hashIdx + 1); // # 之后到光标的内容
+    // 遇到空格/换行则关闭提示
+    if (segment.contains(' ') || segment.contains('\n')) {
+      _setTagPrefix(null);
+      return;
+    }
+
+    _setTagPrefix(segment); // 可能是空字符串（刚输入 # 时）
+  }
+
+  void _setTagPrefix(String? prefix) {
+    if (_tagPrefix == prefix) return;
+    setState(() => _tagPrefix = prefix);
+  }
+
+  /// 点击候选标签：替换光标前的 #xxx 片段
+  void _acceptTag(String tagName) {
+    final text = _contentCtrl.text;
+    final cursor = _contentCtrl.selection.baseOffset;
+    final before = text.substring(0, cursor);
+    final hashIdx = before.lastIndexOf('#');
+    if (hashIdx == -1) return;
+
+    final after = text.substring(cursor);
+    final newText = '${text.substring(0, hashIdx)}#$tagName $after';
+    final newCursor = hashIdx + tagName.length + 2; // # + name + 空格
+
+    _contentCtrl.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newCursor),
+    );
+    setState(() => _tagPrefix = null);
+    _contentFocus.requestFocus();
   }
 
   // ── 附件选择与上传 ────────────────────────────────────────────
@@ -328,13 +406,20 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       // 底部工具栏随之上移，始终保持可见
       body: Column(
         children: [
+          // ── 标签提示条（有候选时显示）────────────────────────────
+          if (_tagPrefix != null && _tagSuggestions.isNotEmpty)
+            _TagSuggestionBar(
+              suggestions: _tagSuggestions,
+              onSelect: _acceptTag,
+            ),
+
           // ── 正文输入区（Markdown 格式提示）──────────────────────
           Expanded(
             child: SingleChildScrollView(
-              // keyboardDismissBehavior：下拉正文区时收起键盘，符合 Android 习惯
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               child: TextField(
+                key: _contentFieldKey,
                 controller: _contentCtrl,
                 focusNode: _contentFocus,
                 maxLines: null,
@@ -562,6 +647,71 @@ class _AttachThumbState extends State<_AttachThumb> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── 标签候选提示条 ─────────────────────────────────────────────────
+
+/// 在编辑器键盘上方横向滚动显示匹配的标签候选
+class _TagSuggestionBar extends StatelessWidget {
+  final List<TagStat> suggestions;
+  final ValueChanged<String> onSelect;
+
+  const _TagSuggestionBar({
+    required this.suggestions,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 38,
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        border: Border(
+          bottom: BorderSide(color: Colors.grey[200]!, width: 1),
+        ),
+      ),
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        itemCount: suggestions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 6),
+        itemBuilder: (ctx, i) {
+          final tag = suggestions[i];
+          return GestureDetector(
+            onTap: () => onSelect(tag.name),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppColors.primaryLight,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '#${tag.name}',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.primaryDark,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${tag.count}',
+                    style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
