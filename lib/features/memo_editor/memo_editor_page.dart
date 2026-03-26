@@ -62,9 +62,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   List<TagStat> get _tagSuggestions {
     if (_tagPrefix == null) return [];
     final prefix = _tagPrefix!.toLowerCase();
+    if (prefix.isEmpty) return _allTags;
     return _allTags
         .where((t) => t.name.toLowerCase().startsWith(prefix))
-        .take(6)
         .toList();
   }
 
@@ -406,31 +406,39 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       // 底部工具栏随之上移，始终保持可见
       body: Column(
         children: [
-          // ── 标签提示条（有候选时显示）────────────────────────────
-          if (_tagPrefix != null && _tagSuggestions.isNotEmpty)
-            _TagSuggestionBar(
-              suggestions: _tagSuggestions,
-              onSelect: _acceptTag,
-            ),
-
-          // ── 正文输入区（Markdown 格式提示）──────────────────────
+          // ── 正文输入区 + 右侧标签面板 ────────────────────────────
           Expanded(
-            child: SingleChildScrollView(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-              child: TextField(
-                key: _contentFieldKey,
-                controller: _contentCtrl,
-                focusNode: _contentFocus,
-                maxLines: null,
-                autofocus: false,
-                style: const TextStyle(fontSize: 16, height: 1.7),
-                decoration: const InputDecoration(
-                  hintText: AppStrings.editorContentHint,
-                  border: InputBorder.none,
-                  hintStyle: TextStyle(color: Color(0xFFBDBDBD)),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 正文输入
+                Expanded(
+                  child: SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    child: TextField(
+                      key: _contentFieldKey,
+                      controller: _contentCtrl,
+                      focusNode: _contentFocus,
+                      maxLines: null,
+                      autofocus: false,
+                      style: const TextStyle(fontSize: 16, height: 1.7),
+                      decoration: const InputDecoration(
+                        hintText: AppStrings.editorContentHint,
+                        border: InputBorder.none,
+                        hintStyle: TextStyle(color: Color(0xFFBDBDBD)),
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+                // 右侧标签面板（输入 # 时出现）
+                if (_tagPrefix != null)
+                  _TagSuggestionPanel(
+                    suggestions: _tagSuggestions,
+                    onSelect: _acceptTag,
+                  ),
+              ],
             ),
           ),
 
@@ -652,14 +660,17 @@ class _AttachThumbState extends State<_AttachThumb> {
   }
 }
 
-// ── 标签候选提示条 ─────────────────────────────────────────────────
+// ── 右侧标签候选面板 ───────────────────────────────────────────────
 
-/// 在编辑器键盘上方横向滚动显示匹配的标签候选
-class _TagSuggestionBar extends StatelessWidget {
+/// 输入 # 后在编辑区右侧弹出的竖向标签列表
+///
+/// 显示全部标签（[suggestions] 为空时显示"暂无标签"），
+/// 随 [_tagPrefix] 实时过滤，点击后插入到正文。
+class _TagSuggestionPanel extends StatelessWidget {
   final List<TagStat> suggestions;
   final ValueChanged<String> onSelect;
 
-  const _TagSuggestionBar({
+  const _TagSuggestionPanel({
     required this.suggestions,
     required this.onSelect,
   });
@@ -667,52 +678,53 @@ class _TagSuggestionBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 38,
+      width: 120,
       decoration: BoxDecoration(
         color: AppColors.surfaceWhite,
         border: Border(
-          bottom: BorderSide(color: Colors.grey[200]!, width: 1),
+          left: BorderSide(color: Colors.grey[200]!, width: 1),
         ),
       ),
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        itemCount: suggestions.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 6),
-        itemBuilder: (ctx, i) {
-          final tag = suggestions[i];
-          return GestureDetector(
-            onTap: () => onSelect(tag.name),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              decoration: BoxDecoration(
-                color: AppColors.primaryLight,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                    color: AppColors.primary.withValues(alpha: 0.3)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '#${tag.name}',
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: AppColors.primaryDark,
-                      fontWeight: FontWeight.w500,
+      child: suggestions.isEmpty
+          ? Center(
+              child: Text('暂无标签',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              itemCount: suggestions.length,
+              itemBuilder: (ctx, i) {
+                final tag = suggestions[i];
+                return InkWell(
+                  onTap: () => onSelect(tag.name),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '#${tag.name}',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: AppColors.primaryDark,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 2),
+                        Text(
+                          '${tag.count}',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey[400]),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(width: 4),
-                  Text(
-                    '${tag.count}',
-                    style: TextStyle(fontSize: 11, color: Colors.grey[500]),
-                  ),
-                ],
-              ),
+                );
+              },
             ),
-          );
-        },
-      ),
     );
   }
 }
