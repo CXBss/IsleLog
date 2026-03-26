@@ -44,11 +44,15 @@ class MemoTimelineCard extends StatelessWidget {
   /// 是否在轴线左侧显示时间（日历视图用，当前 home_view 已在外层处理时间）
   final bool showTime;
 
+  /// 点击标签时的回调（为 null 时标签不可点击）
+  final void Function(String tag)? onTagTap;
+
   const MemoTimelineCard({
     super.key,
     required this.memo,
     this.isLast = false,
     this.showTime = false,
+    this.onTagTap,
   });
 
   String get _timeLabel {
@@ -138,7 +142,7 @@ class MemoTimelineCard extends StatelessWidget {
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.only(bottom: 12),
-                child: _MemoCard(memo: memo, displayContent: _displayContent),
+                child: _MemoCard(memo: memo, displayContent: _displayContent, onTagTap: onTagTap),
               ),
             ),
           ],
@@ -159,8 +163,9 @@ const double _kDotOffsetTop = 20;
 class _MemoCard extends StatefulWidget {
   final MemoEntry memo;
   final String displayContent;
+  final void Function(String tag)? onTagTap;
 
-  const _MemoCard({required this.memo, required this.displayContent});
+  const _MemoCard({required this.memo, required this.displayContent, this.onTagTap});
 
   @override
   State<_MemoCard> createState() => _MemoCardState();
@@ -352,8 +357,14 @@ class _MemoCardState extends State<_MemoCard> {
               Wrap(
                 spacing: 6,
                 runSpacing: 4,
-                children:
-                    memo.tags.map((tag) => _TagChip(tag: tag)).toList(),
+                children: memo.tags
+                    .map((tag) => _TagChip(
+                          tag: tag,
+                          onTap: widget.onTagTap != null
+                              ? () => widget.onTagTap!(tag)
+                              : null,
+                        ))
+                    .toList(),
               ),
             ],
             const SizedBox(height: 4),
@@ -383,11 +394,12 @@ class _MemoCardState extends State<_MemoCard> {
 
 class _TagChip extends StatelessWidget {
   final String tag;
-  const _TagChip({required this.tag});
+  final VoidCallback? onTap;
+  const _TagChip({required this.tag, this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: AppColors.primaryLight,
@@ -402,6 +414,8 @@ class _TagChip extends StatelessWidget {
         ),
       ),
     );
+    if (onTap == null) return chip;
+    return GestureDetector(onTap: onTap, child: chip);
   }
 }
 

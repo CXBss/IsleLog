@@ -28,14 +28,27 @@ class _HomeViewState extends State<HomeView> {
   bool _loadingMore = false;
   bool _syncing = false;
 
+  /// 当前筛选标签（null = 不过滤，显示全部）
+  String? _selectedTag;
+
+  /// 按标签筛选时的结果列表（_selectedTag != null 时使用）
+  List<MemoEntry> _tagFilteredMemos = [];
+
+  /// 所有标签及其计数（Drawer 中展示）
+  Map<String, int> _tagCounts = {};
+
   final ScrollController _scrollCtrl = ScrollController();
   StreamSubscription<void>? _dbSub;
+
+  // ── GlobalKey for Drawer ──────────────────────────────────────
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   void initState() {
     super.initState();
     _scrollCtrl.addListener(_onScroll);
     _loadNextPage();
+    _loadTagCounts();
     _initDbWatch();
   }
 
@@ -49,11 +62,23 @@ class _HomeViewState extends State<HomeView> {
 
   Future<void> _initDbWatch() async {
     final stream = await DatabaseService.watchDbChanges();
-    _dbSub = stream.listen((_) => _resetAndReload());
+    _dbSub = stream.listen((_) {
+      _resetAndReload();
+      _loadTagCounts();
+    });
+  }
+
+  Future<void> _loadTagCounts() async {
+    final counts = await DatabaseService.getAllTagCounts();
+    if (mounted) setState(() => _tagCounts = counts);
   }
 
   Future<void> _resetAndReload() async {
     if (!mounted) return;
+    if (_selectedTag != null) {
+      await _loadTagFiltered(_selectedTag!);
+      return;
+    }
     setState(() {
       _memos.clear();
       _offset = 0;
@@ -65,7 +90,7 @@ class _HomeViewState extends State<HomeView> {
 
   Future<void> _loadNextPage() async {
     if (_loadingMore || !_hasMore) return;
-    _loadingMore = true; // 不用 setState，避免触发多余重建
+    _loadingMore = true;
     final page = await DatabaseService.getMemosPaged(
         offset: _offset, limit: _pageSize);
     if (mounted) {
@@ -81,7 +106,20 @@ class _HomeViewState extends State<HomeView> {
     }
   }
 
+  Future<void> _loadTagFiltered(String tag) async {
+    if (!mounted) return;
+    setState(() => _initialLoading = true);
+    final results = await DatabaseService.getMemosByTag(tag);
+    if (mounted) {
+      setState(() {
+        _tagFilteredMemos = results;
+        _initialLoading = false;
+      });
+    }
+  }
+
   void _onScroll() {
+    if (_selectedTag != null) return; // 标签筛选模式不需要分页
     if (_scrollCtrl.position.pixels >=
         _scrollCtrl.position.maxScrollExtent - 200) {
       _loadNextPage();
@@ -101,39 +139,29 @@ class _HomeViewState extends State<HomeView> {
     }
   }
 
-  void _openMenu() {
-    showModalBottomSheet(
-      context: context,
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text('服务器设置'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const SettingsPage()));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.archive_outlined),
-              title: const Text('归档日记'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const ArchiveView()));
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _openSearch() {
     showSearch(context: context, delegate: _MemoSearchDelegate());
+  }
+
+  /// 选择标签筛选（传 null 表示清除筛选）
+  void _selectTag(String? tag) {
+    if (_selectedTag == tag) return;
+    setState(() {
+      _selectedTag = tag;
+      _tagFilteredMemos = [];
+      _initialLoading = true;
+    });
+    if (tag == null) {
+      // 恢复分页模式
+      setState(() {
+        _memos.clear();
+        _offset = 0;
+        _hasMore = true;
+      });
+      _loadNextPage();
+    } else {
+      _loadTagFiltered(tag);
+    }
   }
 
   /// 将日记列表按天分组，返回按日期倒序排列的 (dateKey, memos) 列表
@@ -155,14 +183,42 @@ class _HomeViewState extends State<HomeView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: _scaffoldKey,
       backgroundColor: AppColors.scaffoldBg,
+      // ── 左侧抽屉 ──────────────────────────────────────────────
+      drawer: _buildDrawer(),
       appBar: AppBar(
         backgroundColor: AppColors.surfaceWhite,
         elevation: 0,
         scrolledUnderElevation: 1,
-        title: const Text(AppStrings.homeTitle,
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        leading: IconButton(
+          icon: const Icon(Icons.menu),
+          tooltip: '菜单',
+          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+        ),
+        title: _selectedTag != null
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.label_outline,
+                      size: 16, color: AppColors.primary),
+                  const SizedBox(width: 4),
+                  Text('#$_selectedTag',
+                      style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.primary)),
+                ],
+              )
+            : const Text(AppStrings.homeTitle,
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         actions: [
+          if (_selectedTag != null)
+            IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: '清除筛选',
+              onPressed: () => _selectTag(null),
+            ),
           _syncing
               ? const Padding(
                   padding: EdgeInsets.all(14),
@@ -183,47 +239,204 @@ class _HomeViewState extends State<HomeView> {
             onPressed: _openSearch,
             tooltip: '搜索',
           ),
-          IconButton(
-            icon: const Icon(Icons.menu),
-            onPressed: _openMenu,
-            tooltip: '菜单',
-          ),
         ],
       ),
       body: _buildBody(),
     );
   }
 
+  // ── 抽屉 ───────────────────────────────────────────────────────
+
+  Widget _buildDrawer() {
+    // 按出现次数倒序排列标签
+    final sortedTags = _tagCounts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── 应用标题区 ────────────────────────────────────
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 20, 20, 8),
+              child: Text(
+                '日记本',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+
+            // ── 菜单项 ────────────────────────────────────────
+            ListTile(
+              leading: const Icon(Icons.settings_outlined),
+              title: const Text('服务器设置'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SettingsPage()));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.archive_outlined),
+              title: const Text('归档日记'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const ArchiveView()));
+              },
+            ),
+
+            const Divider(height: 1),
+
+            // ── 标签区标题 ────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    '标签',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey[500],
+                    ),
+                  ),
+                  if (_selectedTag != null)
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.pop(context);
+                        _selectTag(null);
+                      },
+                      child: Text(
+                        '清除筛选',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+            // ── 标签列表 ──────────────────────────────────────
+            Expanded(
+              child: sortedTags.isEmpty
+                  ? Center(
+                      child: Text(
+                        '还没有标签',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      itemCount: sortedTags.length,
+                      itemBuilder: (ctx, i) {
+                        final tag = sortedTags[i].key;
+                        final count = sortedTags[i].value;
+                        final isSelected = _selectedTag == tag;
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(
+                            Icons.label_outline,
+                            size: 18,
+                            color: isSelected
+                                ? AppColors.primary
+                                : Colors.grey[500],
+                          ),
+                          title: Text(
+                            '#$tag',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: isSelected
+                                  ? AppColors.primary
+                                  : AppColors.textPrimary,
+                              fontWeight: isSelected
+                                  ? FontWeight.w600
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                          trailing: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? AppColors.primaryLight
+                                  : Colors.grey[100],
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '$count',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isSelected
+                                    ? AppColors.primaryDark
+                                    : Colors.grey[500],
+                              ),
+                            ),
+                          ),
+                          selected: isSelected,
+                          selectedTileColor: AppColors.primaryLighter,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _selectTag(isSelected ? null : tag);
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── 主体内容 ───────────────────────────────────────────────────
+
   Widget _buildBody() {
     if (_initialLoading) {
       return const Center(
           child: CircularProgressIndicator(color: AppColors.primary));
     }
-    if (_memos.isEmpty) {
+
+    final memos = _selectedTag != null ? _tagFilteredMemos : _memos;
+
+    if (memos.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.book_outlined, size: 64, color: Colors.grey[300]),
             const SizedBox(height: 16),
-            Text(AppStrings.homeEmpty,
-                style: TextStyle(fontSize: 16, color: Colors.grey[400])),
-            const SizedBox(height: 8),
-            Text(AppStrings.homeEmptyHint,
-                style: TextStyle(fontSize: 13, color: Colors.grey[350])),
+            Text(
+              _selectedTag != null ? '该标签下没有日记' : AppStrings.homeEmpty,
+              style: TextStyle(fontSize: 16, color: Colors.grey[400]),
+            ),
+            if (_selectedTag == null) ...[
+              const SizedBox(height: 8),
+              Text(AppStrings.homeEmptyHint,
+                  style: TextStyle(fontSize: 13, color: Colors.grey[350])),
+            ],
           ],
         ),
       );
     }
 
-    final groups = _groupByDay(_memos);
+    final groups = _groupByDay(memos);
+    final hasMore = _selectedTag == null && _hasMore;
 
     return LayoutBuilder(
       builder: (ctx, constraints) {
-        // 根据可用宽度决定水平内边距：宽屏留更多空白
         final w = constraints.maxWidth;
         final hPad = w > 600 ? 24.0 : 12.0;
-        // 底部 padding = BottomAppBar(56) + FAB溢出(~28) + 系统导航条
         final bottomInset = MediaQuery.paddingOf(context).bottom;
         final bottomPad = 84.0 + bottomInset;
         return Align(
@@ -234,7 +447,7 @@ class _HomeViewState extends State<HomeView> {
             child: ListView.builder(
               controller: _scrollCtrl,
               padding: EdgeInsets.fromLTRB(hPad, 12, hPad, bottomPad),
-              itemCount: groups.length + (_hasMore ? 1 : 0),
+              itemCount: groups.length + (hasMore ? 1 : 0),
               itemBuilder: (ctx, i) {
                 if (i == groups.length) {
                   return const Padding(
@@ -247,7 +460,10 @@ class _HomeViewState extends State<HomeView> {
                 }
                 final (key, dayMemos) = groups[i];
                 return _DaySection(
-                    dateKey: key, memos: dayMemos, weekdays: _weekdays);
+                    dateKey: key,
+                    memos: dayMemos,
+                    weekdays: _weekdays,
+                    onTagTap: (tag) => _selectTag(tag));
               },
             ),
           ),
@@ -258,19 +474,17 @@ class _HomeViewState extends State<HomeView> {
 }
 
 /// 单天时间线区块
-///
-/// 每条日记独立渲染为一个 Row，左侧日期列 + 右侧卡片。
-/// Row 使用 crossAxisAlignment.start，不使用 IntrinsicHeight，
-/// 轴线高度由 MemoTimelineCard 内部的 CustomPaint 自行处理。
 class _DaySection extends StatelessWidget {
   final String dateKey;
   final List<MemoEntry> memos;
   final List<String> weekdays;
+  final void Function(String tag) onTagTap;
 
   const _DaySection({
     required this.dateKey,
     required this.memos,
     required this.weekdays,
+    required this.onTagTap,
   });
 
   @override
@@ -278,7 +492,6 @@ class _DaySection extends StatelessWidget {
     final date = DateTime.parse(dateKey);
     final weekday = weekdays[date.weekday - 1];
 
-    // 根据屏幕宽度缩放左侧日期列
     final screenW = MediaQuery.sizeOf(context).width;
     final isNarrow = screenW < 360;
     final dateColWidth = isNarrow ? 52.0 : 60.0;
@@ -347,7 +560,11 @@ class _DaySection extends StatelessWidget {
 
               // ── 右侧：时间轴 + 卡片 ───────────────────────────
               Expanded(
-                child: MemoTimelineCard(memo: memo, isLast: isLast),
+                child: MemoTimelineCard(
+                  memo: memo,
+                  isLast: isLast,
+                  onTagTap: onTagTap,
+                ),
               ),
             ],
           );

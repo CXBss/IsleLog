@@ -248,12 +248,13 @@ class DatabaseService {
         .findFirst();
   }
 
-  /// 获取指定标签的所有未删除日记，按创建时间倒序。
+  /// 获取指定标签的所有未删除、未归档日记，按创建时间倒序。
   static Future<List<MemoEntry>> getMemosByTag(String tag) async {
     final isar = await db;
     final result = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
         .tagsElementEqualTo(tag)
         .sortByCreatedAtDesc()
         .findAll();
