@@ -1,0 +1,37 @@
+name: Build Windows EXE
+
+# 触发条件：当你推送到 main 或 master 分支，或者在网页上手动点击时触发
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    # 核心：告诉 GitHub 分配一台最新的 Windows 电脑给你
+    runs-on: windows-latest
+
+    steps:
+      - name: 1. 下载你的代码
+        uses: actions/checkout@v4
+
+      - name: 2. 安装 Flutter 环境
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: 3. 开启 Windows 桌面端支持
+        run: flutter config --enable-windows-desktop
+
+      - name: 4. 下载第三方插件 (pub get)
+        run: flutter pub get
+
+      - name: 5. 执行打包命令 (这步最耗时)
+        run: flutter build windows
+
+      - name: 6. 将打包好的文件打包成压缩包供你下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Release-App
+          # 这是新版 Flutter Windows 默认的输出路径
+          path: build/windows/x64/runner/Release/
