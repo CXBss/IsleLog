@@ -87,7 +87,7 @@ class DatabaseService {
   // 读操作 — 全量（同步引擎、标签统计等内部用途）
   // ────────────────────────────────────────────────────────────────
 
-  /// 获取所有未删除的日记，按创建时间倒序。
+  /// 获取所有未删除、未归档的日记，按创建时间倒序。
   ///
   /// ⚠️ 此方法会返回全量数据，仅供同步引擎、内部统计等场景使用。
   /// UI 时间线展示请改用 [getMemosPaged]。
@@ -96,9 +96,51 @@ class DatabaseService {
     final result = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
         .sortByCreatedAtDesc()
         .findAll();
     debugPrint('[DB] getAllMemos → ${result.length} 条');
+    return result;
+  }
+
+  /// 归档一条日记（标记 isArchived=true，syncStatus=pending）
+  static Future<void> archiveMemo(int id) async {
+    final isar = await db;
+    final memo = await isar.memoEntrys.get(id);
+    if (memo == null) return;
+    await isar.writeTxn(() async {
+      memo.isArchived = true;
+      memo.syncStatus = SyncStatus.pending;
+      memo.updatedAt = DateTime.now();
+      await isar.memoEntrys.put(memo);
+    });
+    debugPrint('[DB] archiveMemo: id=$id');
+  }
+
+  /// 取消归档（标记 isArchived=false，syncStatus=pending）
+  static Future<void> unarchiveMemo(int id) async {
+    final isar = await db;
+    final memo = await isar.memoEntrys.get(id);
+    if (memo == null) return;
+    await isar.writeTxn(() async {
+      memo.isArchived = false;
+      memo.syncStatus = SyncStatus.pending;
+      memo.updatedAt = DateTime.now();
+      await isar.memoEntrys.put(memo);
+    });
+    debugPrint('[DB] unarchiveMemo: id=$id');
+  }
+
+  /// 获取所有已归档的日记，按创建时间倒序（归档列表页使用）
+  static Future<List<MemoEntry>> getArchivedMemos() async {
+    final isar = await db;
+    final result = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(true)
+        .sortByCreatedAtDesc()
+        .findAll();
+    debugPrint('[DB] getArchivedMemos → ${result.length} 条');
     return result;
   }
 
@@ -120,6 +162,7 @@ class DatabaseService {
     final result = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
         .sortByCreatedAtDesc()
         .offset(offset)
         .limit(limit)
@@ -134,6 +177,7 @@ class DatabaseService {
     final count = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
         .count();
     debugPrint('[DB] getMemoCount → $count 条');
     return count;
@@ -157,6 +201,7 @@ class DatabaseService {
     final memos = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
         .createdAtBetween(start, end)
         .findAll();
     final days = memos.map((m) => m.createdAt.day).toSet();
@@ -174,6 +219,7 @@ class DatabaseService {
     final result = await isar.memoEntrys
         .filter()
         .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
         .createdAtBetween(start, end)
         .sortByCreatedAtDesc()
         .findAll();
@@ -216,8 +262,6 @@ class DatabaseService {
   }
 
   /// 获取所有待同步（pending）的日记（含软删除条目）。
-  ///
-  /// 同步服务调用此方法获取需要推送到远端的条目列表。
   static Future<List<MemoEntry>> getPendingSyncMemos() async {
     final isar = await db;
     final result = await isar.memoEntrys
@@ -225,6 +269,53 @@ class DatabaseService {
         .syncStatusEqualTo(SyncStatus.pending)
         .findAll();
     debugPrint('[DB] getPendingSyncMemos → ${result.length} 条待同步');
+    return result;
+  }
+
+  /// 全文搜索（在 content 中模糊匹配关键词），返回未删除、未归档的结果，按时间倒序。
+  static Future<List<MemoEntry>> searchMemos(String query) async {
+    if (query.trim().isEmpty) return [];
+    final isar = await db;
+    final all = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .findAll();
+    final q = query.toLowerCase();
+    final result = all
+        .where((m) => m.content.toLowerCase().contains(q))
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    debugPrint('[DB] searchMemos "$query" → ${result.length} 条');
+    return result;
+  }
+
+  /// 归档日记全文搜索
+  static Future<List<MemoEntry>> searchArchivedMemos(String query) async {
+    if (query.trim().isEmpty) return [];
+    final isar = await db;
+    final all = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(true)
+        .findAll();
+    final q = query.toLowerCase();
+    final result = all
+        .where((m) => m.content.toLowerCase().contains(q))
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    debugPrint('[DB] searchArchivedMemos "$query" → ${result.length} 条');
+    return result;
+  }
+
+  /// 获取所有已同步（synced）且未删除的日记（用于检测远端删除）。
+  static Future<List<MemoEntry>> getAllSyncedMemos() async {
+    final isar = await db;
+    final result = await isar.memoEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.synced)
+        .isDeletedEqualTo(false)
+        .findAll();
     return result;
   }
 

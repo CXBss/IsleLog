@@ -4,6 +4,7 @@ import '../../services/api/memos_api_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
+import '../archive/archive_view.dart';
 
 /// 服务器配置页面
 ///
@@ -263,6 +264,22 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
 
             const SizedBox(height: 24),
+
+            // ── 归档 ──────────────────────────────────────────
+            _SectionHeader(label: '日记管理'),
+            const SizedBox(height: 8),
+            _buildCard(children: [
+              ListTile(
+                leading: const Icon(Icons.archive_outlined),
+                title: const Text('归档日记'),
+                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ArchiveView()),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 16),
 
             // ── 操作区域 ──────────────────────────────────────
             _SectionHeader(label: AppStrings.settingsSectionActions),

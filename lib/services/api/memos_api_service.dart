@@ -66,10 +66,11 @@ class MemosApiService {
     int pageSize = 100,
     String? pageToken,
     String? filter,
+    String state = 'NORMAL',
   }) async {
-    debugPrint('[API] listMemos pageSize=$pageSize, pageToken=$pageToken, filter=$filter');
+    debugPrint('[API] listMemos pageSize=$pageSize, pageToken=$pageToken, filter=$filter state=$state');
     try {
-      final params = <String, dynamic>{'pageSize': pageSize};
+      final params = <String, dynamic>{'pageSize': pageSize, 'state': state};
       if (pageToken != null) params['pageToken'] = pageToken;
       if (filter != null) params['filter'] = filter;
 
@@ -89,16 +90,17 @@ class MemosApiService {
 
   /// 自动翻页，获取全部 memos
   ///
-  /// 内部循环调用 [listMemos]，直到没有下一页为止。
-  /// [filter]：同 [listMemos]，透传给每页请求。
+  /// [filter]：服务端过滤表达式，透传给每页请求。
+  /// [state]：memo 状态（默认 NORMAL，传 "ARCHIVED" 获取归档列表）
   Future<List<Map<String, dynamic>>> listAllMemos({
     String? filter,
+    String state = 'NORMAL',
   }) async {
-    debugPrint('[API] listAllMemos 开始全量拉取，filter=$filter');
+    debugPrint('[API] listAllMemos 开始全量拉取，filter=$filter state=$state');
     final all = <Map<String, dynamic>>[];
     String? pageToken;
     do {
-      final result = await listMemos(pageToken: pageToken, filter: filter);
+      final result = await listMemos(pageToken: pageToken, filter: filter, state: state);
       all.addAll(result.memos);
       pageToken = result.nextPageToken;
     } while (pageToken != null);
@@ -164,6 +166,36 @@ class MemosApiService {
       final result = Map<String, dynamic>.from(res.data);
       debugPrint('[API] updateMemo 成功，name=${result["name"]}');
       return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 归档远端 memo（state → ARCHIVED）
+  Future<void> archiveMemo(String name) async {
+    debugPrint('[API] archiveMemo name=$name');
+    try {
+      await _dio.patch(
+        '/api/v1/$name',
+        data: {'state': 'ARCHIVED'},
+        queryParameters: {'updateMask': 'state'},
+      );
+      debugPrint('[API] archiveMemo 成功');
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 取消归档远端 memo（state → NORMAL）
+  Future<void> unarchiveMemo(String name) async {
+    debugPrint('[API] unarchiveMemo name=$name');
+    try {
+      await _dio.patch(
+        '/api/v1/$name',
+        data: {'state': 'NORMAL'},
+        queryParameters: {'updateMask': 'state'},
+      );
+      debugPrint('[API] unarchiveMemo 成功');
     } on DioException catch (e) {
       throw _wrap(e);
     }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/database/database_service.dart';
 import '../../data/models/memo_entry.dart';
+import '../../features/archive/archive_view.dart';
 import '../../features/settings/settings_page.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
@@ -100,9 +101,39 @@ class _HomeViewState extends State<HomeView> {
     }
   }
 
-  void _openSettings() {
-    Navigator.push(
-        context, MaterialPageRoute(builder: (_) => const SettingsPage()));
+  void _openMenu() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.settings_outlined),
+              title: const Text('服务器设置'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SettingsPage()));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.archive_outlined),
+              title: const Text('归档日记'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const ArchiveView()));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openSearch() {
+    showSearch(context: context, delegate: _MemoSearchDelegate());
   }
 
   /// 将日记列表按天分组，返回按日期倒序排列的 (dateKey, memos) 列表
@@ -148,9 +179,14 @@ class _HomeViewState extends State<HomeView> {
                   tooltip: AppStrings.homeSyncTooltip,
                 ),
           IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: _openSettings,
-            tooltip: AppStrings.homeSettingsTooltip,
+            icon: const Icon(Icons.search),
+            onPressed: _openSearch,
+            tooltip: '搜索',
+          ),
+          IconButton(
+            icon: const Icon(Icons.menu),
+            onPressed: _openMenu,
+            tooltip: '菜单',
           ),
         ],
       ),
@@ -316,6 +352,92 @@ class _DaySection extends StatelessWidget {
             ],
           );
         }).toList(),
+      ),
+    );
+  }
+}
+
+// ── 搜索 ───────────────────────────────────────────────────────────
+
+class _MemoSearchDelegate extends SearchDelegate<void> {
+  @override
+  String get searchFieldLabel => '搜索日记内容…';
+
+  @override
+  List<Widget> buildActions(BuildContext context) => [
+        if (query.isNotEmpty)
+          IconButton(
+            icon: const Icon(Icons.clear),
+            onPressed: () => query = '',
+          ),
+      ];
+
+  @override
+  Widget buildLeading(BuildContext context) => IconButton(
+        icon: const Icon(Icons.arrow_back),
+        onPressed: () => close(context, null),
+      );
+
+  @override
+  Widget buildResults(BuildContext context) => _SearchResults(query: query);
+
+  @override
+  Widget buildSuggestions(BuildContext context) =>
+      query.isEmpty ? const SizedBox() : _SearchResults(query: query);
+}
+
+class _SearchResults extends StatefulWidget {
+  final String query;
+  const _SearchResults({required this.query});
+
+  @override
+  State<_SearchResults> createState() => _SearchResultsState();
+}
+
+class _SearchResultsState extends State<_SearchResults> {
+  List<MemoEntry> _results = [];
+  bool _loading = false;
+  String _lastQuery = '';
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _doSearch(widget.query);
+  }
+
+  @override
+  void didUpdateWidget(_SearchResults old) {
+    super.didUpdateWidget(old);
+    if (old.query != widget.query) _doSearch(widget.query);
+  }
+
+  Future<void> _doSearch(String q) async {
+    if (q == _lastQuery) return;
+    _lastQuery = q;
+    setState(() => _loading = true);
+    final results = await DatabaseService.searchMemos(q);
+    if (mounted && _lastQuery == q) {
+      setState(() { _results = results; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_results.isEmpty) {
+      return Center(
+        child: Text('没有找到"${widget.query}"',
+            style: const TextStyle(color: Colors.grey)),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      itemCount: _results.length,
+      itemBuilder: (ctx, i) => MemoTimelineCard(
+        key: ValueKey(_results[i].id),
+        memo: _results[i],
+        isLast: i == _results.length - 1,
+        showTime: true,
       ),
     );
   }

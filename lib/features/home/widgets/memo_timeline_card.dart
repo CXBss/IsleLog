@@ -199,7 +199,6 @@ class _MemoCardState extends State<_MemoCard> {
               leading: const Icon(Icons.edit_outlined),
               title: const Text(AppStrings.cardEdit),
               onTap: () {
-                debugPrint('[MemoCard] 选择编辑，memo.id=${memo.id}');
                 Navigator.pop(context);
                 Navigator.push(
                   context,
@@ -210,15 +209,26 @@ class _MemoCardState extends State<_MemoCard> {
               },
             ),
             ListTile(
-              leading:
-                  const Icon(Icons.delete_outline, color: AppColors.error),
+              leading: const Icon(Icons.archive_outlined),
+              title: Text(memo.isArchived ? '取消归档' : '归档'),
+              onTap: () async {
+                Navigator.pop(context);
+                if (memo.isArchived) {
+                  await DatabaseService.unarchiveMemo(memo.id);
+                  messenger.showSnackBar(const SnackBar(content: Text('已取消归档')));
+                } else {
+                  await DatabaseService.archiveMemo(memo.id);
+                  messenger.showSnackBar(const SnackBar(content: Text('已归档')));
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: AppColors.error),
               title: const Text(AppStrings.cardDelete,
                   style: TextStyle(color: AppColors.error)),
               onTap: () async {
-                debugPrint('[MemoCard] 选择删除，memo.id=${memo.id}');
                 Navigator.pop(context);
                 await DatabaseService.softDelete(memo.id);
-                debugPrint('[MemoCard] 软删除完成，memo.id=${memo.id}');
                 messenger.showSnackBar(
                   SnackBar(
                     content: Row(
@@ -226,8 +236,6 @@ class _MemoCardState extends State<_MemoCard> {
                         const Expanded(child: Text(AppStrings.cardDeleted)),
                         TextButton(
                           onPressed: () async {
-                            debugPrint(
-                                '[MemoCard] 撤销删除，memo.id=${memo.id}');
                             memo.isDeleted = false;
                             memo.syncStatus = SyncStatus.pending;
                             await DatabaseService.saveMemo(memo);

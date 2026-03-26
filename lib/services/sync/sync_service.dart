@@ -131,8 +131,19 @@ class SyncService {
           }
           await DatabaseService.hardDelete(memo.id);
           debugPrint('[Sync] 本地物理删除完成 id=${memo.id}');
+        } else if (memo.isArchived) {
+          // ── 处理归档 ──
+          if (memo.memosName != null) {
+            debugPrint('[Sync] 归档远端 memo: ${memo.memosName}');
+            await api.archiveMemo(memo.memosName!);
+          }
+          memo
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveMemo(memo, skipTimestamp: true);
+          debugPrint('[Sync] 归档成功 id=${memo.id}');
         } else {
-          // ── 补传离线附件（content 推送前先把 localPath 换成 remoteUrl）──
+          // ── 补传离线附件 ──
           await _uploadPendingAttachments(api, memo, url, token);
 
           // 收集已上传的附件资源名
@@ -142,7 +153,7 @@ class SyncService {
               .toList();
 
           if (memo.memosName == null) {
-            // ── 处理新建：推送到远端，将返回的资源名写回本地 ──
+            // ── 处理新建 ──
             debugPrint('[Sync] 新建远端 memo id=${memo.id}，附件 ${attachmentNames.length} 个');
             final remoteData = await api.createMemo(
               content: memo.content,
@@ -155,7 +166,7 @@ class SyncService {
             await DatabaseService.saveMemo(memo, skipTimestamp: true);
             debugPrint('[Sync] 新建成功，memosName=${memo.memosName}');
           } else {
-            // ── 处理更新：用本地内容覆盖远端 ──
+            // ── 处理更新 ──
             debugPrint('[Sync] 更新远端 memo: ${memo.memosName}，附件 ${attachmentNames.length} 个');
             await api.updateMemo(
               name: memo.memosName!,
@@ -188,7 +199,6 @@ class SyncService {
   /// 若服务端不支持 filter 则静默降级为全量拉取。
   /// 返回合并到本地的新/更新条目数。
   static Future<int> _pullUpdates(MemosApiService api, String baseUrl) async {
-    // 尝试增量同步：只拉取自上次同步后有变动的 memo
     final lastSync = await SettingsService.lastSyncTime;
     String? filter;
     if (lastSync != null) {
@@ -199,56 +209,91 @@ class SyncService {
       debugPrint('[Sync] _pullUpdates 首次同步，全量拉取');
     }
 
-    List<Map<String, dynamic>> remoteMemos;
+    // 同时拉取 NORMAL 和 ARCHIVED 两个状态
+    List<Map<String, dynamic>> normalMemos;
+    List<Map<String, dynamic>> archivedMemos;
     try {
-      remoteMemos = await api.listAllMemos(filter: filter);
+      normalMemos = await api.listAllMemos(filter: filter, state: 'NORMAL');
+      archivedMemos = await api.listAllMemos(filter: filter, state: 'ARCHIVED');
     } catch (e) {
-      // filter 语法不被当前版本支持时，静默回退全量拉取
       debugPrint('[Sync] filter 不支持，回退全量拉取：$e');
-      remoteMemos = await api.listAllMemos();
+      normalMemos = await api.listAllMemos(state: 'NORMAL');
+      archivedMemos = await api.listAllMemos(state: 'ARCHIVED');
     }
-    debugPrint('[Sync] 远端返回 ${remoteMemos.length} 条数据');
+    debugPrint('[Sync] 远端 NORMAL=${normalMemos.length} ARCHIVED=${archivedMemos.length}');
 
+    // 建立远端所有 name 的集合，用于检测本地已不存在于远端的条目
+    final remoteNames = <String>{};
     int count = 0;
-    for (final data in remoteMemos) {
-      // 只处理正常状态的 memo，跳过已归档/已删除
-      final state = data['state'] as String? ?? 'NORMAL';
-      if (state != 'NORMAL' && state != 'STATE_UNSPECIFIED') {
-        debugPrint('[Sync] 跳过非正常状态 memo: state=$state name=${data["name"]}');
-        continue;
-      }
 
+    // 处理 NORMAL memos
+    for (final data in normalMemos) {
       final remoteName = data['name'] as String? ?? '';
-      if (remoteName.isEmpty) {
-        debugPrint('[Sync] 跳过无 name 的远端 memo');
-        continue;
-      }
+      if (remoteName.isEmpty) continue;
+      remoteNames.add(remoteName);
+      count += await _applyRemoteMemo(data, baseUrl, archived: false);
+    }
 
-      final localMemo = await DatabaseService.getMemoByMemosName(remoteName);
+    // 处理 ARCHIVED memos
+    for (final data in archivedMemos) {
+      final remoteName = data['name'] as String? ?? '';
+      if (remoteName.isEmpty) continue;
+      remoteNames.add(remoteName);
+      count += await _applyRemoteMemo(data, baseUrl, archived: true);
+    }
 
-      if (localMemo == null) {
-        // 远端有、本地无 → 新增到本地
-        debugPrint('[Sync] 新增本地 memo from remote: $remoteName');
-        final newMemo = _buildFromRemote(data, baseUrl);
-        await DatabaseService.saveMemo(newMemo, skipTimestamp: true);
-        count++;
-      } else if (localMemo.syncStatus == SyncStatus.synced) {
-        // 本地 synced（未修改） → 直接覆盖为远端最新
-        debugPrint('[Sync] 更新本地 memo from remote: $remoteName');
-        _applyRemoteData(localMemo, data, baseUrl);
-        await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
-        count++;
-      } else if (localMemo.syncStatus == SyncStatus.pending) {
-        // 本地和远端均有修改 → 标记冲突，保留本地版本，由用户手动处理
-        debugPrint('[Sync] 检测到冲突，标记 conflict: $remoteName');
-        localMemo.syncStatus = SyncStatus.conflict;
-        await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+    // 检测远端已删除的条目：本地 synced 且有 memosName，但不在远端列表中 → 本地物理删除
+    // 仅在全量同步时执行（增量同步无法判断是否真的删除）
+    if (filter == null) {
+      final allLocal = await _getAllSyncedWithMemosName();
+      for (final local in allLocal) {
+        if (!remoteNames.contains(local.memosName)) {
+          debugPrint('[Sync] 远端已删除，本地同步删除 id=${local.id} memosName=${local.memosName}');
+          await DatabaseService.hardDelete(local.id);
+          count++;
+        }
       }
-      // SyncStatus.conflict 状态不自动合并，等待用户干预
     }
 
     debugPrint('[Sync] _pullUpdates 完成，合并 $count 条');
     return count;
+  }
+
+  /// 将单条远端 memo 数据应用到本地，返回 1（有变化）或 0
+  static Future<int> _applyRemoteMemo(
+    Map<String, dynamic> data,
+    String baseUrl, {
+    required bool archived,
+  }) async {
+    final remoteName = data['name'] as String;
+    final localMemo = await DatabaseService.getMemoByMemosName(remoteName);
+
+    if (localMemo == null) {
+      final newMemo = _buildFromRemote(data, baseUrl);
+      newMemo.isArchived = archived;
+      await DatabaseService.saveMemo(newMemo, skipTimestamp: true);
+      debugPrint('[Sync] 新增本地 memo: $remoteName archived=$archived');
+      return 1;
+    } else if (localMemo.syncStatus == SyncStatus.synced) {
+      _applyRemoteData(localMemo, data, baseUrl);
+      localMemo.isArchived = archived;
+      await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+      debugPrint('[Sync] 更新本地 memo: $remoteName archived=$archived');
+      return 1;
+    } else if (localMemo.syncStatus == SyncStatus.pending) {
+      debugPrint('[Sync] 检测到冲突，标记 conflict: $remoteName');
+      localMemo.syncStatus = SyncStatus.conflict;
+      await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+    }
+    return 0;
+  }
+
+  /// 获取所有已同步且有远端 name 的本地条目（用于检测远端删除）
+  static Future<List<MemoEntry>> _getAllSyncedWithMemosName() async {
+    // 复用 DatabaseService 封装，避免直接操作 Isar QueryBuilder 类型问题
+    final pending = await DatabaseService.getPendingSyncMemos(); // pending
+    final all = await DatabaseService.getAllSyncedMemos();
+    return all.where((m) => m.memosName != null && !pending.any((p) => p.id == m.id)).toList();
   }
 
   // ── 离线附件补传 ──────────────────────────────────────────────

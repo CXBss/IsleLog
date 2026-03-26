@@ -52,6 +52,9 @@ class MemoEntry {
   /// 软删除标记（本地删除但尚未同步到远端时为 true）
   bool isDeleted = false;
 
+  /// 归档标记（归档的 memo 不在时间线显示）
+  bool isArchived = false;
+
   /// 附件列表（JSON 字符串数组，每项为一个 [AttachmentInfo] 的 JSON）
   ///
   /// 不建索引，通过扩展方法 [MemoEntryAttachmentExt] 读写强类型列表。
