@@ -181,6 +181,7 @@ class SyncService {
             final remoteData = await api.createMemo(
               content: memo.content,
               attachmentNames: attachmentNames,
+              createTime: memo.createdAt,
             );
             memo
               ..memosName = remoteData['name'] as String?
@@ -199,6 +200,7 @@ class SyncService {
               name: memo.memosName!,
               content: memo.content,
               attachmentNames: attachmentNames,
+              createTime: memo.createdAt,
             );
             // 同步置顶状态
             if (memo.isPinned) {
@@ -387,7 +389,6 @@ class SyncService {
       ..syncStatus = SyncStatus.synced
       ..lastSyncAt = DateTime.now();
 
-    // 解析创建时间（UTC ISO8601 → 本地时区）
     final ct = data['createTime'] as String?;
     if (ct != null) memo.createdAt = DateTime.parse(ct).toLocal();
 
@@ -406,7 +407,8 @@ class SyncService {
     memo.content = data['content'] as String? ?? '';
     memo.isPinned = data['pinned'] as bool? ?? false;
 
-    // 只更新 updateTime，createTime 保持本地原始值
+    final ct = data['createTime'] as String?;
+    if (ct != null) memo.createdAt = DateTime.parse(ct).toLocal();
     final ut = data['updateTime'] as String?;
     if (ut != null) memo.updatedAt = DateTime.parse(ut).toLocal();
 

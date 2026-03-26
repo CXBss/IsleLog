@@ -26,7 +26,10 @@ class MemoEditorPage extends StatefulWidget {
   /// 编辑模式时传入目标日记，新建模式不传
   final MemoEntry? editingMemo;
 
-  const MemoEditorPage({super.key, this.editingMemo});
+  /// 新建模式时指定初始日期（日历视图选中某天后新建使用）
+  final DateTime? initialDate;
+
+  const MemoEditorPage({super.key, this.editingMemo, this.initialDate});
 
   @override
   State<MemoEditorPage> createState() => _MemoEditorPageState();
@@ -51,6 +54,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   /// 是否为编辑模式（影响标题文字）
   bool get _isEditing => widget.editingMemo != null;
+
+  /// 当前选定的日记时间（新建时默认为 initialDate 日期+当前时间，编辑时为原始时间）
+  late DateTime _selectedDateTime;
 
   // ── 标签提示 ──────────────────────────────────────────────────
 
@@ -84,6 +90,16 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     _locationCtrl =
         TextEditingController(text: widget.editingMemo?.location ?? '');
     _contentFocus = FocusNode();
+
+    // 编辑模式用原始时间，新建模式用 initialDate 日期+当前时间
+    if (widget.editingMemo != null) {
+      _selectedDateTime = widget.editingMemo!.createdAt;
+    } else {
+      final now = DateTime.now();
+      final base = widget.initialDate ?? now;
+      _selectedDateTime = DateTime(base.year, base.month, base.day,
+          now.hour, now.minute, now.second);
+    }
 
     if (widget.editingMemo != null) {
       _pendingAttachments.addAll(widget.editingMemo!.attachments);
@@ -121,6 +137,33 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     _locationCtrl.dispose();
     _contentFocus.dispose();
     super.dispose();
+  }
+
+  // ── 日期时间选择 ───────────────────────────────────────────────
+
+  String get _dateTimeLabel {
+    final d = _selectedDateTime;
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}'
+        ' ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _pickDateTime() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _selectedDateTime,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_selectedDateTime),
+    );
+    if (time == null || !mounted) return;
+    setState(() {
+      _selectedDateTime = DateTime(
+          date.year, date.month, date.day, time.hour, time.minute);
+    });
   }
 
   // ── 草稿 ──────────────────────────────────────────────────────
@@ -394,6 +437,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           ? null
           : _locationCtrl.text.trim();
       memo.attachments = _pendingAttachments;
+      memo.createdAt = _selectedDateTime;
       // 编辑模式必须重置为 pending，否则同步引擎查不到该条目
       memo.syncStatus = SyncStatus.pending;
 
@@ -542,6 +586,17 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: Row(
                 children: [
+                  // 日期时间按钮
+                  GestureDetector(
+                    onTap: _pickDateTime,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: Text(
+                        _dateTimeLabel,
+                        style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                      ),
+                    ),
+                  ),
                   // # 标签按钮
                   IconButton(
                     icon: const Icon(Icons.tag),

@@ -119,6 +119,7 @@ class MemosApiService {
     required String content,
     String visibility = 'PRIVATE',
     List<String> attachmentNames = const [],
+    DateTime? createTime,
   }) async {
     debugPrint('[API] createMemo contentLen=${content.length} attachments=${attachmentNames.length}');
     try {
@@ -127,6 +128,8 @@ class MemosApiService {
         'visibility': visibility,
         if (attachmentNames.isNotEmpty)
           'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+        if (createTime != null)
+          'createTime': createTime.toUtc().toIso8601String(),
       };
       final res = await _dio.post('/api/v1/memos', data: body);
       final result = Map<String, dynamic>.from(res.data);
@@ -150,6 +153,7 @@ class MemosApiService {
     required String content,
     String visibility = 'PRIVATE',
     List<String> attachmentNames = const [],
+    DateTime? createTime,
   }) async {
     debugPrint('[API] updateMemo name=$name, contentLen=${content.length} attachments=${attachmentNames.length}');
     try {
@@ -157,12 +161,10 @@ class MemosApiService {
         'content': content,
         'visibility': visibility,
         'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+        if (createTime != null)
+          'createTime': createTime.toUtc().toIso8601String(),
       };
-      final res = await _dio.patch(
-        '/api/v1/$name',
-        data: body,
-        queryParameters: {'updateMask': 'content,visibility,attachments'},
-      );
+      final res = await _dio.patch('/api/v1/$name', data: body);
       final result = Map<String, dynamic>.from(res.data);
       debugPrint('[API] updateMemo 成功，name=${result["name"]}');
       return result;
@@ -175,11 +177,7 @@ class MemosApiService {
   Future<void> archiveMemo(String name) async {
     debugPrint('[API] archiveMemo name=$name');
     try {
-      await _dio.patch(
-        '/api/v1/$name',
-        data: {'state': 'ARCHIVED'},
-        queryParameters: {'updateMask': 'state'},
-      );
+      await _dio.patch('/api/v1/$name', data: {'state': 'ARCHIVED'});
       debugPrint('[API] archiveMemo 成功');
     } on DioException catch (e) {
       throw _wrap(e);
@@ -190,11 +188,7 @@ class MemosApiService {
   Future<void> pinMemo(String name) async {
     debugPrint('[API] pinMemo name=$name');
     try {
-      await _dio.patch(
-        '/api/v1/$name',
-        data: {'pinned': true},
-        queryParameters: {'updateMask': 'pinned'},
-      );
+      await _dio.patch('/api/v1/$name', data: {'pinned': true});
     } on DioException catch (e) {
       throw _wrap(e);
     }
@@ -204,11 +198,7 @@ class MemosApiService {
   Future<void> unpinMemo(String name) async {
     debugPrint('[API] unpinMemo name=$name');
     try {
-      await _dio.patch(
-        '/api/v1/$name',
-        data: {'pinned': false},
-        queryParameters: {'updateMask': 'pinned'},
-      );
+      await _dio.patch('/api/v1/$name', data: {'pinned': false});
     } on DioException catch (e) {
       throw _wrap(e);
     }
@@ -218,11 +208,7 @@ class MemosApiService {
   Future<void> unarchiveMemo(String name) async {
     debugPrint('[API] unarchiveMemo name=$name');
     try {
-      await _dio.patch(
-        '/api/v1/$name',
-        data: {'state': 'NORMAL'},
-        queryParameters: {'updateMask': 'state'},
-      );
+      await _dio.patch('/api/v1/$name', data: {'state': 'NORMAL'});
       debugPrint('[API] unarchiveMemo 成功');
     } on DioException catch (e) {
       throw _wrap(e);

@@ -25,7 +25,10 @@ import '../home/widgets/memo_timeline_card.dart';
 /// 3. **DB 变更监听**：使用带 300ms debounce 的 [DatabaseService.watchDbChanges]，
 ///    批量同步时不会高频重刷；收到通知后只刷新当前月高亮和当日列表。
 class CalendarView extends StatefulWidget {
-  const CalendarView({super.key});
+  /// 选中日期变化时的回调（供外层感知当前选中日期）
+  final void Function(DateTime)? onSelectedDayChanged;
+
+  const CalendarView({super.key, this.onSelectedDayChanged});
 
   @override
   State<CalendarView> createState() => _CalendarViewState();
@@ -298,6 +301,7 @@ class _CalendarViewState extends State<CalendarView> {
             _focusedDay = focused;
           });
           _loadDayData(selected);
+          widget.onSelectedDayChanged?.call(selected);
         },
         onPageChanged: (focused) {
           debugPrint(

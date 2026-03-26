@@ -21,8 +21,8 @@ class _MainScaffoldState extends State<MainScaffold> {
   /// 当前选中 Tab 索引（0=主页，1=日历）
   int _currentIndex = 0;
 
-  /// 所有 Tab 页面（使用 IndexedStack 保持状态）
-  static const _pages = [HomeView(), CalendarView()];
+  /// 日历视图当前选中的日期（FAB 新建时使用）
+  DateTime _calendarSelectedDay = DateTime.now();
 
   /// 移动端平台判断（Android / iOS 需处理系统导航条 inset）
   bool get _isMobile =>
@@ -31,10 +31,12 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   /// 打开新建日记编辑器
   void _openEditor() {
-    debugPrint('[MainScaffold] 打开新建日记编辑器');
+    final initialDate = _currentIndex == 1 ? _calendarSelectedDay : null;
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const MemoEditorPage()),
+      MaterialPageRoute(
+        builder: (_) => MemoEditorPage(initialDate: initialDate),
+      ),
     );
   }
 
@@ -72,7 +74,17 @@ class _MainScaffoldState extends State<MainScaffold> {
   Widget build(BuildContext context) {
     return Scaffold(
       // IndexedStack 保持各 Tab 页面状态，切换时不销毁
-      body: IndexedStack(index: _currentIndex, children: _pages),
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          const HomeView(),
+          CalendarView(
+            onSelectedDayChanged: (day) {
+              _calendarSelectedDay = day;
+            },
+          ),
+        ],
+      ),
 
       // 居中嵌入式 FAB（绿色加号）
       floatingActionButton: FloatingActionButton(
