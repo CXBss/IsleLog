@@ -139,6 +139,20 @@ class _HomeViewState extends State<HomeView> {
     }
   }
 
+  Future<void> _syncFull() async {
+    if (_syncing) return;
+    Navigator.pop(context); // 关闭 Drawer
+    setState(() => _syncing = true);
+    final result = await SyncService.syncFull();
+    if (mounted) {
+      setState(() => _syncing = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(result.toString()),
+        backgroundColor: result.success ? null : AppColors.error,
+      ));
+    }
+  }
+
   void _openSearch() {
     showSearch(context: context, delegate: _MemoSearchDelegate());
   }
@@ -289,6 +303,13 @@ class _HomeViewState extends State<HomeView> {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const ArchiveView()));
               },
+            ),
+            ListTile(
+              leading: const Icon(Icons.cloud_sync_outlined),
+              title: const Text('全量同步'),
+              subtitle: const Text('拉取全部数据并检测远端删除',
+                  style: TextStyle(fontSize: 12)),
+              onTap: _syncing ? null : _syncFull,
             ),
 
             const Divider(height: 1),

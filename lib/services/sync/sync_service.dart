@@ -18,18 +18,24 @@ class SyncResult {
   /// 本次从远端拉取到本地的条目数
   final int pulled;
 
+  /// 本次因远端已删除而本地物理删除的条目数（仅全量同步时非零）
+  final int deleted;
+
   /// 错误信息（null 表示同步成功）
   final String? error;
 
-  const SyncResult({this.pushed = 0, this.pulled = 0, this.error});
+  const SyncResult({this.pushed = 0, this.pulled = 0, this.deleted = 0, this.error});
 
   /// true 表示本次同步没有发生错误
   bool get success => error == null;
 
   @override
-  String toString() => success
-      ? '同步完成：推送 $pushed 条，拉取 $pulled 条'
-      : '同步失败：$error';
+  String toString() {
+    if (!success) return '同步失败：$error';
+    final parts = <String>['推送 $pushed 条', '拉取 $pulled 条'];
+    if (deleted > 0) parts.add('删除 $deleted 条');
+    return '同步完成：${parts.join('，')}';
+  }
 }
 
 /// 离线优先双向同步引擎
@@ -54,34 +60,51 @@ class SyncService {
 
   // ── 公开接口 ──────────────────────────────────────────────────
 
-  /// 执行完整双向同步（先 Push 再 Pull）
+  /// 增量双向同步（先 Push 再增量 Pull）
   ///
+  /// Pull 阶段仅拉取自上次同步以来有变化的条目，不做远端删除检测。
   /// 如未配置服务器，直接返回错误结果而不发起任何网络请求。
   /// 同步成功后自动更新 [SettingsService.lastSyncTime]。
   static Future<SyncResult> syncAll() async {
-    debugPrint('[Sync] syncAll 开始');
+    debugPrint('[Sync] syncAll（增量）开始');
+    return _sync(full: false);
+  }
 
+  /// 全量双向同步（先 Push 再全量 Pull + 远端删除检测）
+  ///
+  /// Pull 阶段忽略 lastSyncTime，拉取所有条目，
+  /// 并将本地存在但远端已不存在的已同步条目物理删除。
+  /// 适合服务器迁移、手动清理后恢复一致性等场景。
+  static Future<SyncResult> syncFull() async {
+    debugPrint('[Sync] syncFull（全量）开始');
+    return _sync(full: true);
+  }
+
+  /// 内部同步实现
+  ///
+  /// [full]：true = 全量拉取 + 删除检测；false = 增量拉取
+  static Future<SyncResult> _sync({required bool full}) async {
     // 前置检查：确保服务器已配置
     final url = await SettingsService.serverUrl;
     final token = await SettingsService.accessToken;
     if (url == null || url.isEmpty || token == null || token.isEmpty) {
-      debugPrint('[Sync] syncAll 终止：未配置服务器');
+      debugPrint('[Sync] _sync 终止：未配置服务器');
       return const SyncResult(error: AppStrings.syncNoConfig);
     }
 
     final api = MemosApiService(baseUrl: url, token: token);
     try {
       final pushed = await _pushPending(api, url, token);
-      final pulled = await _pullUpdates(api, url);
+      final (pulled, deleted) = await _pullUpdates(api, url, full: full);
       await SettingsService.setLastSyncTime(DateTime.now());
-      final result = SyncResult(pushed: pushed, pulled: pulled);
-      debugPrint('[Sync] syncAll 完成：$result');
+      final result = SyncResult(pushed: pushed, pulled: pulled, deleted: deleted);
+      debugPrint('[Sync] _sync 完成（full=$full）：$result');
       return result;
     } on MemosApiException catch (e) {
-      debugPrint('[Sync] syncAll API 异常：${e.message}');
+      debugPrint('[Sync] _sync API 异常：${e.message}');
       return SyncResult(error: e.message);
     } catch (e) {
-      debugPrint('[Sync] syncAll 未知异常：$e');
+      debugPrint('[Sync] _sync 未知异常：$e');
       return SyncResult(error: e.toString());
     }
   }
@@ -195,18 +218,23 @@ class SyncService {
 
   /// 从远端拉取更新并合并到本地
   ///
-  /// 优先使用增量同步（基于 lastSyncTime 过滤），
-  /// 若服务端不支持 filter 则静默降级为全量拉取。
-  /// 返回合并到本地的新/更新条目数。
-  static Future<int> _pullUpdates(MemosApiService api, String baseUrl) async {
-    final lastSync = await SettingsService.lastSyncTime;
+  /// [full]：true = 全量拉取 + 远端删除检测；false = 增量拉取（基于 lastSyncTime 过滤）
+  /// 增量模式下若服务端不支持 filter，静默降级为全量拉取（但不做删除检测）。
+  /// 返回 (合并条目数, 删除条目数)。
+  static Future<(int, int)> _pullUpdates(MemosApiService api, String baseUrl,
+      {bool full = false}) async {
     String? filter;
-    if (lastSync != null) {
-      final timeStr = lastSync.toUtc().toIso8601String();
-      filter = 'updateTime >= "$timeStr"';
-      debugPrint('[Sync] _pullUpdates 增量拉取，filter=$filter');
+    if (!full) {
+      final lastSync = await SettingsService.lastSyncTime;
+      if (lastSync != null) {
+        final timeStr = lastSync.toUtc().toIso8601String();
+        filter = 'updateTime >= "$timeStr"';
+        debugPrint('[Sync] _pullUpdates 增量拉取，filter=$filter');
+      } else {
+        debugPrint('[Sync] _pullUpdates 首次同步，全量拉取');
+      }
     } else {
-      debugPrint('[Sync] _pullUpdates 首次同步，全量拉取');
+      debugPrint('[Sync] _pullUpdates 全量拉取（full=true）');
     }
 
     // 同时拉取 NORMAL 和 ARCHIVED 两个状态
@@ -222,41 +250,38 @@ class SyncService {
     }
     debugPrint('[Sync] 远端 NORMAL=${normalMemos.length} ARCHIVED=${archivedMemos.length}');
 
-    // 建立远端所有 name 的集合，用于检测本地已不存在于远端的条目
     final remoteNames = <String>{};
-    int count = 0;
+    int pulled = 0;
+    int deleted = 0;
 
-    // 处理 NORMAL memos
     for (final data in normalMemos) {
       final remoteName = data['name'] as String? ?? '';
       if (remoteName.isEmpty) continue;
       remoteNames.add(remoteName);
-      count += await _applyRemoteMemo(data, baseUrl, archived: false);
+      pulled += await _applyRemoteMemo(data, baseUrl, archived: false);
     }
 
-    // 处理 ARCHIVED memos
     for (final data in archivedMemos) {
       final remoteName = data['name'] as String? ?? '';
       if (remoteName.isEmpty) continue;
       remoteNames.add(remoteName);
-      count += await _applyRemoteMemo(data, baseUrl, archived: true);
+      pulled += await _applyRemoteMemo(data, baseUrl, archived: true);
     }
 
-    // 检测远端已删除的条目：本地 synced 且有 memosName，但不在远端列表中 → 本地物理删除
-    // 仅在全量同步时执行（增量同步无法判断是否真的删除）
-    if (filter == null) {
+    // 远端删除检测：仅全量模式执行
+    if (full) {
       final allLocal = await _getAllSyncedWithMemosName();
       for (final local in allLocal) {
         if (!remoteNames.contains(local.memosName)) {
           debugPrint('[Sync] 远端已删除，本地同步删除 id=${local.id} memosName=${local.memosName}');
           await DatabaseService.hardDelete(local.id);
-          count++;
+          deleted++;
         }
       }
     }
 
-    debugPrint('[Sync] _pullUpdates 完成，合并 $count 条');
-    return count;
+    debugPrint('[Sync] _pullUpdates 完成（full=$full），拉取 $pulled 条，删除 $deleted 条');
+    return (pulled, deleted);
   }
 
   /// 将单条远端 memo 数据应用到本地，返回 1（有变化）或 0
@@ -399,14 +424,14 @@ class SyncService {
 
       if (resName.isEmpty) continue;
 
-      final remoteUrl = externalLink.isNotEmpty
+      final remotePath = externalLink.isNotEmpty
           ? externalLink
-          : '$baseUrl/file/$resName/${Uri.encodeComponent(filename)}';
+          : '/file/$resName/${Uri.encodeComponent(filename)}';
 
       result.add(AttachmentInfo(
         localId: resName, // 用 resName 作为稳定 localId
         remoteResName: resName,
-        remoteUrl: remoteUrl,
+        remoteUrl: remotePath,
         filename: filename,
         mimeType: mime,
         sizeBytes: size,

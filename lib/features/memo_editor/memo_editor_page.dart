@@ -451,11 +451,28 @@ class _AttachmentBar extends StatelessWidget {
   }
 }
 
-class _AttachThumb extends StatelessWidget {
+class _AttachThumb extends StatefulWidget {
   final AttachmentInfo attachment;
   final ValueChanged<AttachmentInfo> onRemove;
 
   const _AttachThumb({required this.attachment, required this.onRemove});
+
+  @override
+  State<_AttachThumb> createState() => _AttachThumbState();
+}
+
+class _AttachThumbState extends State<_AttachThumb> {
+  String _baseUrl = '';
+
+  @override
+  void initState() {
+    super.initState();
+    SettingsService.serverUrl.then((v) {
+      if (mounted) setState(() => _baseUrl = v ?? '');
+    });
+  }
+
+  AttachmentInfo get attachment => widget.attachment;
 
   @override
   Widget build(BuildContext context) {
@@ -480,7 +497,7 @@ class _AttachThumb extends StatelessWidget {
           top: -6,
           right: -6,
           child: GestureDetector(
-            onTap: () => onRemove(attachment),
+            onTap: () => widget.onRemove(attachment),
             child: Container(
               width: 18,
               height: 18,
@@ -498,17 +515,18 @@ class _AttachThumb extends StatelessWidget {
 
   Widget _buildThumbContent() {
     if (attachment.isImage) {
-      final url = attachment.remoteUrl;
       final path = attachment.localPath;
-      if (url != null) {
-        return Image.network(url, fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _iconFallback());
-      } else if (path != null) {
+      if (path != null) {
         final file = File(path);
         if (file.existsSync()) {
           return Image.file(file, fit: BoxFit.cover,
               errorBuilder: (_, __, ___) => _iconFallback());
         }
+      }
+      final url = attachment.fullUrl(_baseUrl);
+      if (url != null && url.isNotEmpty) {
+        return Image.network(url, fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _iconFallback());
       }
       return _iconFallback();
     }

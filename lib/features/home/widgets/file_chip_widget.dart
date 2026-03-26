@@ -33,7 +33,7 @@ class FileChipWidget extends StatelessWidget {
           SnackBar(content: Text('无法打开文件：${result.message}')),
         );
       }
-    } else if (attachment.remoteUrl != null) {
+    } else if (attachment.remoteUrl != null && attachment.remoteUrl!.isNotEmpty) {
       // 远端文件：提示暂不支持直接打开（可后续扩展下载）
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

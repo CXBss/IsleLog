@@ -42,9 +42,26 @@ class AttachmentInfo {
   bool get isImage => mimeType.startsWith('image/');
   bool get isAudio => mimeType.startsWith('audio/');
 
+  /// 是否为相对路径（以 `/` 开头）
+  bool get _isRelativePath => remoteUrl != null && remoteUrl!.startsWith('/');
+
+  /// 返回可用于网络请求的完整 URL。
+  ///
+  /// - remoteUrl 以 `/` 开头 → 拼上 [baseUrl]
+  /// - remoteUrl 为完整 URL → 直接返回
+  /// - 无 remoteUrl → 返回 null
+  String? fullUrl(String baseUrl) {
+    if (remoteUrl == null) return null;
+    if (_isRelativePath) {
+      final base = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
+      return '$base$remoteUrl';
+    }
+    return remoteUrl;
+  }
+
   /// 附件在正文中的 Markdown 引用（图片用 ![]()，其他用 []()）
-  String get markdownLink {
-    final url = remoteUrl ?? (localPath != null ? 'file://$localPath' : '');
+  String markdownLink(String baseUrl) {
+    final url = fullUrl(baseUrl) ?? (localPath != null ? 'file://$localPath' : '');
     return isImage ? '![$filename]($url)' : '[$filename]($url)';
   }
 

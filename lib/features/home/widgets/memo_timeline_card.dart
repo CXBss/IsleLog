@@ -702,7 +702,6 @@ class _NetImgState extends State<_NetImg> {
   }
 
   Future<void> _load() async {
-    final url = widget.attachment.remoteUrl;
     final localPath = widget.attachment.localPath;
 
     if (localPath != null) {
@@ -717,6 +716,8 @@ class _NetImgState extends State<_NetImg> {
       return;
     }
 
+    final baseUrl = await SettingsService.serverUrl ?? '';
+    final url = widget.attachment.fullUrl(baseUrl);
     if (url == null || url.isEmpty) {
       if (mounted) setState(() { _loading = false; _error = true; });
       return;

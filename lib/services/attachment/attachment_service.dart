@@ -61,18 +61,20 @@ class AttachmentService {
 
     final resName = data['name'] as String;
     final externalLink = data['externalLink'] as String? ?? '';
-    final remoteUrl = externalLink.isNotEmpty
+    // externalLink 非空时是第三方存储完整 URL，直接保存；
+    // 否则只保存相对路径（不含 baseUrl），换服务器地址后无需重新同步。
+    final remotePath = externalLink.isNotEmpty
         ? externalLink
-        : '$url/file/$resName/${Uri.encodeComponent(fname)}';
+        : '/file/$resName/${Uri.encodeComponent(fname)}';
 
-    debugPrint('[Attachment] 上传成功 resName=$resName url=$remoteUrl localPath=$localPath');
+    debugPrint('[Attachment] 上传成功 resName=$resName path=$remotePath localPath=$localPath');
     return AttachmentInfo(
       localId: _uuid.v4(),
       filename: fname,
       mimeType: mime,
       sizeBytes: size,
       remoteResName: resName,
-      remoteUrl: remoteUrl,
+      remoteUrl: remotePath,
       localPath: localPath, // 保留本地备份
     );
   }
@@ -131,14 +133,14 @@ class AttachmentService {
       );
       final resName = data['name'] as String;
       final externalLink = data['externalLink'] as String? ?? '';
-      final remoteUrl = externalLink.isNotEmpty
+      final remotePath = externalLink.isNotEmpty
           ? externalLink
-          : '$baseUrl/file/$resName/${Uri.encodeComponent(attachment.filename)}';
+          : '/file/$resName/${Uri.encodeComponent(attachment.filename)}';
 
       debugPrint('[Attachment] 离线补传成功 resName=$resName，保留本地备份');
       return attachment.copyWith(
         remoteResName: resName,
-        remoteUrl: remoteUrl,
+        remoteUrl: remotePath,
         // localPath 保留，不清除
       );
     } catch (e) {

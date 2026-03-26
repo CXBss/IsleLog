@@ -3,6 +3,7 @@ import 'package:just_audio/just_audio.dart';
 
 import '../../../data/models/attachment_info.dart';
 import '../../../services/attachment/audio_manager.dart';
+import '../../../services/settings/settings_service.dart';
 import '../../../shared/constants/app_constants.dart';
 
 /// 音频附件播放控件
@@ -33,8 +34,9 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
 
   Future<void> _initPlayer() async {
     try {
-      final url = widget.attachment.remoteUrl;
       final localPath = widget.attachment.localPath;
+      final baseUrl = await SettingsService.serverUrl ?? '';
+      final url = widget.attachment.fullUrl(baseUrl);
 
       if (url != null && url.isNotEmpty) {
         await _player.setUrl(url);
