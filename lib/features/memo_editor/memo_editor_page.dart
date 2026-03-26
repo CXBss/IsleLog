@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
@@ -402,9 +403,15 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                 ),
         ],
       ),
-      // resizeToAvoidBottomInset=true（默认）让 Scaffold 在键盘弹起时自动收缩，
-      // 底部工具栏随之上移，始终保持可见
-      body: Column(
+      body: CallbackShortcuts(
+        bindings: {
+          SingleActivator(
+            LogicalKeyboardKey.enter,
+            meta: defaultTargetPlatform == TargetPlatform.macOS,
+            control: defaultTargetPlatform != TargetPlatform.macOS,
+          ): _save,
+        },
+        child: Column(
         children: [
           // ── 正文输入区 + 右侧标签面板 ────────────────────────────
           Expanded(
@@ -501,6 +508,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
             ),
           ),
         ],
+      ),
       ),
     );
   }

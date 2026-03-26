@@ -171,9 +171,27 @@ class _MemoCard extends StatefulWidget {
   State<_MemoCard> createState() => _MemoCardState();
 }
 
+// 折叠时最大显示高度（约 6 行）
+const double _kCollapsedMaxHeight = 140.0;
+
 class _MemoCardState extends State<_MemoCard> {
   MemoEntry get memo => widget.memo;
   String get displayContent => widget.displayContent;
+
+  bool _expanded = false;
+
+  /// 将单个换行转为 Markdown 换行（两个空格 + 换行），保留已有的双换行段落
+  String get _markdownContent {
+    // 先把 \r\n 统一为 \n
+    var text = displayContent.replaceAll('\r\n', '\n');
+    // 把双换行（段落分隔）临时占位，避免被处理
+    text = text.replaceAll('\n\n', '\x00');
+    // 单换行 → Markdown 强制换行（末尾两空格 + \n）
+    text = text.replaceAll('\n', '  \n');
+    // 恢复段落分隔
+    text = text.replaceAll('\x00', '\n\n');
+    return text;
+  }
 
   // ── 附件分类 ──────────────────────────────────────────────────
 
@@ -293,14 +311,12 @@ class _MemoCardState extends State<_MemoCard> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (displayContent.isNotEmpty)
-              MarkdownBody(
-                data: displayContent,
-                styleSheet:
-                    MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                  p: const TextStyle(
-                      fontSize: 14,
-                      height: 1.6,
-                      color: AppColors.textBody),
+              _CollapsibleMarkdown(
+                content: _markdownContent,
+                expanded: _expanded,
+                onToggle: () => setState(() => _expanded = !_expanded),
+                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                  p: const TextStyle(fontSize: 14, height: 1.6, color: AppColors.textBody),
                   blockquote: const TextStyle(
                     fontSize: 13,
                     color: Colors.grey,
@@ -416,6 +432,116 @@ class _TagChip extends StatelessWidget {
     );
     if (onTap == null) return chip;
     return GestureDetector(onTap: onTap, child: chip);
+  }
+}
+
+/// 可折叠 Markdown 内容区
+///
+/// 内容超过 [_kCollapsedMaxHeight] 时截断，底部显示渐变遮罩 + "展开"按钮；
+/// 展开后显示"收起"按钮。
+class _CollapsibleMarkdown extends StatefulWidget {
+  final String content;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final MarkdownStyleSheet styleSheet;
+
+  const _CollapsibleMarkdown({
+    required this.content,
+    required this.expanded,
+    required this.onToggle,
+    required this.styleSheet,
+  });
+
+  @override
+  State<_CollapsibleMarkdown> createState() => _CollapsibleMarkdownState();
+}
+
+class _CollapsibleMarkdownState extends State<_CollapsibleMarkdown> {
+  // 是否内容实际超过折叠高度（通过测量确定）
+  bool _overflow = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = MarkdownBody(
+      data: widget.content,
+      styleSheet: widget.styleSheet,
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 内容区：折叠时限高 + 渐变遮罩
+        LayoutBuilder(
+          builder: (context, constraints) {
+            return Stack(
+              children: [
+                // 用 OverflowBox 测量实际高度
+                ConstrainedBox(
+                  constraints: widget.expanded
+                      ? const BoxConstraints()
+                      : const BoxConstraints(maxHeight: _kCollapsedMaxHeight),
+                  child: ClipRect(child: body),
+                ),
+                // 渐变遮罩（仅折叠且有溢出时）
+                if (!widget.expanded && _overflow)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    height: 36,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.white.withValues(alpha: 0),
+                            Colors.white,
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+        // 溢出检测（不可见）
+        Offstage(
+          child: LayoutBuilder(
+            builder: (ctx, _) {
+              // 在下一帧通知溢出状态
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                final ro = ctx.findRenderObject();
+                if (ro is RenderBox && ro.hasSize) {
+                  final overflows = ro.size.height > _kCollapsedMaxHeight;
+                  if (overflows != _overflow) {
+                    setState(() => _overflow = overflows);
+                  }
+                }
+              });
+              return body;
+            },
+          ),
+        ),
+        // 展开 / 收起按钮
+        if (_overflow)
+          GestureDetector(
+            onTap: widget.onToggle,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                widget.expanded ? '收起' : '展开',
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 }
 
