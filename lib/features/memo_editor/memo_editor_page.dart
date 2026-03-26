@@ -143,23 +143,61 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     final picked = result.files.first;
     if (picked.path == null) return;
 
-    await _processFile(File(picked.path!), picked.name);
+    // 图片类型询问是否压缩
+    bool compress = true;
+    if (choice == _AttachType.image && mounted) {
+      final useCompress = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('图片质量'),
+          content: const Text('压缩后上传可节省流量，原图保留完整画质。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('原图'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('压缩'),
+            ),
+          ],
+        ),
+      );
+      if (useCompress == null) return; // 取消
+      compress = useCompress;
+    }
+
+    await _processFile(File(picked.path!), picked.name, compress: compress);
   }
 
   /// 处理选中的文件：在线上传 or 离线存储
-  Future<void> _processFile(File file, String filename) async {
+  ///
+  /// 优先尝试在线上传；若服务器未配置或网络不通，自动降级到本地存储，
+  /// 待下次联网同步时由 [SyncService] 补传。
+  Future<void> _processFile(File file, String filename, {bool compress = true}) async {
     setState(() => _uploading = true);
     try {
       final configured = await SettingsService.isConfigured;
-      final AttachmentInfo info;
+      AttachmentInfo info;
 
       if (configured) {
-        info = await AttachmentService.uploadToServer(file, filename: filename);
+        try {
+          info = await AttachmentService.uploadToServer(file, filename: filename, compress: compress);
+          debugPrint('[MemoEditor] 在线上传成功：${info.filename}');
+        } catch (e) {
+          // 网络不通时降级到本地存储，等待联网后同步
+          debugPrint('[MemoEditor] 在线上传失败，降级本地存储：$e');
+          info = await AttachmentService.saveLocally(file, filename: filename, compress: compress);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('网络不可用，附件已本地保存，联网后自动上传')),
+            );
+          }
+        }
       } else {
-        info = await AttachmentService.saveLocally(file, filename: filename);
+        info = await AttachmentService.saveLocally(file, filename: filename, compress: compress);
       }
 
-      // 附件只存入列表，不插入正文（与 Memos 网页端保持一致）
       setState(() => _pendingAttachments.add(info));
       debugPrint('[MemoEditor] 附件已处理：${info.filename}');
     } catch (e) {
