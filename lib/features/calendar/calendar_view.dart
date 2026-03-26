@@ -153,59 +153,7 @@ class _CalendarViewState extends State<CalendarView> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.scaffoldBg,
-      appBar: AppBar(
-        backgroundColor: AppColors.surfaceWhite,
-        elevation: 0,
-        scrolledUnderElevation: 1,
-        automaticallyImplyLeading: false,
-        titleSpacing: 0,
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.chevron_left),
-              onPressed: _prevMonth,
-              tooltip: AppStrings.calendarPrevMonth,
-            ),
-            Text(
-              '${_focusedDay.year}年 ${_focusedDay.month}月',
-              style: const TextStyle(
-                  fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-            IconButton(
-              icon: const Icon(Icons.chevron_right),
-              onPressed: _nextMonth,
-              tooltip: AppStrings.calendarNextMonth,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              debugPrint('[CalendarView] 点击"今日"按钮');
-              final now = DateTime.now();
-              // 若月份有变化则重新加载月高亮
-              final monthChanged = now.year != _focusedDay.year ||
-                  now.month != _focusedDay.month;
-              setState(() {
-                _focusedDay = now;
-                _selectedDay = now;
-              });
-              if (monthChanged) _loadMonthData(now.year, now.month);
-              _loadDayData(now);
-            },
-            child: const Text(AppStrings.calendarToday,
-                style: TextStyle(color: AppColors.primary)),
-          ),
-          IconButton(
-            icon: const Icon(Icons.share_outlined),
-            onPressed: () {
-              debugPrint('[CalendarView] 点击分享月历（暂未实现）');
-            },
-            tooltip: AppStrings.calendarShare,
-          ),
-        ],
-      ),
+      appBar: null,
       body: LayoutBuilder(
         builder: (ctx, constraints) {
           final availW = constraints.maxWidth;
@@ -231,11 +179,60 @@ class _CalendarViewState extends State<CalendarView> {
   ///
   /// [calendarW]：日历可用宽度；[maxCalH]：日历允许的最大高度。
   double _calcRowHeight(double calendarW, double maxCalH) {
+    // 每列宽度即为正方形格子的边长
+    final byW = (calendarW / 7).floorToDouble();
     const dowHeight = 32.0;
     final byH = ((maxCalH - dowHeight) / 6).floorToDouble();
-    final byW = calendarW / 7 * 1.05;
-    // 取两者较小值后再统一 clamp，避免 min > max 崩溃
-    return byH.clamp(0.0, byW).clamp(44.0, 66.0);
+    return byW.clamp(0.0, byH).clamp(44.0, 72.0);
+  }
+
+  /// 月份导航栏（月份切换 + 今日 + 分享）
+  Widget _buildMonthHeader() {
+    return Container(
+      color: AppColors.surfaceWhite,
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.chevron_left),
+            onPressed: _prevMonth,
+            tooltip: AppStrings.calendarPrevMonth,
+          ),
+          Expanded(
+            child: Text(
+              '${_focusedDay.year}年 ${_focusedDay.month}月',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.chevron_right),
+            onPressed: _nextMonth,
+            tooltip: AppStrings.calendarNextMonth,
+          ),
+          TextButton(
+            onPressed: () {
+              final now = DateTime.now();
+              final monthChanged = now.year != _focusedDay.year ||
+                  now.month != _focusedDay.month;
+              setState(() {
+                _focusedDay = now;
+                _selectedDay = now;
+              });
+              if (monthChanged) _loadMonthData(now.year, now.month);
+              _loadDayData(now);
+            },
+            child: const Text(AppStrings.calendarToday,
+                style: TextStyle(color: AppColors.primary)),
+          ),
+          IconButton(
+            icon: const Icon(Icons.share_outlined),
+            onPressed: () {},
+            tooltip: AppStrings.calendarShare,
+          ),
+        ],
+      ),
+    );
   }
 
   /// 构建日历 TableCalendar widget
@@ -316,15 +313,22 @@ class _CalendarViewState extends State<CalendarView> {
   Widget _buildNarrowLayout(double availW, double availH) {
     const calendarMaxWidth = 560.0;
     final calendarW = availW.clamp(0.0, calendarMaxWidth);
-    final rowHeight = _calcRowHeight(calendarW, availH * 0.42);
+    // 正方形格子：行高 = 列宽
+    final rowHeight = (calendarW / 7).floorToDouble().clamp(44.0, 72.0);
+    const dowHeight = 32.0;
+    final calendarH = dowHeight + rowHeight * 6;
 
     return Column(
       children: [
-        Align(
-          alignment: Alignment.topCenter,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: calendarMaxWidth),
-            child: _buildCalendar(rowHeight),
+        _buildMonthHeader(),
+        SizedBox(
+          height: calendarH,
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: calendarMaxWidth),
+              child: _buildCalendar(rowHeight),
+            ),
           ),
         ),
         const Divider(height: 1, thickness: 1),
@@ -334,8 +338,6 @@ class _CalendarViewState extends State<CalendarView> {
   }
 
   /// 横向布局（宽屏 >= 720px）：左侧日历，右侧列表，竖向分割线分隔
-  ///
-  /// 日历固定占左侧 42% 宽度（最多 420px），列表占剩余空间。
   Widget _buildWideLayout(double availW, double availH) {
     final calendarW = (availW * 0.42).clamp(300.0, 420.0);
     final rowHeight = _calcRowHeight(calendarW, availH * 0.88);
@@ -343,10 +345,15 @@ class _CalendarViewState extends State<CalendarView> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // ── 左侧：日历 ──────────────────────────────────────
+        // ── 左侧：日历（含月份导航）──────────────────────────
         SizedBox(
           width: calendarW,
-          child: _buildCalendar(rowHeight),
+          child: Column(
+            children: [
+              _buildMonthHeader(),
+              _buildCalendar(rowHeight),
+            ],
+          ),
         ),
 
         // ── 竖向分割线 ──────────────────────────────────────
@@ -456,7 +463,9 @@ class _DayCell extends StatelessWidget {
     final lunarFontSize = (cellHeight * 0.14).clamp(8.0, 11.0);
     final margin = cellHeight < 56 ? 2.0 : 3.0;
 
-    return Container(
+    return AspectRatio(
+      aspectRatio: 1,
+      child: Container(
       margin: EdgeInsets.all(margin),
       decoration: BoxDecoration(
         color: bg,
@@ -493,6 +502,7 @@ class _DayCell extends StatelessWidget {
           ],
         ],
       ),
+    ),
     );
   }
 }
