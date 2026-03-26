@@ -89,6 +89,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       _pendingAttachments.addAll(widget.editingMemo!.attachments);
     }
 
+    // 新建模式下恢复草稿
+    if (!_isEditing) {
+      _loadDraft();
+    }
+
     _contentCtrl.addListener(_onContentChanged);
 
     DatabaseService.getCachedTagStats().then((tags) {
@@ -116,6 +121,27 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     _locationCtrl.dispose();
     _contentFocus.dispose();
     super.dispose();
+  }
+
+  // ── 草稿 ──────────────────────────────────────────────────────
+
+  Future<void> _loadDraft() async {
+    final content = await SettingsService.draftContent;
+    final location = await SettingsService.draftLocation;
+    if (content != null && content.isNotEmpty && mounted) {
+      _contentCtrl.text = content;
+      _locationCtrl.text = location ?? '';
+    }
+  }
+
+  Future<void> _saveDraftAndPop() async {
+    final content = _contentCtrl.text;
+    if (content.trim().isNotEmpty) {
+      await SettingsService.saveDraft(content, _locationCtrl.text);
+    } else {
+      await SettingsService.clearDraft();
+    }
+    if (mounted) Navigator.pop(context);
   }
 
   // ── 标签提示逻辑 ──────────────────────────────────────────────
@@ -187,12 +213,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             // 拍照仅在移动端显示
-            if (_isMobile)
-              ListTile(
-                leading: const Icon(Icons.camera_alt_outlined),
-                title: const Text('拍照'),
-                onTap: () => Navigator.pop(context, _AttachType.camera),
-              ),
             ListTile(
               leading: const Icon(Icons.image_outlined),
               title: const Text('从相册选图'),
@@ -386,6 +406,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         if (att.localPath != null) AttachmentService.deleteLocal(att.localPath!);
       }
 
+      // 保存成功后清除草稿
+      if (!_isEditing) await SettingsService.clearDraft();
+
       // 后台静默推送到远端（fire-and-forget，不阻塞 UI 返回）
       final configured = await SettingsService.isConfigured;
       if (configured) {
@@ -418,7 +441,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           icon: const Icon(Icons.close),
           onPressed: () {
             debugPrint('[MemoEditor] 取消编辑，返回上一页');
-            Navigator.pop(context);
+            if (_isEditing) {
+              Navigator.pop(context);
+            } else {
+              _saveDraftAndPop();
+            }
           },
           tooltip: AppStrings.cancel,
         ),
@@ -515,7 +542,38 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: Row(
                 children: [
-                  // 附件按钮
+                  // # 标签按钮
+                  IconButton(
+                    icon: const Icon(Icons.tag),
+                    color: Colors.grey[600],
+                    iconSize: 22,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    tooltip: '插入标签',
+                    onPressed: () {
+                      final ctrl = _contentCtrl;
+                      final sel = ctrl.selection;
+                      final pos = sel.isValid ? sel.baseOffset : ctrl.text.length;
+                      final newText = ctrl.text.substring(0, pos) + '# ' + ctrl.text.substring(pos);
+                      ctrl.value = TextEditingValue(
+                        text: newText,
+                        selection: TextSelection.collapsed(offset: pos + 1),
+                      );
+                      _contentFocus.requestFocus();
+                    },
+                  ),
+                  // 拍照按钮（仅移动端）
+                  if (_isMobile)
+                    IconButton(
+                      icon: const Icon(Icons.camera_alt_outlined),
+                      color: Colors.grey[600],
+                      iconSize: 22,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      tooltip: '拍照',
+                      onPressed: _uploading ? null : _takePhoto,
+                    ),
+                  // 附件按钮（上传中显示 loading）
                   _uploading
                       ? const SizedBox(
                           width: 36,
@@ -531,8 +589,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                           color: Colors.grey[600],
                           iconSize: 22,
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                              minWidth: 36, minHeight: 36),
+                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                           tooltip: '添加附件',
                           onPressed: _pickAttachment,
                         ),

@@ -73,6 +73,29 @@ class SettingsService {
     await (await _prefs).remove(_keyLastSyncTime);
   }
 
+  // ── Draft ─────────────────────────────────────────────────────
+
+  static const _keyDraftContent = 'draft_content';
+  static const _keyDraftLocation = 'draft_location';
+
+  static Future<String?> get draftContent async =>
+      (await _prefs).getString(_keyDraftContent);
+
+  static Future<String?> get draftLocation async =>
+      (await _prefs).getString(_keyDraftLocation);
+
+  static Future<void> saveDraft(String content, String location) async {
+    final p = await _prefs;
+    await p.setString(_keyDraftContent, content);
+    await p.setString(_keyDraftLocation, location);
+  }
+
+  static Future<void> clearDraft() async {
+    final p = await _prefs;
+    await p.remove(_keyDraftContent);
+    await p.remove(_keyDraftLocation);
+  }
+
   // ── Helpers ───────────────────────────────────────────────────
 
   /// 是否已完整配置服务器（URL 和 Token 均非空才算已配置）

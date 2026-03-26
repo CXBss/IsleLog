@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
 import '../../services/settings/settings_service.dart';
@@ -17,10 +18,17 @@ import '../../shared/constants/app_constants.dart';
 ///
 /// 展示完整内容（Markdown 渲染）、附件、标签、位置等。
 /// 单击从时间线卡片进入；右上角编辑按钮或双击卡片直接跳编辑页。
-class MemoDetailPage extends StatelessWidget {
+class MemoDetailPage extends StatefulWidget {
   final MemoEntry memo;
 
   const MemoDetailPage({super.key, required this.memo});
+
+  @override
+  State<MemoDetailPage> createState() => _MemoDetailPageState();
+}
+
+class _MemoDetailPageState extends State<MemoDetailPage> {
+  MemoEntry get memo => widget.memo;
 
   String get _dateTimeLabel {
     final d = memo.createdAt;
@@ -58,8 +66,45 @@ class MemoDetailPage extends StatelessWidget {
     );
   }
 
+  Future<void> _toggleTodo(int lineIndex, bool checked) async {
+    final lines = memo.content.split('\n');
+    if (lineIndex < 0 || lineIndex >= lines.length) return;
+    final line = lines[lineIndex];
+    if (checked) {
+      lines[lineIndex] = line.replaceFirst('- [ ]', '- [x]');
+    } else {
+      lines[lineIndex] = line.replaceFirst('- [x]', '- [ ]');
+    }
+    memo.content = lines.join('\n');
+    memo.updatedAt = DateTime.now();
+    memo.syncStatus = SyncStatus.pending;
+    await DatabaseService.saveMemo(memo);
+    if (mounted) setState(() {});
+  }
+
+  MarkdownStyleSheet _mdStyle(BuildContext context) =>
+      MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+        p: const TextStyle(fontSize: 15, height: 1.7, color: AppColors.textBody),
+        blockquote: const TextStyle(
+          fontSize: 14,
+          color: Colors.grey,
+          fontStyle: FontStyle.italic,
+        ),
+        blockquoteDecoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(color: Colors.grey[300]!, width: 3),
+          ),
+        ),
+        code: TextStyle(fontSize: 13, backgroundColor: Colors.grey[100]),
+        codeblockDecoration: BoxDecoration(
+          color: Colors.grey[100],
+          borderRadius: BorderRadius.circular(6),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
+    var checkboxIdx = 0;
     return Scaffold(
       backgroundColor: AppColors.scaffoldBg,
       appBar: AppBar(
@@ -101,29 +146,24 @@ class MemoDetailPage extends StatelessWidget {
                 ),
                 child: MarkdownBody(
                   data: _displayContent,
-                  styleSheet:
-                      MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                    p: const TextStyle(
-                        fontSize: 15, height: 1.7, color: AppColors.textBody),
-                    blockquote: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey,
-                      fontStyle: FontStyle.italic,
-                    ),
-                    blockquoteDecoration: BoxDecoration(
-                      border: Border(
-                        left: BorderSide(color: Colors.grey[300]!, width: 3),
+                  styleSheet: _mdStyle(context),
+                  checkboxBuilder: (checked) {
+                    final idx = checkboxIdx++;
+                    return GestureDetector(
+                      onTap: () {
+                        final lineIndex = _findTodoLineIndex(memo.content, idx);
+                        _toggleTodo(lineIndex, !checked);
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Icon(
+                          checked ? Icons.check_box : Icons.check_box_outline_blank,
+                          size: 18,
+                          color: checked ? AppColors.primary : Colors.grey[500],
+                        ),
                       ),
-                    ),
-                    code: TextStyle(
-                      fontSize: 13,
-                      backgroundColor: Colors.grey[100],
-                    ),
-                    codeblockDecoration: BoxDecoration(
-                      color: Colors.grey[100],
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                  ),
+                    );
+                  },
                 ),
               ),
 
@@ -182,6 +222,19 @@ class MemoDetailPage extends StatelessWidget {
       ),
     );
   }
+}
+
+int _findTodoLineIndex(String raw, int checkboxIndex) {
+  final lines = raw.split('\n');
+  int count = -1;
+  for (var i = 0; i < lines.length; i++) {
+    final trimmed = lines[i].trimLeft();
+    if (trimmed.startsWith('- [ ]') || trimmed.startsWith('- [x]')) {
+      count++;
+      if (count == checkboxIndex) return i;
+    }
+  }
+  return -1;
 }
 
 class _DetailTagChip extends StatelessWidget {
