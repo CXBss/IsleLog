@@ -5,10 +5,10 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = memos_local
+PRODUCT_NAME = IsleLog
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = dyc.dev.memosLocal
+PRODUCT_BUNDLE_IDENTIFIER = dyc.dev.isleLog
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 dyc.dev. All rights reserved.

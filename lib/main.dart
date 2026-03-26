@@ -49,7 +49,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Memos Local',
+      title: 'IsleLog',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         // 以品牌绿为种子色自动派生完整 ColorScheme
