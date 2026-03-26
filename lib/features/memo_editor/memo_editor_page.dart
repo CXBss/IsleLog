@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
@@ -172,6 +173,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   // ── 附件选择与上传 ────────────────────────────────────────────
 
+  // 仅 iOS / Android 支持摄像头
+  static bool get _isMobile =>
+      defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.android;
+
   /// 弹出附件类型选择菜单，然后选择并处理文件
   Future<void> _pickAttachment() async {
     final choice = await showModalBottomSheet<_AttachType>(
@@ -180,9 +186,16 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 拍照仅在移动端显示
+            if (_isMobile)
+              ListTile(
+                leading: const Icon(Icons.camera_alt_outlined),
+                title: const Text('拍照'),
+                onTap: () => Navigator.pop(context, _AttachType.camera),
+              ),
             ListTile(
               leading: const Icon(Icons.image_outlined),
-              title: const Text('图片'),
+              title: const Text('从相册选图'),
               onTap: () => Navigator.pop(context, _AttachType.image),
             ),
             ListTile(
@@ -201,20 +214,27 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     );
     if (choice == null) return;
 
+    // ── 拍照 ──────────────────────────────────────────────────────
+    if (choice == _AttachType.camera) {
+      await _takePhoto();
+      return;
+    }
+
+    // ── 文件选择器 ─────────────────────────────────────────────────
     FileType fileType;
-    List<String>? allowedExtensions;
     switch (choice) {
       case _AttachType.image:
         fileType = FileType.image;
       case _AttachType.audio:
         fileType = FileType.audio;
+      case _AttachType.camera: // 不会走到这里
+        return;
       case _AttachType.file:
         fileType = FileType.any;
     }
 
     final result = await FilePicker.platform.pickFiles(
       type: fileType,
-      allowedExtensions: allowedExtensions,
       withData: false,
     );
     if (result == null || result.files.isEmpty) return;
@@ -242,11 +262,41 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           ],
         ),
       );
-      if (useCompress == null) return; // 取消
+      if (useCompress == null) return;
       compress = useCompress;
     }
 
     await _processFile(File(picked.path!), picked.name, compress: compress);
+  }
+
+  /// 调用系统相机拍照，拍完自动压缩并上传
+  Future<void> _takePhoto() async {
+    final picker = ImagePicker();
+    XFile? photo;
+    try {
+      photo = await picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85, // 系统层面先压一次（0-100）
+        maxWidth: 2048,
+        maxHeight: 2048,
+      );
+    } catch (e) {
+      debugPrint('[MemoEditor] 拍照失败：$e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('无法访问相机：$e')),
+        );
+      }
+      return;
+    }
+    if (photo == null) return; // 用户取消
+
+    final filename = photo.name.isNotEmpty
+        ? photo.name
+        : 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+
+    // compress: true → AttachmentService 再做一次 flutter_image_compress 压缩
+    await _processFile(File(photo.path), filename, compress: true);
   }
 
   /// 处理选中的文件：在线上传 or 离线存储
@@ -516,7 +566,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
 // ── 附件类型枚举 ───────────────────────────────────────────────────
 
-enum _AttachType { image, audio, file }
+enum _AttachType { camera, image, audio, file }
 
 // ── 附件预览条 ─────────────────────────────────────────────────────
 
