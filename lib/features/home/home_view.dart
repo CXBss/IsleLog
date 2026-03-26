@@ -11,6 +11,7 @@ import '../../services/api/memos_api_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
+import 'widgets/memo_search_card.dart';
 import 'widgets/memo_timeline_card.dart';
 
 class HomeView extends StatefulWidget {
@@ -821,11 +822,10 @@ class _SearchResultsState extends State<_SearchResults> {
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       itemCount: _results.length,
-      itemBuilder: (ctx, i) => MemoTimelineCard(
+      itemBuilder: (ctx, i) => MemoSearchCard(
         key: ValueKey(_results[i].id),
         memo: _results[i],
-        isLast: i == _results.length - 1,
-        showTime: true,
+        query: widget.query,
       ),
     );
   }

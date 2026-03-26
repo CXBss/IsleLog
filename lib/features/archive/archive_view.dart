@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/database/database_service.dart';
 import '../../data/models/memo_entry.dart';
+import '../home/widgets/memo_search_card.dart';
 import '../home/widgets/memo_timeline_card.dart';
 
 /// 归档日记列表页
@@ -191,10 +192,10 @@ class _ArchiveSearchResultsState extends State<_ArchiveSearchResults> {
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       itemCount: _results.length,
-      itemBuilder: (ctx, i) => _ArchiveItem(
+      itemBuilder: (ctx, i) => MemoSearchCard(
         key: ValueKey(_results[i].id),
         memo: _results[i],
-        isLast: i == _results.length - 1,
+        query: widget.query,
       ),
     );
   }
