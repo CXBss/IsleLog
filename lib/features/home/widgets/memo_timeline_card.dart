@@ -494,6 +494,7 @@ class _MemoCardState extends State<_MemoCard> {
                     Icon(Icons.push_pin, size: 13, color: AppColors.primary),
                     const SizedBox(width: 2),
                   ],
+                  _SyncBadge(status: memo.syncStatus),
                   IconButton(
                     onPressed: () => _showMenu(context),
                     icon: Icon(Icons.more_horiz, color: Colors.grey[400]),
@@ -577,6 +578,29 @@ class _PreviewMarkdown extends StatelessWidget {
       }
     }
     return -1;
+  }
+}
+
+class _SyncBadge extends StatelessWidget {
+  final SyncStatus status;
+  const _SyncBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    switch (status) {
+      case SyncStatus.synced:
+        return const SizedBox.shrink();
+      case SyncStatus.pending:
+        return Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: Icon(Icons.cloud_upload_outlined, size: 14, color: Colors.grey[400]),
+        );
+      case SyncStatus.conflict:
+        return const Padding(
+          padding: EdgeInsets.only(right: 4),
+          child: Icon(Icons.warning_amber_rounded, size: 14, color: Colors.orange),
+        );
+    }
   }
 }
 

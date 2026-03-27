@@ -117,6 +117,7 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
           style: const TextStyle(fontSize: 15, color: Colors.grey),
         ),
         actions: [
+          _syncIcon(memo.syncStatus),
           IconButton(
             icon: const Icon(Icons.edit_outlined),
             tooltip: '编辑',
@@ -241,6 +242,23 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
         ),
       ),
     );
+  }
+}
+
+Widget _syncIcon(SyncStatus status) {
+  switch (status) {
+    case SyncStatus.synced:
+      return const SizedBox.shrink();
+    case SyncStatus.pending:
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 8),
+        child: Icon(Icons.cloud_upload_outlined, size: 18, color: Colors.grey),
+      );
+    case SyncStatus.conflict:
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 8),
+        child: Icon(Icons.warning_amber_rounded, size: 18, color: Colors.orange),
+      );
   }
 }
 
