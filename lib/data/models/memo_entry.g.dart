@@ -52,29 +52,39 @@ const MemoEntrySchema = CollectionSchema(
       name: r'lastSyncAt',
       type: IsarType.dateTime,
     ),
-    r'location': PropertySchema(
+    r'latitude': PropertySchema(
       id: 7,
+      name: r'latitude',
+      type: IsarType.double,
+    ),
+    r'location': PropertySchema(
+      id: 8,
       name: r'location',
       type: IsarType.string,
     ),
+    r'longitude': PropertySchema(
+      id: 9,
+      name: r'longitude',
+      type: IsarType.double,
+    ),
     r'memosName': PropertySchema(
-      id: 8,
+      id: 10,
       name: r'memosName',
       type: IsarType.string,
     ),
     r'syncStatus': PropertySchema(
-      id: 9,
+      id: 11,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrysyncStatusEnumValueMap,
     ),
     r'tags': PropertySchema(
-      id: 10,
+      id: 12,
       name: r'tags',
       type: IsarType.stringList,
     ),
     r'updatedAt': PropertySchema(
-      id: 11,
+      id: 13,
       name: r'updatedAt',
       type: IsarType.dateTime,
     )
@@ -182,11 +192,13 @@ void _memoEntrySerialize(
   writer.writeBool(offsets[4], object.isDeleted);
   writer.writeBool(offsets[5], object.isPinned);
   writer.writeDateTime(offsets[6], object.lastSyncAt);
-  writer.writeString(offsets[7], object.location);
-  writer.writeString(offsets[8], object.memosName);
-  writer.writeByte(offsets[9], object.syncStatus.index);
-  writer.writeStringList(offsets[10], object.tags);
-  writer.writeDateTime(offsets[11], object.updatedAt);
+  writer.writeDouble(offsets[7], object.latitude);
+  writer.writeString(offsets[8], object.location);
+  writer.writeDouble(offsets[9], object.longitude);
+  writer.writeString(offsets[10], object.memosName);
+  writer.writeByte(offsets[11], object.syncStatus.index);
+  writer.writeStringList(offsets[12], object.tags);
+  writer.writeDateTime(offsets[13], object.updatedAt);
 }
 
 MemoEntry _memoEntryDeserialize(
@@ -204,13 +216,15 @@ MemoEntry _memoEntryDeserialize(
   object.isDeleted = reader.readBool(offsets[4]);
   object.isPinned = reader.readBool(offsets[5]);
   object.lastSyncAt = reader.readDateTimeOrNull(offsets[6]);
-  object.location = reader.readStringOrNull(offsets[7]);
-  object.memosName = reader.readStringOrNull(offsets[8]);
+  object.latitude = reader.readDoubleOrNull(offsets[7]);
+  object.location = reader.readStringOrNull(offsets[8]);
+  object.longitude = reader.readDoubleOrNull(offsets[9]);
+  object.memosName = reader.readStringOrNull(offsets[10]);
   object.syncStatus =
-      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[9])] ??
+      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[11])] ??
           SyncStatus.pending;
-  object.tags = reader.readStringList(offsets[10]) ?? [];
-  object.updatedAt = reader.readDateTime(offsets[11]);
+  object.tags = reader.readStringList(offsets[12]) ?? [];
+  object.updatedAt = reader.readDateTime(offsets[13]);
   return object;
 }
 
@@ -236,15 +250,19 @@ P _memoEntryDeserializeProp<P>(
     case 6:
       return (reader.readDateTimeOrNull(offset)) as P;
     case 7:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readDoubleOrNull(offset)) as P;
     case 8:
       return (reader.readStringOrNull(offset)) as P;
     case 9:
+      return (reader.readDoubleOrNull(offset)) as P;
+    case 10:
+      return (reader.readStringOrNull(offset)) as P;
+    case 11:
       return (_MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           SyncStatus.pending) as P;
-    case 10:
+    case 12:
       return (reader.readStringList(offset) ?? []) as P;
-    case 11:
+    case 13:
       return (reader.readDateTime(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -1227,6 +1245,85 @@ extension MemoEntryQueryFilter
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> latitudeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'latitude',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      latitudeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'latitude',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> latitudeEqualTo(
+    double? value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'latitude',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> latitudeGreaterThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'latitude',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> latitudeLessThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'latitude',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> latitudeBetween(
+    double? lower,
+    double? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'latitude',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> locationIsNull() {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(const FilterCondition.isNull(
@@ -1371,6 +1468,86 @@ extension MemoEntryQueryFilter
       return query.addFilterCondition(FilterCondition.greaterThan(
         property: r'location',
         value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> longitudeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'longitude',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      longitudeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'longitude',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> longitudeEqualTo(
+    double? value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'longitude',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      longitudeGreaterThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'longitude',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> longitudeLessThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'longitude',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> longitudeBetween(
+    double? lower,
+    double? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'longitude',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        epsilon: epsilon,
       ));
     });
   }
@@ -1931,6 +2108,18 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByLatitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'latitude', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByLatitudeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'latitude', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByLocation() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'location', Sort.asc);
@@ -1940,6 +2129,18 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByLocationDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'location', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByLongitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'longitude', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByLongitudeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'longitude', Sort.desc);
     });
   }
 
@@ -2066,6 +2267,18 @@ extension MemoEntryQuerySortThenBy
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByLatitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'latitude', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByLatitudeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'latitude', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByLocation() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'location', Sort.asc);
@@ -2075,6 +2288,18 @@ extension MemoEntryQuerySortThenBy
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByLocationDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'location', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByLongitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'longitude', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByLongitudeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'longitude', Sort.desc);
     });
   }
 
@@ -2160,10 +2385,22 @@ extension MemoEntryQueryWhereDistinct
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByLatitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'latitude');
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByLocation(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'location', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByLongitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'longitude');
     });
   }
 
@@ -2244,9 +2481,21 @@ extension MemoEntryQueryProperty
     });
   }
 
+  QueryBuilder<MemoEntry, double?, QQueryOperations> latitudeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'latitude');
+    });
+  }
+
   QueryBuilder<MemoEntry, String?, QQueryOperations> locationProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'location');
+    });
+  }
+
+  QueryBuilder<MemoEntry, double?, QQueryOperations> longitudeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'longitude');
     });
   }
 

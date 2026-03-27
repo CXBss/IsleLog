@@ -8,6 +8,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
+import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../features/home/widgets/audio_player_widget.dart';
 import '../../features/home/widgets/file_chip_widget.dart';
@@ -195,16 +196,35 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
             // ── 位置 ──────────────────────────────────────────────
             if (memo.location != null && memo.location!.isNotEmpty) ...[
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Icon(Icons.location_on_outlined,
-                      size: 14, color: Colors.blueGrey[400]),
-                  const SizedBox(width: 4),
-                  Text(
-                    memo.location!,
-                    style: TextStyle(fontSize: 13, color: Colors.blueGrey[400]),
-                  ),
-                ],
+              GestureDetector(
+                onTap: memo.latitude != null
+                    ? () => openMapFromCoords(
+                        memo.latitude, memo.longitude, memo.location)
+                    : null,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.location_on_outlined,
+                        size: 14,
+                        color: memo.latitude != null
+                            ? AppColors.primary
+                            : Colors.blueGrey[400]),
+                    const SizedBox(width: 4),
+                    Text(
+                      memo.location!,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: memo.latitude != null
+                            ? AppColors.primary
+                            : Colors.blueGrey[400],
+                        decoration: memo.latitude != null
+                            ? TextDecoration.underline
+                            : null,
+                        decorationColor: AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
 

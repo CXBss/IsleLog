@@ -39,8 +39,14 @@ class MemoEntry {
   @Index(type: IndexType.value)
   List<String> tags = [];
 
-  /// 位置信息（可选）
+  /// 位置信息（可选，地址文本）
   String? location;
+
+  /// 纬度（可选，与 location 配套存储，用于跳转地图）
+  double? latitude;
+
+  /// 经度（可选，与 location 配套存储，用于跳转地图）
+  double? longitude;
 
   /// 同步状态
   @enumerated

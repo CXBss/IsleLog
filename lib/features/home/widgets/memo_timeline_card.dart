@@ -12,6 +12,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import '../../../data/database/database_service.dart' as db_svc;
 import '../../../features/memo_detail/memo_detail_page.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
+import '../../../services/location/location_service.dart';
 import '../../../services/settings/settings_service.dart'; // Bearer Token 用于图片认证
 import '../../../shared/constants/app_constants.dart';
 import 'audio_player_widget.dart';
@@ -437,20 +438,38 @@ class _MemoCardState extends State<_MemoCard> {
 
               if (memo.location != null && memo.location!.isNotEmpty) ...[
                 const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Icon(Icons.location_on_outlined,
-                        size: 13, color: Colors.blueGrey[400]),
-                    const SizedBox(width: 2),
-                    Flexible(
-                      child: Text(
-                        memo.location!,
-                        style: TextStyle(
-                            fontSize: 12, color: Colors.blueGrey[400]),
-                        overflow: TextOverflow.ellipsis,
+                GestureDetector(
+                  onTap: memo.latitude != null
+                      ? () => openMapFromCoords(
+                          memo.latitude, memo.longitude, memo.location)
+                      : null,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.location_on_outlined,
+                          size: 13,
+                          color: memo.latitude != null
+                              ? AppColors.primary
+                              : Colors.blueGrey[400]),
+                      const SizedBox(width: 2),
+                      Flexible(
+                        child: Text(
+                          memo.location!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: memo.latitude != null
+                                ? AppColors.primary
+                                : Colors.blueGrey[400],
+                            decoration: memo.latitude != null
+                                ? TextDecoration.underline
+                                : null,
+                            decorationColor: AppColors.primary,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ],
               if (memo.tags.isNotEmpty) ...[

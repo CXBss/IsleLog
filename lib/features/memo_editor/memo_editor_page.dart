@@ -6,12 +6,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
 import '../../data/models/tag_stat.dart';
 import '../../services/attachment/attachment_service.dart';
+import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
@@ -45,6 +47,12 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   /// 是否正在上传附件
   bool _uploading = false;
+
+  /// 是否正在获取位置
+  bool _locating = false;
+
+  /// 当前位置信息（含经纬度，用于点击跳转地图）
+  LocationInfo? _locationInfo;
 
   /// 本次编辑的附件列表（保存时写入 MemoEntry）
   final List<AttachmentInfo> _pendingAttachments = [];
@@ -103,11 +111,24 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
     if (widget.editingMemo != null) {
       _pendingAttachments.addAll(widget.editingMemo!.attachments);
+      // 编辑模式：若已有经纬度则恢复 LocationInfo（支持点击跳转）
+      final m = widget.editingMemo!;
+      if (m.latitude != null && m.longitude != null) {
+        _locationInfo = LocationInfo(
+          latitude: m.latitude!,
+          longitude: m.longitude!,
+          address: m.location,
+        );
+      }
     }
 
-    // 新建模式下恢复草稿
+    // 新建模式下恢复草稿；移动端自动获取位置（草稿无位置时）
     if (!_isEditing) {
-      _loadDraft();
+      _loadDraft().then((_) {
+        if (_isMobile && _locationCtrl.text.trim().isEmpty) {
+          _autoGetLocation();
+        }
+      });
     }
 
     _contentCtrl.addListener(_onContentChanged);
@@ -164,6 +185,66 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       _selectedDateTime = DateTime(
           date.year, date.month, date.day, time.hour, time.minute);
     });
+  }
+
+  // ── 位置 ──────────────────────────────────────────────────────
+
+  /// 静默自动获取位置（新建时后台调用，失败不提示）
+  Future<void> _autoGetLocation() async {
+    if (!_isMobile) return;
+    try {
+      final info = await LocationService.getLocation();
+      if (mounted && _locationCtrl.text.trim().isEmpty) {
+        setState(() {
+          _locationInfo = info;
+          _locationCtrl.text = info.displayText;
+        });
+      }
+    } catch (e) {
+      debugPrint('[MemoEditor] 自动获取位置失败（静默忽略）：$e');
+    }
+  }
+
+  /// 手动点击位置图标获取位置（失败时提示用户）
+  Future<void> _manualGetLocation() async {
+    if (_locating) return;
+    setState(() => _locating = true);
+    try {
+      final info = await LocationService.getLocation();
+      if (mounted) {
+        setState(() {
+          _locationInfo = info;
+          _locationCtrl.text = info.displayText;
+          _locating = false;
+        });
+      }
+    } on LocationException catch (e) {
+      debugPrint('[MemoEditor] 获取位置失败：$e');
+      if (mounted) {
+        setState(() => _locating = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message)),
+        );
+      }
+    } catch (e) {
+      debugPrint('[MemoEditor] 获取位置未知错误：$e');
+      if (mounted) {
+        setState(() => _locating = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('获取位置失败：$e')),
+        );
+      }
+    }
+  }
+
+  /// 点击地址文本跳转系统地图
+  Future<void> _openLocationMap() async {
+    if (_locationInfo == null) return;
+    await openMapFromCoords(
+      _locationInfo!.latitude,
+      _locationInfo!.longitude,
+      _locationInfo!.address,
+    );
   }
 
   // ── 草稿 ──────────────────────────────────────────────────────
@@ -436,6 +517,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       memo.location = _locationCtrl.text.trim().isEmpty
           ? null
           : _locationCtrl.text.trim();
+      memo.latitude = _locationInfo?.latitude;
+      memo.longitude = _locationInfo?.longitude;
       memo.attachments = _pendingAttachments;
       memo.createdAt = _selectedDateTime;
       // 编辑模式必须重置为 pending，否则同步引擎查不到该条目
@@ -579,94 +662,189 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
               onRemove: _removeAttachment,
             ),
 
-          // ── 底部工具栏：附件按钮 + 位置输入 ──────────────────────
+          // ── 底部工具栏（两行）────────────────────────────────────
           SafeArea(
             top: false,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Row(
-                children: [
-                  // 日期时间按钮
-                  GestureDetector(
-                    onTap: _pickDateTime,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                      child: Text(
-                        _dateTimeLabel,
-                        style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                      ),
-                    ),
-                  ),
-                  // # 标签按钮
-                  IconButton(
-                    icon: const Icon(Icons.tag),
-                    color: Colors.grey[600],
-                    iconSize: 22,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                    tooltip: '插入标签',
-                    onPressed: () {
-                      final ctrl = _contentCtrl;
-                      final sel = ctrl.selection;
-                      final pos = sel.isValid ? sel.baseOffset : ctrl.text.length;
-                      final newText = ctrl.text.substring(0, pos) + '# ' + ctrl.text.substring(pos);
-                      ctrl.value = TextEditingValue(
-                        text: newText,
-                        selection: TextSelection.collapsed(offset: pos + 1),
-                      );
-                      _contentFocus.requestFocus();
-                    },
-                  ),
-                  // 拍照按钮（仅移动端）
-                  if (_isMobile)
-                    IconButton(
-                      icon: const Icon(Icons.camera_alt_outlined),
-                      color: Colors.grey[600],
-                      iconSize: 22,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                      tooltip: '拍照',
-                      onPressed: _uploading ? null : _takePhoto,
-                    ),
-                  // 附件按钮（上传中显示 loading）
-                  _uploading
-                      ? const SizedBox(
-                          width: 36,
-                          height: 36,
-                          child: Padding(
-                            padding: EdgeInsets.all(8),
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: AppColors.primary),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ── 第一行：# · 时间 · 位置 ──────────────────────
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 6, 12, 0),
+                  child: Row(
+                    children: [
+                      // # 标签（最前，较大）
+                      GestureDetector(
+                        onTap: () {
+                          final ctrl = _contentCtrl;
+                          final sel = ctrl.selection;
+                          final pos = sel.isValid
+                              ? sel.baseOffset
+                              : ctrl.text.length;
+                          final newText = ctrl.text.substring(0, pos) +
+                              '# ' +
+                              ctrl.text.substring(pos);
+                          ctrl.value = TextEditingValue(
+                            text: newText,
+                            selection:
+                                TextSelection.collapsed(offset: pos + 1),
+                          );
+                          _contentFocus.requestFocus();
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 4),
+                          child: Text(
+                            '#',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey[500],
+                              height: 1,
+                            ),
                           ),
-                        )
-                      : IconButton(
-                          icon: const Icon(Icons.attach_file),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      // 日期时间
+                      GestureDetector(
+                        onTap: _pickDateTime,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.access_time_outlined,
+                                size: 15, color: Colors.grey[500]),
+                            const SizedBox(width: 4),
+                            Text(
+                              _dateTimeLabel,
+                              style: TextStyle(
+                                  fontSize: 12, color: Colors.grey[500]),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Spacer(),
+                      // 位置图标（可点击获取）
+                      if (_isMobile)
+                        _locating
+                            ? const SizedBox(
+                                width: 15,
+                                height: 15,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.primary),
+                              )
+                            : GestureDetector(
+                                onTap: _manualGetLocation,
+                                child: Icon(
+                                  _locationInfo != null
+                                      ? Icons.location_on
+                                      : Icons.location_on_outlined,
+                                  size: 15,
+                                  color: _locationInfo != null
+                                      ? AppColors.primary
+                                      : Colors.grey[500],
+                                ),
+                              ),
+                      const SizedBox(width: 4),
+                      // 位置文本（可点击跳转 / 可手动输入）
+                      Flexible(
+                        child: _locationInfo != null
+                            ? GestureDetector(
+                                onTap: _openLocationMap,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        _locationCtrl.text,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: AppColors.primary,
+                                          decoration:
+                                              TextDecoration.underline,
+                                          decorationColor: AppColors.primary,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    GestureDetector(
+                                      onTap: () => setState(() {
+                                        _locationInfo = null;
+                                        _locationCtrl.clear();
+                                      }),
+                                      child: Icon(Icons.close,
+                                          size: 14,
+                                          color: Colors.grey[400]),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : SizedBox(
+                                height: 24,
+                                child: TextField(
+                                  controller: _locationCtrl,
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[600]),
+                                  decoration: InputDecoration(
+                                    hintText: _isMobile ? '位置' : AppStrings.editorLocationHint,
+                                    hintStyle: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey[400]),
+                                    border: InputBorder.none,
+                                    isDense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                  ),
+                                ),
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                // ── 第二行：拍照 · 附件 ──────────────────────────
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
+                  child: Row(
+                    children: [
+                      if (_isMobile)
+                        IconButton(
+                          icon: const Icon(Icons.camera_alt_outlined),
                           color: Colors.grey[600],
                           iconSize: 22,
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          tooltip: '添加附件',
-                          onPressed: _pickAttachment,
+                          constraints:
+                              const BoxConstraints(minWidth: 36, minHeight: 36),
+                          tooltip: '拍照',
+                          onPressed: _uploading ? null : _takePhoto,
                         ),
-                  const SizedBox(width: 4),
-                  Icon(Icons.location_on_outlined,
-                      size: 18, color: Colors.grey[500]),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: TextField(
-                      controller: _locationCtrl,
-                      style:
-                          TextStyle(fontSize: 14, color: Colors.grey[700]),
-                      decoration: const InputDecoration(
-                        hintText: AppStrings.editorLocationHint,
-                        border: InputBorder.none,
-                        isDense: true,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    ),
+                      _uploading
+                          ? const SizedBox(
+                              width: 36,
+                              height: 36,
+                              child: Padding(
+                                padding: EdgeInsets.all(8),
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.primary),
+                              ),
+                            )
+                          : IconButton(
+                              icon: const Icon(Icons.attach_file),
+                              color: Colors.grey[600],
+                              iconSize: 22,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 36, minHeight: 36),
+                              tooltip: '添加附件',
+                              onPressed: _pickAttachment,
+                            ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ],

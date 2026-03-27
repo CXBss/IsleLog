@@ -50,6 +50,8 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>需要获取位置信息以自动填写日记所在地点</string>
 	<key>NSCameraUsageDescription</key>
 	<string>需要访问相机以拍摄照片并附加到日记</string>
 	<key>NSPhotoLibraryUsageDescription</key>
