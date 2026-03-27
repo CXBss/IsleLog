@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:math';
 
 import 'package:dio/dio.dart';
@@ -6,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:url_launcher/url_launcher_string.dart';
+
+import '../settings/settings_service.dart';
 
 /// 地理位置信息（经纬度 + 地址名称）
 ///
@@ -98,9 +99,8 @@ double _transformLng(double x, double y) {
 /// 地理位置服务
 ///
 /// - [getLocation]：请求权限并获取当前位置
-/// - [reverseGeocode]：天地图逆地理编码（经纬度 → 地址）
+/// - [reverseGeocode]：高德逆地理编码（经纬度 → 地址）
 class LocationService {
-  static const _tiandituKey = 'ed8f1cf9e5ee186229965b57c163f00f';
 
   /// 获取当前位置（含逆地理编码）
   ///
@@ -124,15 +124,31 @@ class LocationService {
     }
 
     debugPrint('[Location] 开始获取位置...');
-    final pos = await Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.medium,
-        timeLimit: Duration(seconds: 10),
-      ),
-    );
-    debugPrint('[Location] 获取位置成功：${pos.latitude}, ${pos.longitude}');
+    Position? pos;
+    try {
+      pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 8),
+        ),
+      );
+      debugPrint('[Location] GPS 定位成功：${pos.latitude}, ${pos.longitude}');
+    } catch (e) {
+      // 超时或失败时降级到最后已知位置（通常来自网络/基站，速度极快）
+      debugPrint('[Location] GPS 超时，尝试最后已知位置：$e');
+      pos = await Geolocator.getLastKnownPosition();
+      if (pos == null) {
+        throw LocationException('GPS 超时且无缓存位置：$e');
+      }
+      debugPrint('[Location] 使用最后已知位置：${pos.latitude}, ${pos.longitude}');
+    }
 
-    final address = await reverseGeocode(pos.latitude, pos.longitude);
+    // 高德使用 GCJ-02，逆地理编码前先转换坐标
+    final gcj = _wgs84ToGcj02(pos.latitude, pos.longitude);
+    final key = await SettingsService.amapKey;
+    final address = key != null && key.isNotEmpty
+        ? await reverseGeocode(gcj.lat, gcj.lng, key)
+        : null;
     return LocationInfo(
       latitude: pos.latitude,
       longitude: pos.longitude,
@@ -140,42 +156,35 @@ class LocationService {
     );
   }
 
-  /// 天地图逆地理编码：经纬度 → 地址字符串
+  /// 高德逆地理编码：GCJ-02 经纬度 → 地址字符串
   ///
-  /// 天地图使用 WGS84，传入原始 GPS 坐标即可，无需转换。
-  /// 失败时返回 null（不抛异常，降级显示坐标）。
-  static Future<String?> reverseGeocode(double lat, double lng) async {
+  /// 传入坐标须已转换为 GCJ-02。失败时返回 null。
+  static Future<String?> reverseGeocode(double lat, double lng, String key) async {
     try {
       final dio = Dio();
       final res = await dio.get(
-        'https://api.tianditu.gov.cn/geocoder',
+        'https://restapi.amap.com/v3/geocode/regeo',
         queryParameters: {
-          'postStr': jsonEncode({'lon': lng, 'lat': lat, 'ver': 1}),
-          'type': 'geocodeR',
-          'tk': _tiandituKey,
+          'key': key,
+          'location': '$lng,$lat',
+          'radius': 100,
+          'extensions': 'base',
+          'output': 'json',
         },
         options: Options(receiveTimeout: const Duration(seconds: 8)),
       );
 
       final data = res.data;
-      final result = data is Map ? data['result'] : null;
-      if (result == null) return null;
+      if (data is! Map || data['status'] != '1') return null;
 
-      final formatted = result['formatted_address'] as String?;
+      final regeo = data['regeocode'] as Map?;
+      if (regeo == null) return null;
+
+      // formatted_address 是高德返回的完整地址，如"江苏省苏州市相城区..."
+      final formatted = regeo['formatted_address'] as String?;
       if (formatted != null && formatted.isNotEmpty) {
         debugPrint('[Location] 逆地理编码成功：$formatted');
         return formatted;
-      }
-
-      final comp = result['addressComponent'] as Map?;
-      if (comp != null) {
-        final parts = [
-          comp['province'],
-          comp['city'],
-          comp['county'],
-          comp['town'],
-        ].whereType<String>().where((s) => s.isNotEmpty).toList();
-        if (parts.isNotEmpty) return parts.join('');
       }
 
       return null;

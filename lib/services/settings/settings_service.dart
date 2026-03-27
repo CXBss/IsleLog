@@ -73,6 +73,19 @@ class SettingsService {
     await (await _prefs).remove(_keyLastSyncTime);
   }
 
+  // ── Amap Key ──────────────────────────────────────────────────
+
+  static const _keyAmapKey = 'amap_key';
+
+  /// 获取高德 API Key（未设置时返回 null）
+  static Future<String?> get amapKey async =>
+      (await _prefs).getString(_keyAmapKey);
+
+  /// 保存高德 API Key
+  static Future<void> setAmapKey(String key) async {
+    await (await _prefs).setString(_keyAmapKey, key.trim());
+  }
+
   // ── Draft ─────────────────────────────────────────────────────
 
   static const _keyDraftContent = 'draft_content';
