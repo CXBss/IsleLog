@@ -182,6 +182,9 @@ class SyncService {
               content: memo.content,
               attachmentNames: attachmentNames,
               createTime: memo.createdAt,
+              locationPlaceholder: memo.location,
+              latitude: memo.latitude,
+              longitude: memo.longitude,
             );
             memo
               ..memosName = remoteData['name'] as String?
@@ -201,6 +204,9 @@ class SyncService {
               content: memo.content,
               attachmentNames: attachmentNames,
               createTime: memo.createdAt,
+              locationPlaceholder: memo.location,
+              latitude: memo.latitude,
+              longitude: memo.longitude,
             );
             // 同步置顶状态
             if (memo.isPinned) {
@@ -392,10 +398,10 @@ class SyncService {
     final ct = data['createTime'] as String?;
     if (ct != null) memo.createdAt = DateTime.parse(ct).toLocal();
 
-    // 解析更新时间
     final ut = data['updateTime'] as String?;
     if (ut != null) memo.updatedAt = DateTime.parse(ut).toLocal();
 
+    _applyLocation(memo, data);
     memo.attachments = _parseAttachments(data, baseUrl);
 
     return memo;
@@ -412,10 +418,30 @@ class SyncService {
     final ut = data['updateTime'] as String?;
     if (ut != null) memo.updatedAt = DateTime.parse(ut).toLocal();
 
+    _applyLocation(memo, data);
+
     memo
       ..syncStatus = SyncStatus.synced
       ..lastSyncAt = DateTime.now()
       ..attachments = _parseAttachments(data, baseUrl);
+  }
+
+  /// 从远端数据中解析 location 字段并写入 memo
+  ///
+  /// 只有远端有实质性坐标（lat/lng 均非零）时才覆盖本地数据，
+  /// 避免远端返回空 location 对象时把本地位置清掉。
+  static void _applyLocation(MemoEntry memo, Map<String, dynamic> data) {
+    if (!data.containsKey('location') || data['location'] == null) return;
+    final loc = data['location'];
+    if (loc is! Map) return;
+    final lat = (loc['latitude'] as num?)?.toDouble();
+    final lng = (loc['longitude'] as num?)?.toDouble();
+    // 坐标为 0 或缺失视为无效，保留本地数据
+    if (lat == null || lng == null || (lat == 0.0 && lng == 0.0)) return;
+    final placeholder = loc['placeholder'] as String?;
+    memo.location = (placeholder != null && placeholder.isNotEmpty) ? placeholder : null;
+    memo.latitude = lat;
+    memo.longitude = lng;
   }
 
   /// 从远端 memo 数据中解析 attachments 列表

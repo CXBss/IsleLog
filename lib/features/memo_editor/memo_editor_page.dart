@@ -580,32 +580,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           _isEditing ? AppStrings.editorEditTitle : AppStrings.editorNewTitle,
           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
-        actions: [
-          // 保存中显示 loading，否则显示保存文字按钮
-          _saving
-              ? const Padding(
-                  padding: EdgeInsets.all(14),
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: AppColors.primary,
-                    ),
-                  ),
-                )
-              : TextButton(
-                  onPressed: _save,
-                  child: const Text(
-                    AppStrings.save,
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.primary,
-                    ),
-                  ),
-                ),
-        ],
+        actions: const [],
       ),
       body: CallbackShortcuts(
         bindings: {
@@ -724,28 +699,27 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                         ),
                       ),
                       const Spacer(),
-                      // 位置图标（可点击获取）
-                      if (_isMobile)
-                        _locating
-                            ? const SizedBox(
-                                width: 15,
-                                height: 15,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.primary),
-                              )
-                            : GestureDetector(
-                                onTap: _manualGetLocation,
-                                child: Icon(
-                                  _locationInfo != null
-                                      ? Icons.location_on
-                                      : Icons.location_on_outlined,
-                                  size: 15,
-                                  color: _locationInfo != null
-                                      ? AppColors.primary
-                                      : Colors.grey[500],
-                                ),
+                      // 位置图标：移动端可点击获取，其他平台仅作装饰
+                      _isMobile && _locating
+                          ? const SizedBox(
+                              width: 15,
+                              height: 15,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: AppColors.primary),
+                            )
+                          : GestureDetector(
+                              onTap: _isMobile ? _manualGetLocation : null,
+                              child: Icon(
+                                _locationInfo != null
+                                    ? Icons.location_on
+                                    : Icons.location_on_outlined,
+                                size: 15,
+                                color: _locationInfo != null
+                                    ? AppColors.primary
+                                    : Colors.grey[500],
                               ),
+                            ),
                       const SizedBox(width: 4),
                       // 位置文本（可点击跳转 / 可手动输入）
                       Flexible(
@@ -804,7 +778,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                   ),
                 ),
 
-                // ── 第二行：拍照 · 附件 ──────────────────────────
+                // ── 第二行：拍照 · 附件 · 保存 ──────────────────
                 Padding(
                   padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
                   child: Row(
@@ -841,6 +815,38 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                               tooltip: '添加附件',
                               onPressed: _pickAttachment,
                             ),
+                      const Spacer(),
+                      // 保存按钮
+                      _saving
+                          ? const SizedBox(
+                              width: 36,
+                              height: 36,
+                              child: Padding(
+                                padding: EdgeInsets.all(8),
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.primary),
+                              ),
+                            )
+                          : TextButton(
+                              onPressed: _save,
+                              style: TextButton.styleFrom(
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 20, vertical: 8),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8)),
+                                minimumSize: Size.zero,
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              child: const Text(AppStrings.save,
+                                  style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold)),
+                            ),
+                      const SizedBox(width: 8),
                     ],
                   ),
                 ),

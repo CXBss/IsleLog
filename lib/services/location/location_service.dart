@@ -1,11 +1,14 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
+import '../debug/file_logger.dart';
 import '../settings/settings_service.dart';
 
 /// 地理位置信息（经纬度 + 地址名称）
@@ -98,14 +101,13 @@ double _transformLng(double x, double y) {
 
 /// 地理位置服务
 ///
-/// - [getLocation]：请求权限并获取当前位置
-/// - [reverseGeocode]：高德逆地理编码（经纬度 → 地址）
+/// - [getLocation]：请求权限并获取当前位置（含逆地理编码）
 class LocationService {
 
   /// 获取当前位置（含逆地理编码）
   ///
-  /// 返回 [LocationInfo]，address 字段可能为 null（逆地理编码失败时）。
-  /// 抛出 [LocationException] 表示无法获取位置。
+  /// 返回 [LocationInfo]，address 字段可能为 null（逆地理编码全部失败时）。
+  /// 抛出 [LocationException] 表示无法获取位置坐标。
   static Future<LocationInfo> getLocation() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -123,32 +125,34 @@ class LocationService {
       throw const LocationException('位置权限被永久拒绝，请在系统设置中手动开启');
     }
 
-    debugPrint('[Location] 开始获取位置...');
-    Position? pos;
+    unawaited(FileLogger.log('[Location] 开始获取位置...'));
+    Position pos;
     try {
-      pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.medium,
-          timeLimit: Duration(seconds: 8),
-        ),
-      );
-      debugPrint('[Location] GPS 定位成功：${pos.latitude}, ${pos.longitude}');
+      // 华为/荣耀设备没有 GMS，FusedLocationProvider 不可用会导致永久超时。
+      // forceLocationManager=true 强制走系统 LocationManager（网络/基站定位），室内也能快速返回。
+      final settings = Platform.isAndroid
+          ? AndroidSettings(
+              accuracy: LocationAccuracy.low,
+              forceLocationManager: true,
+              timeLimit: const Duration(seconds: 8),
+            )
+          : const LocationSettings(
+              accuracy: LocationAccuracy.low,
+              timeLimit: Duration(seconds: 8),
+            );
+      pos = await Geolocator.getCurrentPosition(locationSettings: settings);
+      unawaited(FileLogger.log('[Location] 定位成功：${pos.latitude}, ${pos.longitude}'));
     } catch (e) {
-      // 超时或失败时降级到最后已知位置（通常来自网络/基站，速度极快）
-      debugPrint('[Location] GPS 超时，尝试最后已知位置：$e');
-      pos = await Geolocator.getLastKnownPosition();
-      if (pos == null) {
-        throw LocationException('GPS 超时且无缓存位置：$e');
-      }
-      debugPrint('[Location] 使用最后已知位置：${pos.latitude}, ${pos.longitude}');
+      unawaited(FileLogger.log('[Location] 定位失败：$e'));
+      throw LocationException('定位失败：$e');
     }
 
-    // 高德使用 GCJ-02，逆地理编码前先转换坐标
+    // 逆地理编码：高德优先，失败则天地图，都失败则 address 为 null
     final gcj = _wgs84ToGcj02(pos.latitude, pos.longitude);
-    final key = await SettingsService.amapKey;
-    final address = key != null && key.isNotEmpty
-        ? await reverseGeocode(gcj.lat, gcj.lng, key)
-        : null;
+    unawaited(FileLogger.log('[Location] 开始逆地理编码 gcj=${gcj.lat},${gcj.lng}'));
+    final address = await _reverseGeocodeWithFallback(gcj.lat, gcj.lng, pos.latitude, pos.longitude);
+    unawaited(FileLogger.log('[Location] 逆地理编码结果：$address'));
+
     return LocationInfo(
       latitude: pos.latitude,
       longitude: pos.longitude,
@@ -156,10 +160,32 @@ class LocationService {
     );
   }
 
-  /// 高德逆地理编码：GCJ-02 经纬度 → 地址字符串
-  ///
-  /// 传入坐标须已转换为 GCJ-02。失败时返回 null。
-  static Future<String?> reverseGeocode(double lat, double lng, String key) async {
+  /// 逆地理编码：高德优先，失败则天地图，都失败返回 null
+  static Future<String?> _reverseGeocodeWithFallback(
+    double gcjLat, double gcjLng,   // GCJ-02 坐标（高德用）
+    double wgsLat, double wgsLng,   // WGS84 坐标（天地图用）
+  ) async {
+    // 1. 尝试高德
+    final amapKey = await SettingsService.amapKey;
+    if (amapKey != null && amapKey.isNotEmpty) {
+      final result = await _reverseGeocodeAmap(gcjLat, gcjLng, amapKey);
+      if (result != null) return result;
+      unawaited(FileLogger.log('[Location] 高德失败，尝试天地图'));
+    }
+
+    // 2. 尝试天地图
+    final tdtKey = await SettingsService.tiandituKey;
+    if (tdtKey != null && tdtKey.isNotEmpty) {
+      final result = await _reverseGeocodeTianditu(wgsLat, wgsLng, tdtKey);
+      if (result != null) return result;
+      unawaited(FileLogger.log('[Location] 天地图也失败，仅保存坐标'));
+    }
+
+    return null;
+  }
+
+  /// 高德逆地理编码：传入 GCJ-02 坐标，失败返回 null
+  static Future<String?> _reverseGeocodeAmap(double lat, double lng, String key) async {
     try {
       final dio = Dio();
       final res = await dio.get(
@@ -173,23 +199,45 @@ class LocationService {
         },
         options: Options(receiveTimeout: const Duration(seconds: 8)),
       );
-
       final data = res.data;
       if (data is! Map || data['status'] != '1') return null;
-
       final regeo = data['regeocode'] as Map?;
-      if (regeo == null) return null;
-
-      // formatted_address 是高德返回的完整地址，如"江苏省苏州市相城区..."
-      final formatted = regeo['formatted_address'] as String?;
+      final formatted = regeo?['formatted_address'] as String?;
       if (formatted != null && formatted.isNotEmpty) {
-        debugPrint('[Location] 逆地理编码成功：$formatted');
+        unawaited(FileLogger.log('[Location] 高德成功：$formatted'));
         return formatted;
       }
-
       return null;
     } catch (e) {
-      debugPrint('[Location] 逆地理编码失败：$e');
+      unawaited(FileLogger.log('[Location] 高德异常：$e'));
+      return null;
+    }
+  }
+
+  /// 天地图逆地理编码：传入 WGS84 坐标，失败返回 null
+  static Future<String?> _reverseGeocodeTianditu(double lat, double lng, String key) async {
+    try {
+      final dio = Dio();
+      final res = await dio.get(
+        'http://api.tianditu.gov.cn/geocoder',
+        queryParameters: {
+          'postStr': '{"lon":$lng,"lat":$lat,"ver":1}',
+          'type': 'geocode',
+          'tk': key,
+        },
+        options: Options(receiveTimeout: const Duration(seconds: 8)),
+      );
+      final data = res.data is String ? jsonDecode(res.data as String) : res.data;
+      if (data is! Map || data['status'] != '0') return null;
+      final result = data['result'] as Map?;
+      final address = result?['formatted_address'] as String?;
+      if (address != null && address.isNotEmpty) {
+        unawaited(FileLogger.log('[Location] 天地图成功：$address'));
+        return address;
+      }
+      return null;
+    } catch (e) {
+      unawaited(FileLogger.log('[Location] 天地图异常：$e'));
       return null;
     }
   }

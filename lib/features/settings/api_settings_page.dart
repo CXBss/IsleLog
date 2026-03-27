@@ -5,7 +5,8 @@ import '../../shared/constants/app_constants.dart';
 
 /// 第三方 API 配置页
 ///
-/// 目前包含高德地图 API Key 配置。
+/// 包含高德地图 Key 和天地图 Key 配置。
+/// 逆地理编码优先高德，失败则天地图，都失败则只保存坐标。
 class ApiSettingsPage extends StatefulWidget {
   const ApiSettingsPage({super.key});
 
@@ -15,6 +16,7 @@ class ApiSettingsPage extends StatefulWidget {
 
 class _ApiSettingsPageState extends State<ApiSettingsPage> {
   final _amapKeyCtrl = TextEditingController();
+  final _tdtKeyCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -25,18 +27,24 @@ class _ApiSettingsPageState extends State<ApiSettingsPage> {
   @override
   void dispose() {
     _amapKeyCtrl.dispose();
+    _tdtKeyCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _load() async {
-    final key = await SettingsService.amapKey;
-    if (mounted && key != null) {
-      setState(() => _amapKeyCtrl.text = key);
+    final amap = await SettingsService.amapKey;
+    final tdt = await SettingsService.tiandituKey;
+    if (mounted) {
+      setState(() {
+        if (amap != null) _amapKeyCtrl.text = amap;
+        if (tdt != null) _tdtKeyCtrl.text = tdt;
+      });
     }
   }
 
   Future<void> _save() async {
     await SettingsService.setAmapKey(_amapKeyCtrl.text);
+    await SettingsService.setTiandituKey(_tdtKeyCtrl.text);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text(AppStrings.settingsSaved)),
@@ -63,31 +71,72 @@ class _ApiSettingsPageState extends State<ApiSettingsPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _SectionHeader(label: '高德地图'),
-          const SizedBox(height: 8),
-          Container(
-            decoration: BoxDecoration(
-              color: AppColors.surfaceWhite,
-              borderRadius: BorderRadius.circular(AppDimens.cardRadius),
-            ),
-            child: TextField(
-              controller: _amapKeyCtrl,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: const InputDecoration(
-                labelText: 'API Key',
-                hintText: '高德开放平台 Web 服务 Key',
-                prefixIcon: Icon(Icons.map_outlined),
-                border: InputBorder.none,
-              ),
-            ),
+          _SectionHeader(label: '逆地理编码（位置名称）'),
+          const SizedBox(height: 4),
+          Text(
+            '获取位置时自动解析地址名称。高德优先，失败则天地图，都失败则仅保存坐标。',
+            style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+          ),
+          const SizedBox(height: 12),
+          _KeyField(
+            controller: _amapKeyCtrl,
+            label: '高德地图 Key',
+            hint: '高德开放平台 Web 服务 Key',
+            icon: Icons.map_outlined,
           ),
           const SizedBox(height: 8),
           Text(
-            '用于自动获取位置名称。在高德开放平台创建「Web 服务」类型应用后获取。',
+            '在高德开放平台创建「Web 服务」类型应用后获取。',
+            style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+          ),
+          const SizedBox(height: 16),
+          _KeyField(
+            controller: _tdtKeyCtrl,
+            label: '天地图 Key',
+            hint: '天地图开放平台 Key（备用）',
+            icon: Icons.public_outlined,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '在 lbs.tianditu.gov.cn 注册后获取，作为高德失败时的备用。',
             style: TextStyle(fontSize: 12, color: Colors.grey[500]),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _KeyField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final String hint;
+  final IconData icon;
+
+  const _KeyField({
+    required this.controller,
+    required this.label,
+    required this.hint,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(AppDimens.cardRadius),
+      ),
+      child: TextField(
+        controller: controller,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          prefixIcon: Icon(icon),
+          border: InputBorder.none,
+        ),
       ),
     );
   }

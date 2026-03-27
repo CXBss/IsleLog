@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mime/mime.dart';
+
+import '../debug/file_logger.dart';
 
 /// Memos API 请求异常
 ///
@@ -120,8 +123,11 @@ class MemosApiService {
     String visibility = 'PRIVATE',
     List<String> attachmentNames = const [],
     DateTime? createTime,
+    String? locationPlaceholder,
+    double? latitude,
+    double? longitude,
   }) async {
-    debugPrint('[API] createMemo contentLen=${content.length} attachments=${attachmentNames.length}');
+    unawaited(FileLogger.log('[API] createMemo contentLen=${content.length} lat=$latitude lng=$longitude placeholder=$locationPlaceholder'));
     try {
       final body = <String, dynamic>{
         'content': content,
@@ -130,10 +136,17 @@ class MemosApiService {
           'attachments': attachmentNames.map((n) => {'name': n}).toList(),
         if (createTime != null)
           'createTime': createTime.toUtc().toIso8601String(),
+        if (latitude != null && longitude != null)
+          'location': {
+            'placeholder': locationPlaceholder ?? '',
+            'latitude': latitude,
+            'longitude': longitude,
+          },
       };
+      unawaited(FileLogger.log('[API] createMemo body.location=${body['location']}'));
       final res = await _dio.post('/api/v1/memos', data: body);
       final result = Map<String, dynamic>.from(res.data);
-      debugPrint('[API] createMemo 成功，name=${result["name"]}');
+      unawaited(FileLogger.log('[API] createMemo 成功 name=${result["name"]} resp.location=${result["location"]}'));
       return result;
     } on DioException catch (e) {
       throw _wrap(e);
@@ -154,8 +167,11 @@ class MemosApiService {
     String visibility = 'PRIVATE',
     List<String> attachmentNames = const [],
     DateTime? createTime,
+    String? locationPlaceholder,
+    double? latitude,
+    double? longitude,
   }) async {
-    debugPrint('[API] updateMemo name=$name, contentLen=${content.length} attachments=${attachmentNames.length}');
+    unawaited(FileLogger.log('[API] updateMemo name=$name lat=$latitude lng=$longitude placeholder=$locationPlaceholder'));
     try {
       final body = <String, dynamic>{
         'content': content,
@@ -163,10 +179,34 @@ class MemosApiService {
         'attachments': attachmentNames.map((n) => {'name': n}).toList(),
         if (createTime != null)
           'createTime': createTime.toUtc().toIso8601String(),
+        if (latitude != null && longitude != null)
+          'location': {
+            'placeholder': locationPlaceholder ?? '',
+            'latitude': latitude,
+            'longitude': longitude,
+          },
       };
+      // 第一次：不带 updateMask，更新内容/附件/时间等字段
       final res = await _dio.patch('/api/v1/$name', data: body);
       final result = Map<String, dynamic>.from(res.data);
-      debugPrint('[API] updateMemo 成功，name=${result["name"]}');
+      unawaited(FileLogger.log('[API] updateMemo 内容更新成功'));
+
+      // 第二次：仅更新 location（需单独指定 updateMask，否则服务端忽略）
+      if (latitude != null && longitude != null) {
+        await _dio.patch(
+          '/api/v1/$name',
+          data: {
+            'location': {
+              'placeholder': locationPlaceholder ?? '',
+              'latitude': latitude,
+              'longitude': longitude,
+            },
+          },
+          queryParameters: {'updateMask': 'location'},
+        );
+        unawaited(FileLogger.log('[API] updateMemo location 更新成功'));
+      }
+
       return result;
     } on DioException catch (e) {
       throw _wrap(e);

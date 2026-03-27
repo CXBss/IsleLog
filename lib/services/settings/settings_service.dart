@@ -86,6 +86,19 @@ class SettingsService {
     await (await _prefs).setString(_keyAmapKey, key.trim());
   }
 
+  // ── Tianditu Key ──────────────────────────────────────────────
+
+  static const _keyTiandituKey = 'tianditu_key';
+
+  /// 获取天地图 API Key（未设置时返回 null）
+  static Future<String?> get tiandituKey async =>
+      (await _prefs).getString(_keyTiandituKey);
+
+  /// 保存天地图 API Key
+  static Future<void> setTiandituKey(String key) async {
+    await (await _prefs).setString(_keyTiandituKey, key.trim());
+  }
+
   // ── Draft ─────────────────────────────────────────────────────
 
   static const _keyDraftContent = 'draft_content';
