@@ -1,4 +1,4 @@
-package dyc.dev.memos_local;
+package dyc.dev.isle_log;
 
 import io.flutter.embedding.android.FlutterActivity;
 
