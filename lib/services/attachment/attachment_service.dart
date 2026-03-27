@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:mime/mime.dart';
@@ -146,6 +147,47 @@ class AttachmentService {
     } catch (e) {
       debugPrint('[Attachment] 离线补传失败：$e');
       return attachment.copyWith(uploadFailed: true);
+    }
+  }
+
+  // ── 从远端下载到本地 ──────────────────────────────────────────
+
+  /// 将远端附件下载到本地缓存目录，返回更新了 localPath 的 [AttachmentInfo]
+  ///
+  /// 已有 localPath 且文件存在则跳过，不重复下载。
+  /// 下载失败静默返回原对象，不抛异常，不影响同步流程。
+  static Future<AttachmentInfo> downloadToLocal(
+    AttachmentInfo attachment,
+    String baseUrl,
+    String token,
+  ) async {
+    // 已有本地文件则跳过
+    if (attachment.localPath != null && File(attachment.localPath!).existsSync()) {
+      return attachment;
+    }
+
+    final url = attachment.fullUrl(baseUrl);
+    if (url == null) return attachment;
+
+    try {
+      final dio = Dio()
+        ..options.headers['Authorization'] = 'Bearer $token'
+        ..options.responseType = ResponseType.bytes
+        ..options.receiveTimeout = const Duration(seconds: 30);
+
+      final resp = await dio.get<List<int>>(url);
+      if (resp.data == null) return attachment;
+
+      final dir = await _attachmentsDir();
+      final ext = p.extension(attachment.filename).toLowerCase();
+      final destPath = p.join(dir.path, '${attachment.localId}$ext');
+      await File(destPath).writeAsBytes(resp.data!);
+
+      debugPrint('[Attachment] 下载成功：${attachment.filename} → $destPath');
+      return attachment.copyWith(localPath: destPath);
+    } catch (e) {
+      debugPrint('[Attachment] 下载失败（静默）：${attachment.filename} $e');
+      return attachment;
     }
   }
 

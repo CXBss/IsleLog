@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../data/database/database_service.dart';
@@ -316,12 +318,14 @@ class SyncService {
       newMemo.isArchived = archived;
       await DatabaseService.saveMemo(newMemo, skipTimestamp: true);
       debugPrint('[Sync] 新增本地 memo: $remoteName archived=$archived');
+      unawaited(_downloadAttachments(newMemo, baseUrl));
       return 1;
     } else if (localMemo.syncStatus == SyncStatus.synced) {
       _applyRemoteData(localMemo, data, baseUrl);
       localMemo.isArchived = archived;
       await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
       debugPrint('[Sync] 更新本地 memo: $remoteName archived=$archived');
+      unawaited(_downloadAttachments(localMemo, baseUrl));
       return 1;
     } else if (localMemo.syncStatus == SyncStatus.pending) {
       debugPrint('[Sync] 检测到冲突，标记 conflict: $remoteName');
@@ -337,6 +341,33 @@ class SyncService {
     final pending = await DatabaseService.getPendingSyncMemos(); // pending
     final all = await DatabaseService.getAllSyncedMemos();
     return all.where((m) => m.memosName != null && !pending.any((p) => p.id == m.id)).toList();
+  }
+
+  // ── 远端附件下载到本地 ────────────────────────────────────────
+
+  /// 将 memo 中所有还没有本地文件的附件下载到本地，并更新 DB
+  ///
+  /// 后台异步执行，不阻塞同步主流程。单个下载失败不影响其他附件。
+  static Future<void> _downloadAttachments(MemoEntry memo, String baseUrl) async {
+    final attachments = memo.attachments;
+    if (attachments.isEmpty) return;
+
+    final token = await SettingsService.accessToken;
+    if (token == null || token.isEmpty) return;
+
+    bool changed = false;
+    final updated = <AttachmentInfo>[];
+    for (final att in attachments) {
+      final newAtt = await AttachmentService.downloadToLocal(att, baseUrl, token);
+      updated.add(newAtt);
+      if (newAtt.localPath != att.localPath) changed = true;
+    }
+
+    if (changed) {
+      memo.attachments = updated;
+      await DatabaseService.saveMemo(memo, skipTimestamp: true);
+      debugPrint('[Sync] 附件下载完成，已更新 memo id=${memo.id}');
+    }
   }
 
   // ── 离线附件补传 ──────────────────────────────────────────────
