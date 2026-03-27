@@ -468,26 +468,29 @@ class _MemoCardState extends State<_MemoCard> {
                       .toList(),
                 ),
               ],
-              const SizedBox(height: 4),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   if (memo.isPinned) ...[
                     Icon(Icons.push_pin, size: 13, color: AppColors.primary),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 2),
                   ],
-                  GestureDetector(
-                    onTap: () => _showMenu(context),
-                    child: Icon(Icons.more_horiz,
-                        size: 18, color: Colors.grey[400]),
+                  IconButton(
+                    onPressed: () => _showMenu(context),
+                    icon: Icon(Icons.more_horiz, color: Colors.grey[400]),
+                    iconSize: 20,
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.all(8),
+                    constraints: const BoxConstraints(),
                   ),
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 4),
                   Icon(Icons.chat_bubble_outline,
-                      size: 14, color: Colors.grey[400]),
+                      size: 16, color: Colors.grey[400]),
                   const SizedBox(width: 3),
                   Text('0',
                       style: TextStyle(
                           fontSize: 12, color: Colors.grey[400])),
+                  const SizedBox(width: 4),
                 ],
               ),
             ],

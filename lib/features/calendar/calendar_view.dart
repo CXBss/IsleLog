@@ -322,7 +322,9 @@ class _CalendarViewState extends State<CalendarView> {
     const dowHeight = 32.0;
     final calendarH = dowHeight + rowHeight * 6;
 
-    return Column(
+    return SafeArea(
+      bottom: false,
+      child: Column(
       children: [
         _buildMonthHeader(),
         SizedBox(
@@ -338,6 +340,7 @@ class _CalendarViewState extends State<CalendarView> {
         const Divider(height: 1, thickness: 1),
         Expanded(child: _buildDayList(availW)),
       ],
+    ),
     );
   }
 
@@ -346,7 +349,9 @@ class _CalendarViewState extends State<CalendarView> {
     final calendarW = (availW * 0.42).clamp(300.0, 420.0);
     final rowHeight = _calcRowHeight(calendarW, availH * 0.88);
 
-    return Row(
+    return SafeArea(
+      bottom: false,
+      child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // ── 左侧：日历（含月份导航）──────────────────────────
@@ -366,6 +371,7 @@ class _CalendarViewState extends State<CalendarView> {
         // ── 右侧：当日日记列表 ──────────────────────────────
         Expanded(child: _buildDayList(availW - calendarW - 1)),
       ],
+    ),
     );
   }
 
