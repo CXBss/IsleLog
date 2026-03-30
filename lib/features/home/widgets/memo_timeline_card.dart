@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import '../../../shared/utils/image_actions.dart' as img_actions;
 
 import '../../../data/database/database_service.dart';
 import '../../../data/models/attachment_info.dart';
@@ -14,7 +15,6 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import '../../../data/database/database_service.dart' as db_svc;
 import '../../../features/memo_detail/memo_detail_page.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
-import 'package:gal/gal.dart';
 import '../../../services/location/location_service.dart';
 import '../../../services/settings/settings_service.dart'; // Bearer Token 用于图片认证
 import '../../../services/sync/sync_service.dart';
@@ -819,7 +819,6 @@ class _ImageViewer extends StatefulWidget {
 class _ImageViewerState extends State<_ImageViewer> {
   late final PageController _pageCtrl;
   late int _current;
-  bool _saving = false;
 
   @override
   void initState() {
@@ -832,58 +831,6 @@ class _ImageViewerState extends State<_ImageViewer> {
   void dispose() {
     _pageCtrl.dispose();
     super.dispose();
-  }
-
-  Future<void> _saveImage(BuildContext context) async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    final att = widget.attachments[_current];
-    try {
-      final hasAccess = await Gal.hasAccess(toAlbum: false);
-      if (!hasAccess) {
-        final granted = await Gal.requestAccess(toAlbum: false);
-        if (!granted) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('无相册写入权限')),
-            );
-          }
-          return;
-        }
-      }
-      if (att.localPath != null && File(att.localPath!).existsSync()) {
-        await Gal.putImage(att.localPath!);
-      } else {
-        // 从网络下载字节后保存
-        final baseUrl = await SettingsService.serverUrl ?? '';
-        final token = await SettingsService.accessToken;
-        final url = att.fullUrl(baseUrl);
-        if (url == null) throw Exception('无法获取图片地址');
-        final dio = Dio();
-        final resp = await dio.get<List<int>>(
-          url,
-          options: Options(
-            responseType: ResponseType.bytes,
-            headers: token != null ? {'Authorization': 'Bearer $token'} : null,
-          ),
-        );
-        final bytes = Uint8List.fromList(resp.data!);
-        await Gal.putImageBytes(bytes, name: att.filename);
-      }
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已保存到相册')),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败：$e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
   }
 
   @override
@@ -907,7 +854,9 @@ class _ImageViewerState extends State<_ImageViewer> {
                 final transformCtrl = TransformationController();
                 return GestureDetector(
                   onTap: () {},
-                  onLongPress: () => _saveImage(context),
+                  onLongPress: () => img_actions.showImageActions(
+                    context, widget.attachments[i],
+                  ),
                   child: InteractiveViewer(
                     transformationController: transformCtrl,
                     minScale: 1.0,

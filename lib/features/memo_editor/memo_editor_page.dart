@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:pasteboard/pasteboard.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -110,7 +111,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         TextEditingController(text: widget.editingMemo?.content ?? '');
     _locationCtrl =
         TextEditingController(text: widget.editingMemo?.location ?? '');
-    _contentFocus = FocusNode();
+    _contentFocus = FocusNode(
+      onKeyEvent: _isDesktop ? _onKeyEvent : null,
+    );
 
     // 编辑模式用原始时间，新建模式用 initialDate 日期+当前时间
     if (widget.editingMemo != null) {
@@ -343,6 +346,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       defaultTargetPlatform == TargetPlatform.iOS ||
       defaultTargetPlatform == TargetPlatform.android;
 
+  static bool get _isDesktop => !_isMobile;
+
   /// 弹出附件类型选择菜单，然后选择并处理文件
   Future<void> _pickAttachment() async {
     final choice = await showModalBottomSheet<_AttachType>(
@@ -497,6 +502,64 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       }
     } finally {
       if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  /// 桌面端拦截 Ctrl/Cmd+V：若剪贴板有图片则作为附件添加，否则执行普通文本粘贴
+  bool _pasteBusy = false;
+  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final isCtrlOrCmd = HardwareKeyboard.instance.isMetaPressed ||
+        HardwareKeyboard.instance.isControlPressed;
+    if (!isCtrlOrCmd || event.logicalKey != LogicalKeyboardKey.keyV) {
+      return KeyEventResult.ignored;
+    }
+    if (_pasteBusy) return KeyEventResult.handled;
+    _pasteBusy = true;
+    // 消费按键事件，异步判断剪贴板内容
+    _handlePasteImage().then((handled) {
+      _pasteBusy = false;
+      if (!handled) {
+        // 剪贴板没有图片，手动执行文本粘贴
+        _pasteText();
+      }
+    });
+    return KeyEventResult.handled;
+  }
+
+  /// 手动从剪贴板读取文本并插入到光标位置
+  Future<void> _pasteText() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data?.text == null || data!.text!.isEmpty) return;
+    final text = _contentCtrl.text;
+    final sel = _contentCtrl.selection;
+    final start = sel.isValid ? sel.start : text.length;
+    final end = sel.isValid ? sel.end : text.length;
+    final newText = text.replaceRange(start, end, data.text!);
+    _contentCtrl.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + data.text!.length),
+    );
+  }
+
+  /// 桌面端粘贴图片：读取剪贴板图片字节，保存为临时文件后作为附件处理
+  Future<bool> _handlePasteImage() async {
+    if (!_isDesktop) return false;
+    try {
+      final bytes = await Pasteboard.image;
+      if (bytes == null || bytes.isEmpty) return false;
+
+      final filename = 'paste_${DateTime.now().millisecondsSinceEpoch}.png';
+      final tempDir = await getTemporaryDirectory();
+      await tempDir.create(recursive: true);
+      final tempFile = File('${tempDir.path}/$filename');
+      await tempFile.writeAsBytes(bytes);
+
+      await _processFile(tempFile, filename, compress: true);
+      return true;
+    } catch (e) {
+      debugPrint('[MemoEditor] 粘贴图片失败：$e');
+      return false;
     }
   }
 
