@@ -840,7 +840,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // ── 第一行：# · B · I · ` · 有序列表 · 无序列表 · -[] · 时间
+                // ── 第一行：# · 时间戳 · B · I · ` · 有序列表 · 无序列表 · -[]
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
@@ -857,6 +857,25 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                           ctrl.value = TextEditingValue(
                             text: newText,
                             selection: TextSelection.collapsed(offset: pos + 1),
+                          );
+                          _contentFocus.requestFocus();
+                        },
+                      ),
+                      _FmtButton(
+                        icon: Icons.access_time,
+                        tooltip: '插入时间戳',
+                        onTap: () {
+                          final now = DateTime.now();
+                          final ts =
+                              '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
+                              '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+                          final ctrl = _contentCtrl;
+                          final sel = ctrl.selection;
+                          final pos = sel.isValid ? sel.baseOffset : ctrl.text.length;
+                          final newText = ctrl.text.substring(0, pos) + ts + ctrl.text.substring(pos);
+                          ctrl.value = TextEditingValue(
+                            text: newText,
+                            selection: TextSelection.collapsed(offset: pos + ts.length),
                           );
                           _contentFocus.requestFocus();
                         },

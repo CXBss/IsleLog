@@ -134,7 +134,10 @@ class _ServerSettingsPageState extends State<ServerSettingsPage> {
             style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
           TextButton(
-            onPressed: _save,
+            onPressed: () async {
+              await _save();
+              if (mounted) Navigator.pop(context);
+            },
             child: const Text(AppStrings.save,
                 style: TextStyle(
                     color: AppColors.primary, fontWeight: FontWeight.bold)),

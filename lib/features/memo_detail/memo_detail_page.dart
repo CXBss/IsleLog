@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../shared/utils/image_actions.dart' as img_actions;
 import 'package:flutter_markdown/flutter_markdown.dart';
 
@@ -37,7 +38,20 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
   // ── 评论 ──
   List<CommentEntry> _comments = [];
   final TextEditingController _commentCtrl = TextEditingController();
-  final FocusNode _commentFocus = FocusNode();
+  late final FocusNode _commentFocus = FocusNode(
+    onKeyEvent: (node, event) {
+      if (event is! KeyDownEvent) return KeyEventResult.ignored;
+      final isMac = Platform.isMacOS;
+      final trigger = isMac
+          ? HardwareKeyboard.instance.isMetaPressed
+          : HardwareKeyboard.instance.isControlPressed;
+      if (trigger && event.logicalKey == LogicalKeyboardKey.enter) {
+        _submitComment();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    },
+  );
   bool _commentSaving = false;
   CommentEntry? _editingComment; // 非 null 时为编辑模式
 

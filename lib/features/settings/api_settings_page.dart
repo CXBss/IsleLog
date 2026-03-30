@@ -49,6 +49,7 @@ class _ApiSettingsPageState extends State<ApiSettingsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text(AppStrings.settingsSaved)),
       );
+      Navigator.pop(context);
     }
   }
 
