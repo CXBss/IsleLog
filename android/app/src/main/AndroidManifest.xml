@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 网络访问 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <!-- image_picker: 相机拍照 -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <!-- Android 13+ 相册读取 -->
