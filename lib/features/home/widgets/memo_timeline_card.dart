@@ -461,7 +461,7 @@ class _MemoCardState extends State<_MemoCard> {
                       const SizedBox(width: 2),
                       Flexible(
                         child: Text(
-                          memo.location!,
+                          _shortLocation(memo.location!),
                           style: TextStyle(
                             fontSize: 12,
                             color: memo.latitude != null
@@ -992,4 +992,19 @@ class _NetImgState extends State<_NetImg> {
       color: Colors.grey[100],
       child: Center(child: Icon(Icons.broken_image_outlined,
           size: 24, color: Colors.grey[400])));
+}
+
+/// 从完整地址中提取"省-市-区"缩略形式
+///
+/// 例："广东省深圳市南山区科技南十二路" → "广东省-深圳市-南山区"
+/// 若无法解析则原样返回。
+String _shortLocation(String location) {
+  final re = RegExp(r'(.+?(?:省|自治区|市))(.+?(?:市|自治州))?(.+?(?:区|县|市))?');
+  final m = re.firstMatch(location);
+  if (m == null) return location;
+  final parts = [m.group(1), m.group(2), m.group(3)]
+      .whereType<String>()
+      .where((s) => s.isNotEmpty)
+      .toList();
+  return parts.isEmpty ? location : parts.join('-');
 }
