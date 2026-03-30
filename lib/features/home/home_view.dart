@@ -139,27 +139,51 @@ class _HomeViewState extends State<HomeView> {
   Future<void> _resetAndReload() async {
     if (!mounted) return;
     if (_selectedTags.isNotEmpty) {
+      final limit = _tagFilteredMemos.length.clamp(_pageSize, 10 * _pageSize);
+      final page = await DatabaseService.getMemosByTags(
+        tags: _selectedTags.toList(),
+        offset: 0,
+        limit: limit,
+      );
+      if (!mounted) return;
+      // 内容没变就不 setState，避免触发不必要的重建和滚动抖动
+      if (_listEquals(page, _tagFilteredMemos)) return;
       setState(() {
-        _tagFilteredMemos.clear();
-        _tagOffset = 0;
-        _tagHasMore = true;
-        _initialLoading = true;
+        _tagFilteredMemos
+          ..clear()
+          ..addAll(page);
+        _tagOffset = page.length;
+        _tagHasMore = page.length == limit;
       });
-      await _loadTagFiltered();
       return;
     }
+    final limit = _memos.length.clamp(_pageSize, 10 * _pageSize);
+    final page = await DatabaseService.getMemosPaged(offset: 0, limit: limit);
+    if (!mounted) return;
+    if (_listEquals(page, _memos)) return;
     setState(() {
-      _memos.clear();
-      _offset = 0;
-      _hasMore = true;
-      _initialLoading = true;
+      _memos
+        ..clear()
+        ..addAll(page);
+      _offset = page.length;
+      _hasMore = page.length == limit;
     });
-    await _loadNextPage();
+  }
+
+  /// 比较两个 MemoEntry 列表是否内容相同（按 id + updatedAt 快速比较）
+  bool _listEquals(List<MemoEntry> a, List<MemoEntry> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id || a[i].updatedAt != b[i].updatedAt) return false;
+    }
+    return true;
   }
 
   Future<void> _loadNextPage() async {
     if (_loadingMore || !_hasMore) return;
     _loadingMore = true;
+    final pixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
+    debugPrint('[HomeView] _loadNextPage triggered, pixels=$pixels');
     final page = await DatabaseService.getMemosPaged(
         offset: _offset, limit: _pageSize);
     if (mounted) {
@@ -197,8 +221,10 @@ class _HomeViewState extends State<HomeView> {
   }
 
   void _onScroll() {
-    if (_scrollCtrl.position.pixels <
-        _scrollCtrl.position.maxScrollExtent - 200) return;
+    final pos = _scrollCtrl.position;
+    // maxScrollExtent 为 0 说明内容还未撑满或尚未布局完成，跳过
+    if (pos.maxScrollExtent <= 0) return;
+    if (pos.pixels < pos.maxScrollExtent - 200) return;
     if (_selectedTags.isNotEmpty) {
       _loadTagFiltered();
     } else {
@@ -593,6 +619,7 @@ class _HomeViewState extends State<HomeView> {
             constraints:
                 const BoxConstraints(maxWidth: AppDimens.timelineMaxWidth),
             child: ListView.builder(
+              key: const PageStorageKey('home_timeline'),
               controller: _scrollCtrl,
               padding: EdgeInsets.fromLTRB(hPad, 12, hPad, bottomPad),
               itemCount: groups.length + pinnedOffset + (hasMore ? 1 : 0),
@@ -600,6 +627,7 @@ class _HomeViewState extends State<HomeView> {
                 // 置顶层（第 0 项）
                 if (hasPinned && i == 0) {
                   return _PinnedSection(
+                    key: const ValueKey('pinned'),
                     memos: _pinnedMemos,
                     expanded: _pinnedExpanded,
                     onToggle: () =>
@@ -611,6 +639,7 @@ class _HomeViewState extends State<HomeView> {
                 // 加载更多指示
                 if (gi == groups.length) {
                   return const Padding(
+                    key: ValueKey('loading_more'),
                     padding: EdgeInsets.symmetric(vertical: 16),
                     child: Center(
                       child: CircularProgressIndicator(
@@ -620,6 +649,7 @@ class _HomeViewState extends State<HomeView> {
                 }
                 final (key, dayMemos) = groups[gi];
                 return _DaySection(
+                  key: ValueKey(key),
                   dateKey: key,
                   memos: dayMemos,
                   weekdays: _weekdays,
@@ -680,6 +710,7 @@ class _PinnedSection extends StatelessWidget {
   final void Function(String tag) onTagTap;
 
   const _PinnedSection({
+    super.key,
     required this.memos,
     required this.expanded,
     required this.onToggle,
@@ -783,6 +814,7 @@ class _DaySection extends StatelessWidget {
   final void Function(String tag) onTagTap;
 
   const _DaySection({
+    super.key,
     required this.dateKey,
     required this.memos,
     required this.weekdays,

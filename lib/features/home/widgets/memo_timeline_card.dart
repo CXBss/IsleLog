@@ -219,8 +219,10 @@ class _MemoCardState extends State<_MemoCard> {
   @override
   void didUpdateWidget(_MemoCard old) {
     super.didUpdateWidget(old);
-    // 列表重建时（DB 变化通知）重新加载评论数
-    _loadCommentCount();
+    // 只有换了另一条 memo 才重新加载评论数
+    if (old.memo.id != memo.id) {
+      _loadCommentCount();
+    }
   }
 
   Future<void> _loadCommentCount() async {
@@ -230,7 +232,9 @@ class _MemoCardState extends State<_MemoCard> {
     } else {
       comments = await DatabaseService.getCommentsByMemoId(memo.id);
     }
-    if (mounted) setState(() => _commentCount = comments.length);
+    if (mounted && comments.length != _commentCount) {
+      setState(() => _commentCount = comments.length);
+    }
   }
 
   List<AttachmentInfo> get _imageAttachments =>
@@ -701,10 +705,11 @@ class _ImageGrid extends StatelessWidget {
         onTap: () => _openViewer(context, 0),
         child: ClipRRect(
           borderRadius: radius,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 180),
+          child: SizedBox(
+            height: height,
+            width: double.infinity,
             child: _NetImg(attachment: attachments[0], fit: BoxFit.contain,
-                width: double.infinity),
+                width: double.infinity, height: height),
           ),
         ),
       );
