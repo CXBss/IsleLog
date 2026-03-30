@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -14,6 +15,7 @@ import '../../../features/memo_detail/memo_detail_page.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
 import '../../../services/location/location_service.dart';
 import '../../../services/settings/settings_service.dart'; // Bearer Token 用于图片认证
+import '../../../services/sync/sync_service.dart';
 import '../../../shared/constants/app_constants.dart';
 import 'audio_player_widget.dart';
 import 'file_chip_widget.dart';
@@ -308,13 +310,15 @@ class _MemoCardState extends State<_MemoCard> {
               onTap: () async {
                 Navigator.pop(context);
                 await DatabaseService.softDelete(memo.id);
-                messenger.showSnackBar(
+                var undone = false;
+                final result = await messenger.showSnackBar(
                   SnackBar(
                     content: Row(
                       children: [
                         const Expanded(child: Text(AppStrings.cardDeleted)),
                         TextButton(
                           onPressed: () async {
+                            undone = true;
                             memo.isDeleted = false;
                             memo.syncStatus = SyncStatus.pending;
                             await DatabaseService.saveMemo(memo);
@@ -339,6 +343,9 @@ class _MemoCardState extends State<_MemoCard> {
                     duration: const Duration(seconds: 5),
                   ),
                 );
+                if (!undone && result != SnackBarClosedReason.action) {
+                  unawaited(SyncService.syncAll());
+                }
               },
             ),
           ],

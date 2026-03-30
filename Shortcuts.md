@@ -1,0 +1,139 @@
+---
+title: Shortcuts
+date: 2026-03-28T01:35:49Z
+lastmod: 2026-03-28T01:35:49Z
+---
+
+# Shortcuts
+
+---
+
+- Shortcuts
+- [https://usememos.com/docs/usage/shortcuts](https://usememos.com/docs/usage/shortcuts)
+- Save frequently used filters so you can switch views quickly.
+- 2026-03-27 01:35
+
+---
+
+Usage
+
+## Shortcuts
+
+Save frequently used filters so you can switch views quickly.
+
+Shortcuts save filter expressions for quick reuse. They are useful when you repeatedly open the same slice of your memos, such as work items, incomplete tasks, or recent public posts.
+
+## [Create a shortcut](https://usememos.com/docs/usage/shortcuts#create-a-shortcut)
+
+Typical flow:
+
+1. open the shortcut dialog from the home view
+2. give the shortcut a clear name
+3. enter a filter expression
+4. save it and reuse it from the sidebar
+
+## [Filter expression syntax](https://usememos.com/docs/usage/shortcuts#filter-expression-syntax)
+
+Shortcuts use CEL (Common Expression Language) filter expressions. A shortcut filter must evaluate to `true` for memos you want included.
+
+### [Supported fields](https://usememos.com/docs/usage/shortcuts#supported-fields)
+
+|Field|Type|Example|
+| -------| -------------------| ---------|
+|​`content`​|string|​`content.contains("meeting")`​|
+|​`creator`​|string|​`creator == "users/john"`​|
+|​`creator_id`​|integer|​`creator_id == 42`​|
+|​`created_ts`​|integer|​`created_ts >= now() - 86400`​|
+|​`updated_ts`​|integer|​`updated_ts >= now() - 3600`​|
+|​`visibility`​|string|​`visibility == "PUBLIC"`​|
+|​`pinned`​|boolean|​`pinned`​|
+|​`tags`​|string list|​`"project/backend" in tags`​|
+|​`tag`​|string list alias|​`tag in ["work"]`​|
+|​`has_task_list`​|boolean|​`has_task_list`​|
+|​`has_link`​|boolean|​`has_link`​|
+|​`has_code`​|boolean|​`has_code`​|
+|​`has_incomplete_tasks`​|boolean|​`has_incomplete_tasks`​|
+
+### [Operators and functions](https://usememos.com/docs/usage/shortcuts#operators-and-functions)
+
+- comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`​
+- logic: `&&`, `||`, `!`, and parentheses `()`​
+- membership: `tag in ["work", "team"]`, `"project/backend" in tags`, `visibility in ["PUBLIC", "PROTECTED"]`​
+- functions: `content.contains("text")`, `size(tags)`, `now()`​
+
+Boolean fields can be used directly without `== true`:
+
+```
+pinned && has_incomplete_tasks
+```
+
+### [Tag matching](https://usememos.com/docs/usage/shortcuts#tag-matching)
+
+Use `tag in [...]` when you want to match one or more tag trees:
+
+```
+tag in ["work"]
+tag in ["project", "team"]
+```
+
+​`tag in ["project"]` also matches nested tags such as `project/backend`.
+
+Use `tags.exists()` for more specific tag patterns:
+
+```
+tags.exists(t, t.startsWith("archive"))
+tags.exists(t, t.endsWith("/bug"))
+tags.exists(t, t.contains("todo"))
+```
+
+### [Time-based filters](https://usememos.com/docs/usage/shortcuts#time-based-filters)
+
+Timestamps use Unix seconds. You can compare against fixed values or `now()` arithmetic:
+
+```
+created_ts >= now() - 3600
+created_ts >= now() - 7 * 86400
+updated_ts >= now() - 60
+```
+
+## [Example shortcuts](https://usememos.com/docs/usage/shortcuts#example-shortcuts)
+
+|Name|Filter|
+| -------------------| ------------------------------|
+|Work TODOs|​`tag in ["work"] && has_incomplete_tasks`​|
+|Public posts|​`visibility == "PUBLIC"`​|
+|Posts with links|​`has_link`​|
+|Recent notes|​`created_ts >= now() - 7 * 86400`​|
+|Team updates|​`tag in ["team"] && visibility == "PROTECTED"`​|
+|Unfinished tasks|​`has_task_list && has_incomplete_tasks`​|
+|Pinned references|\`pinned && (has\_link|
+|Active projects|​`tags.exists(t, t.startsWith("project")) && !tags.exists(t, t.startsWith("archive"))`​|
+
+## [Good shortcut patterns](https://usememos.com/docs/usage/shortcuts#good-shortcut-patterns)
+
+- incomplete tasks for one project
+- pinned or high-signal memos
+- public notes you review before sharing
+- recent memos from a time window
+- resource collections with links or attachments
+
+## [Management tips](https://usememos.com/docs/usage/shortcuts#management-tips)
+
+- keep names short and obvious
+- delete stale shortcuts you no longer use
+- update filters when your tag vocabulary changes
+- prefer a few durable shortcuts over dozens of narrow one-off views
+
+## [Limits to remember](https://usememos.com/docs/usage/shortcuts#limits-to-remember)
+
+Shortcuts are personal workflow tools. They are most useful on the home view and should reflect how you naturally revisit content rather than every theoretical filter you could build.
+
+Unsupported patterns include regular expressions, `all()`, `filter()`, `map()`, and date string parsing. Use Unix timestamps or `now()` arithmetic instead.
+
+Tags
+
+Organize memos with hashtags and filter them with searchable metadata.
+
+Sharing
+
+Understand memo visibility, public links, and discoverability.

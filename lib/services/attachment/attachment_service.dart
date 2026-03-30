@@ -180,7 +180,9 @@ class AttachmentService {
 
       final dir = await _attachmentsDir();
       final ext = p.extension(attachment.filename).toLowerCase();
-      final destPath = p.join(dir.path, '${attachment.localId}$ext');
+      // localId 可能含路径前缀（如 "attachments/Rbp34J..."），取 basename 避免多层目录
+      final safeId = p.basename(attachment.localId);
+      final destPath = p.join(dir.path, '$safeId$ext');
       await File(destPath).writeAsBytes(resp.data!);
 
       debugPrint('[Attachment] 下载成功：${attachment.filename} → $destPath');

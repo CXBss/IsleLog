@@ -97,8 +97,11 @@ class SyncService {
     final api = MemosApiService(baseUrl: url, token: token);
     try {
       final pushed = await _pushPending(api, url, token);
+      // push 完成后、pull 开始前记录时间：
+      // 既避免把刚推上去的条目再拉回来，又不漏掉 push 期间远端其他人的修改
+      final syncTime = DateTime.now();
       final (pulled, deleted) = await _pullUpdates(api, url, full: full);
-      await SettingsService.setLastSyncTime(DateTime.now());
+      await SettingsService.setLastSyncTime(syncTime);
       final result = SyncResult(pushed: pushed, pulled: pulled, deleted: deleted);
       debugPrint('[Sync] _sync 完成（full=$full）：$result');
       return result;
@@ -247,8 +250,8 @@ class SyncService {
     if (!full) {
       final lastSync = await SettingsService.lastSyncTime;
       if (lastSync != null) {
-        final timeStr = lastSync.toUtc().toIso8601String();
-        filter = 'updateTime >= "$timeStr"';
+        final ts = lastSync.millisecondsSinceEpoch ~/ 1000;
+        filter = 'updated_ts >= $ts';
         debugPrint('[Sync] _pullUpdates 增量拉取，filter=$filter');
       } else {
         debugPrint('[Sync] _pullUpdates 首次同步，全量拉取');
@@ -451,10 +454,20 @@ class SyncService {
 
     _applyLocation(memo, data);
 
+    // 合并附件：保留本地已下载的 localPath
+    final oldByResName = {
+      for (final a in memo.attachments)
+        if (a.remoteResName != null) a.remoteResName!: a
+    };
+    final newAttachments = _parseAttachments(data, baseUrl).map((a) {
+      final old = a.remoteResName != null ? oldByResName[a.remoteResName] : null;
+      return (old?.localPath != null) ? a.copyWith(localPath: old!.localPath) : a;
+    }).toList();
+
     memo
       ..syncStatus = SyncStatus.synced
       ..lastSyncAt = DateTime.now()
-      ..attachments = _parseAttachments(data, baseUrl);
+      ..attachments = newAttachments;
   }
 
   /// 从远端数据中解析 location 字段并写入 memo

@@ -203,25 +203,30 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                         memo.latitude, memo.longitude, memo.location)
                     : null,
                 child: Row(
-                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.location_on_outlined,
-                        size: 14,
-                        color: memo.latitude != null
-                            ? AppColors.primary
-                            : Colors.blueGrey[400]),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 1),
+                      child: Icon(Icons.location_on_outlined,
+                          size: 14,
+                          color: memo.latitude != null
+                              ? AppColors.primary
+                              : Colors.blueGrey[400]),
+                    ),
                     const SizedBox(width: 4),
-                    Text(
-                      memo.location!,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: memo.latitude != null
-                            ? AppColors.primary
-                            : Colors.blueGrey[400],
-                        decoration: memo.latitude != null
-                            ? TextDecoration.underline
-                            : null,
-                        decorationColor: AppColors.primary,
+                    Expanded(
+                      child: Text(
+                        memo.location!,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: memo.latitude != null
+                              ? AppColors.primary
+                              : Colors.blueGrey[400],
+                          decoration: memo.latitude != null
+                              ? TextDecoration.underline
+                              : null,
+                          decorationColor: AppColors.primary,
+                        ),
                       ),
                     ),
                   ],
@@ -238,6 +243,10 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                 children: memo.tags.map((tag) => _DetailTagChip(tag: tag)).toList(),
               ),
             ],
+
+            // ── 底部元信息（修改时间 + 字数）─────────────────────
+            const SizedBox(height: 16),
+            _MetaInfoRow(memo: memo),
           ],
         ),
       ),
@@ -562,6 +571,35 @@ class _DetailImageViewerState extends State<_DetailImageViewer> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 底部元信息行：修改时间 + 字数
+class _MetaInfoRow extends StatelessWidget {
+  final MemoEntry memo;
+  const _MetaInfoRow({required this.memo});
+
+  String get _updatedLabel {
+    final d = memo.updatedAt;
+    final date =
+        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    final time =
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    return '修改于 $date $time';
+  }
+
+  int get _charCount => memo.content.trim().length;
+
+  @override
+  Widget build(BuildContext context) {
+    const style = TextStyle(fontSize: 12, color: Colors.grey);
+    return Row(
+      children: [
+        Text(_updatedLabel, style: style),
+        const Spacer(),
+        Text('$_charCount 字', style: style),
+      ],
     );
   }
 }
