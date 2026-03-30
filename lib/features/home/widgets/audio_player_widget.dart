@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 
@@ -29,6 +31,10 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
   void initState() {
     super.initState();
     _player = AudioPlayer();
+    // 监听时长更新（setFilePath 后 duration 可能异步到位）
+    _player.durationStream.listen((d) {
+      if (d != null && mounted) setState(() => _duration = d);
+    });
     _initPlayer();
   }
 
@@ -36,14 +42,27 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
     try {
       final localPath = widget.attachment.localPath;
       final baseUrl = await SettingsService.serverUrl ?? '';
-      final url = widget.attachment.fullUrl(baseUrl);
+      final token = await SettingsService.accessToken;
+      final remoteUrl = widget.attachment.fullUrl(baseUrl);
 
-      if (url != null && url.isNotEmpty) {
-        await _player.setUrl(url);
-      } else if (localPath != null) {
+      debugPrint('[AudioPlayer] localPath=$localPath remoteUrl=$remoteUrl');
+
+      if (localPath != null && File(localPath).existsSync()) {
+        // 优先用本地文件
+        debugPrint('[AudioPlayer] 使用本地文件');
         await _player.setFilePath(localPath);
+      } else if (remoteUrl != null && remoteUrl.isNotEmpty) {
+        // 远端 URL，带认证头
+        debugPrint('[AudioPlayer] 使用远端 URL');
+        await _player.setAudioSource(
+          AudioSource.uri(
+            Uri.parse(remoteUrl),
+            headers: token != null ? {'Authorization': 'Bearer $token'} : null,
+          ),
+        );
       } else {
-        setState(() => _error = true);
+        debugPrint('[AudioPlayer] 无可用音源');
+        if (mounted) setState(() { _loading = false; _error = true; });
         return;
       }
       if (mounted) {
@@ -154,13 +173,14 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
 
           const SizedBox(width: 4),
 
-          // 时长显示
+          // 剩余时长
           StreamBuilder<Duration>(
             stream: _player.positionStream,
             builder: (ctx, snap) {
               final pos = snap.data ?? Duration.zero;
+              final remaining = _duration > pos ? _duration - pos : Duration.zero;
               return Text(
-                '${_formatDuration(pos)} / ${_formatDuration(_duration)}',
+                '-${_formatDuration(remaining)}',
                 style: TextStyle(fontSize: 10, color: Colors.grey[500]),
               );
             },

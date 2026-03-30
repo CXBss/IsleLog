@@ -6,6 +6,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/database/database_service.dart';
@@ -50,6 +53,16 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   /// 是否正在获取位置
   bool _locating = false;
+
+  /// 录音器
+  final AudioRecorder _recorder = AudioRecorder();
+
+  /// 是否正在录音
+  bool _recording = false;
+
+  /// 录音时长（秒）
+  int _recordSeconds = 0;
+  Timer? _recordTimer;
 
   /// 当前位置信息（含经纬度，用于点击跳转地图）
   LocationInfo? _locationInfo;
@@ -157,6 +170,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     _contentCtrl.dispose();
     _locationCtrl.dispose();
     _contentFocus.dispose();
+    _recordTimer?.cancel();
+    _recorder.dispose();
     super.dispose();
   }
 
@@ -339,7 +354,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
             // 拍照仅在移动端显示
             ListTile(
               leading: const Icon(Icons.image_outlined),
-              title: const Text('从相册选图'),
+              title: const Text('图片'),
               onTap: () => Navigator.pop(context, _AttachType.image),
             ),
             ListTile(
@@ -494,6 +509,125 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 保存日记
   ///
   /// 流程：
+  // ── 录音 ──────────────────────────────────────────────────────
+
+  Future<void> _toggleRecording() async {
+    if (_recording) {
+      await _stopRecording();
+    } else {
+      await _startRecording();
+    }
+  }
+
+  Future<void> _startRecording() async {
+    final hasPermission = await _recorder.hasPermission();
+    if (!hasPermission) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('无麦克风权限')),
+        );
+      }
+      return;
+    }
+    final dir = await getApplicationDocumentsDirectory();
+    final path = p.join(dir.path, 'rec_${DateTime.now().millisecondsSinceEpoch}.m4a');
+    await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
+    setState(() { _recording = true; _recordSeconds = 0; });
+    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _recordSeconds++);
+    });
+  }
+
+  Future<void> _stopRecording() async {
+    _recordTimer?.cancel();
+    final path = await _recorder.stop();
+    setState(() { _recording = false; _recordSeconds = 0; });
+    if (path == null) return;
+    final file = File(path);
+    if (!file.existsSync()) return;
+
+    setState(() => _uploading = true);
+    try {
+      final isOnline = await SettingsService.serverUrl.then((u) => u != null && u.isNotEmpty);
+      final AttachmentInfo att;
+      if (isOnline) {
+        att = await AttachmentService.uploadToServer(file, filename: p.basename(path), compress: false);
+      } else {
+        att = await AttachmentService.saveLocally(file, filename: p.basename(path), compress: false);
+      }
+      if (mounted) setState(() => _pendingAttachments.add(att));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('录音保存失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  String get _recordLabel {
+    final m = _recordSeconds ~/ 60;
+    final s = _recordSeconds % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  /// 用指定前后缀包裹当前选中文字（或在光标处插入占位）
+  void _wrapSelection(String prefix, String suffix) {
+    final ctrl = _contentCtrl;
+    final sel = ctrl.selection;
+    final text = ctrl.text;
+    if (!sel.isValid) {
+      // 无有效光标，直接追加到末尾
+      final insert = '$prefix$suffix';
+      ctrl.value = TextEditingValue(
+        text: text + insert,
+        selection: TextSelection.collapsed(
+            offset: text.length + prefix.length),
+      );
+    } else if (sel.isCollapsed) {
+      // 无选中，插入占位符并将光标置于中间
+      final pos = sel.baseOffset;
+      final newText = text.substring(0, pos) + prefix + suffix + text.substring(pos);
+      ctrl.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: pos + prefix.length),
+      );
+    } else {
+      // 有选中，包裹选中文字
+      final selected = sel.textInside(text);
+      final newText = text.replaceRange(sel.start, sel.end, '$prefix$selected$suffix');
+      ctrl.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: sel.start + prefix.length + selected.length + suffix.length),
+      );
+    }
+    _contentFocus.requestFocus();
+  }
+
+  /// 在当前行行首插入 `1. `（有序列表）
+  void _insertOrderedList() => _insertLinePrefix('1. ');
+
+  /// 在当前行行首插入 `- `（无序列表）
+  void _insertUnorderedList() => _insertLinePrefix('- ');
+
+  /// 在当前行行首插入指定前缀
+  void _insertLinePrefix(String prefix) {
+    final ctrl = _contentCtrl;
+    final text = ctrl.text;
+    final sel = ctrl.selection;
+    final pos = sel.isValid ? sel.baseOffset : text.length;
+    final lineStart = text.lastIndexOf('\n', pos - 1) + 1;
+    final newText = text.substring(0, lineStart) + prefix + text.substring(lineStart);
+    ctrl.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: pos + prefix.length),
+    );
+    _contentFocus.requestFocus();
+  }
+
+  /// 在当前行行首插入 `- [ ] `
+  void _insertTodo() => _insertLinePrefix('- [ ] ');
+
   /// 1. 校验正文不为空
   /// 2. 写入本地 DB（新建或更新）
   /// 3. 如已配置服务器，在后台推送到远端
@@ -643,43 +777,33 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // ── 第一行：# · 时间 · 位置 ──────────────────────
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 6, 12, 0),
+                // ── 第一行：# · B · I · ` · 有序列表 · 无序列表 · -[] · 时间
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
                   child: Row(
                     children: [
-                      // # 标签（最前，较大）
-                      GestureDetector(
+                      _FmtButton(
+                        label: '#',
+                        tooltip: '标题',
                         onTap: () {
                           final ctrl = _contentCtrl;
                           final sel = ctrl.selection;
-                          final pos = sel.isValid
-                              ? sel.baseOffset
-                              : ctrl.text.length;
-                          final newText = ctrl.text.substring(0, pos) +
-                              '# ' +
-                              ctrl.text.substring(pos);
+                          final pos = sel.isValid ? sel.baseOffset : ctrl.text.length;
+                          final newText = ctrl.text.substring(0, pos) + '# ' + ctrl.text.substring(pos);
                           ctrl.value = TextEditingValue(
                             text: newText,
-                            selection:
-                                TextSelection.collapsed(offset: pos + 1),
+                            selection: TextSelection.collapsed(offset: pos + 1),
                           );
                           _contentFocus.requestFocus();
                         },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 4),
-                          child: Text(
-                            '#',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.grey[500],
-                              height: 1,
-                            ),
-                          ),
-                        ),
                       ),
+                      _FmtButton(icon: Icons.format_bold, tooltip: '加粗', onTap: () => _wrapSelection('**', '**')),
+                      _FmtButton(icon: Icons.format_italic, tooltip: '斜体', onTap: () => _wrapSelection('*', '*')),
+                      _FmtButton(icon: Icons.code, tooltip: '代码', onTap: () => _wrapSelection('`', '`')),
+                      _FmtButton(icon: Icons.format_list_numbered, tooltip: '有序列表', onTap: _insertOrderedList),
+                      _FmtButton(icon: Icons.format_list_bulleted, tooltip: '无序列表', onTap: _insertUnorderedList),
+                      _FmtButton(icon: Icons.check_box_outline_blank, tooltip: 'Todo', onTap: _insertTodo),
                       const SizedBox(width: 8),
                       // 日期时间
                       GestureDetector(
@@ -687,42 +811,88 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.access_time_outlined,
-                                size: 15, color: Colors.grey[500]),
+                            Icon(Icons.access_time_outlined, size: 15, color: Colors.grey[500]),
                             const SizedBox(width: 4),
-                            Text(
-                              _dateTimeLabel,
-                              style: TextStyle(
-                                  fontSize: 12, color: Colors.grey[500]),
-                            ),
+                            Text(_dateTimeLabel, style: TextStyle(fontSize: 12, color: Colors.grey[500])),
                           ],
                         ),
                       ),
-                      const Spacer(),
-                      // 位置图标：移动端可点击获取，其他平台仅作装饰
-                      _isMobile && _locating
-                          ? const SizedBox(
-                              width: 15,
-                              height: 15,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: AppColors.primary),
-                            )
-                          : GestureDetector(
-                              onTap: _isMobile ? _manualGetLocation : null,
-                              child: Icon(
-                                _locationInfo != null
-                                    ? Icons.location_on
-                                    : Icons.location_on_outlined,
-                                size: 15,
-                                color: _locationInfo != null
-                                    ? AppColors.primary
-                                    : Colors.grey[500],
+                      const SizedBox(width: 8),
+                    ],
+                  ),
+                ),
+
+                // ── 第二行：录音 · 拍照 · 附件 · 位置 · 保存 ──────
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
+                  child: Row(
+                    children: [
+                      // 录音按钮
+                      _recording
+                          ? GestureDetector(
+                              onTap: _toggleRecording,
+                              child: Container(
+                                height: 36,
+                                padding: const EdgeInsets.symmetric(horizontal: 10),
+                                alignment: Alignment.center,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.stop_circle_outlined, size: 20, color: Colors.red),
+                                    const SizedBox(width: 4),
+                                    Text(_recordLabel, style: const TextStyle(fontSize: 13, color: Colors.red, fontFeatures: [FontFeature.tabularFigures()])),
+                                  ],
+                                ),
                               ),
+                            )
+                          : IconButton(
+                              icon: const Icon(Icons.mic_outlined),
+                              color: Colors.grey[600],
+                              iconSize: 22,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              tooltip: '录音',
+                              onPressed: _uploading ? null : _toggleRecording,
                             ),
-                      const SizedBox(width: 4),
-                      // 位置文本（可点击跳转 / 可手动输入）
-                      Flexible(
+                      if (_isMobile)
+                        IconButton(
+                          icon: const Icon(Icons.camera_alt_outlined),
+                          color: Colors.grey[600],
+                          iconSize: 22,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          tooltip: '拍照',
+                          onPressed: _uploading ? null : _takePhoto,
+                        ),
+                      _uploading
+                          ? const SizedBox(
+                              width: 36, height: 36,
+                              child: Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)),
+                            )
+                          : IconButton(
+                              icon: const Icon(Icons.attach_file),
+                              color: Colors.grey[600],
+                              iconSize: 22,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              tooltip: '添加附件',
+                              onPressed: _pickAttachment,
+                            ),
+                      // 位置图标
+                      _isMobile && _locating
+                          ? const SizedBox(width: 36, height: 36,
+                              child: Padding(padding: EdgeInsets.all(10), child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)))
+                          : IconButton(
+                              icon: Icon(_locationInfo != null ? Icons.location_on : Icons.location_on_outlined),
+                              color: _locationInfo != null ? AppColors.primary : Colors.grey[600],
+                              iconSize: 22,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              tooltip: '位置',
+                              onPressed: _isMobile ? _manualGetLocation : null,
+                            ),
+                      // 位置文本
+                      Expanded(
                         child: _locationInfo != null
                             ? GestureDetector(
                                 onTap: _openLocationMap,
@@ -730,27 +900,14 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Flexible(
-                                      child: Text(
-                                        _locationCtrl.text,
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          color: AppColors.primary,
-                                          decoration:
-                                              TextDecoration.underline,
-                                          decorationColor: AppColors.primary,
-                                        ),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
+                                      child: Text(_locationCtrl.text,
+                                        style: const TextStyle(fontSize: 12, color: AppColors.primary, decoration: TextDecoration.underline, decorationColor: AppColors.primary),
+                                        overflow: TextOverflow.ellipsis),
                                     ),
                                     const SizedBox(width: 4),
                                     GestureDetector(
-                                      onTap: () => setState(() {
-                                        _locationInfo = null;
-                                        _locationCtrl.clear();
-                                      }),
-                                      child: Icon(Icons.close,
-                                          size: 14,
-                                          color: Colors.grey[400]),
+                                      onTap: () => setState(() { _locationInfo = null; _locationCtrl.clear(); }),
+                                      child: Icon(Icons.close, size: 14, color: Colors.grey[400]),
                                     ),
                                   ],
                                 ),
@@ -759,63 +916,16 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                                 height: 24,
                                 child: TextField(
                                   controller: _locationCtrl,
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey[600]),
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                                   decoration: InputDecoration(
                                     hintText: _isMobile ? '位置' : AppStrings.editorLocationHint,
-                                    hintStyle: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.grey[400]),
-                                    border: InputBorder.none,
-                                    isDense: true,
-                                    contentPadding: EdgeInsets.zero,
+                                    hintStyle: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                                    border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero,
                                   ),
                                 ),
                               ),
                       ),
-                    ],
-                  ),
-                ),
-
-                // ── 第二行：拍照 · 附件 · 保存 ──────────────────
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
-                  child: Row(
-                    children: [
-                      if (_isMobile)
-                        IconButton(
-                          icon: const Icon(Icons.camera_alt_outlined),
-                          color: Colors.grey[600],
-                          iconSize: 22,
-                          padding: EdgeInsets.zero,
-                          constraints:
-                              const BoxConstraints(minWidth: 36, minHeight: 36),
-                          tooltip: '拍照',
-                          onPressed: _uploading ? null : _takePhoto,
-                        ),
-                      _uploading
-                          ? const SizedBox(
-                              width: 36,
-                              height: 36,
-                              child: Padding(
-                                padding: EdgeInsets.all(8),
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.primary),
-                              ),
-                            )
-                          : IconButton(
-                              icon: const Icon(Icons.attach_file),
-                              color: Colors.grey[600],
-                              iconSize: 22,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                  minWidth: 36, minHeight: 36),
-                              tooltip: '添加附件',
-                              onPressed: _pickAttachment,
-                            ),
-                      const Spacer(),
+                      const SizedBox(width: 4),
                       // 保存按钮
                       _saving
                           ? const SizedBox(
@@ -1079,6 +1189,49 @@ class _TagSuggestionPanel extends StatelessWidget {
                 );
               },
             ),
+    );
+  }
+}
+
+/// 工具栏格式化按钮，支持图标或文字标签
+class _FmtButton extends StatelessWidget {
+  final IconData? icon;
+  final String? label;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  const _FmtButton({
+    this.icon,
+    this.label,
+    required this.tooltip,
+    required this.onTap,
+  }) : assert(icon != null || label != null);
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: SizedBox(
+          width: 36,
+          height: 36,
+          child: Center(
+            child: icon != null
+                ? Icon(icon, size: 22, color: Colors.grey[600])
+                : Text(
+                    label!,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey[600],
+                      height: 1,
+                    ),
+                  ),
+          ),
+        ),
+      ),
     );
   }
 }

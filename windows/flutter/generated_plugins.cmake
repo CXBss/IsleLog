@@ -7,6 +7,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   gal
   geolocator_windows
   isar_flutter_libs
+  record_windows
   url_launcher_windows
 )
 
