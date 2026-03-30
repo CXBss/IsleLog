@@ -363,11 +363,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
               onTap: () => Navigator.pop(context, _AttachType.image),
             ),
             ListTile(
-              leading: const Icon(Icons.music_note_outlined),
-              title: const Text('音频'),
-              onTap: () => Navigator.pop(context, _AttachType.audio),
-            ),
-            ListTile(
               leading: const Icon(Icons.attach_file),
               title: const Text('其他文件'),
               onTap: () => Navigator.pop(context, _AttachType.file),
@@ -542,25 +537,46 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     );
   }
 
-  /// 桌面端粘贴图片：读取剪贴板图片字节，保存为临时文件后作为附件处理
+  /// 桌面端粘贴：优先检查剪贴板图片，其次检查剪贴板文件
   Future<bool> _handlePasteImage() async {
     if (!_isDesktop) return false;
     try {
+      // 1. 尝试读取剪贴板图片
       final bytes = await Pasteboard.image;
-      if (bytes == null || bytes.isEmpty) return false;
+      if (bytes != null && bytes.isNotEmpty) {
+        final filename = 'paste_${DateTime.now().millisecondsSinceEpoch}.png';
+        final tempDir = await getTemporaryDirectory();
+        await tempDir.create(recursive: true);
+        final tempFile = File('${tempDir.path}/$filename');
+        await tempFile.writeAsBytes(bytes);
+        await _processFile(tempFile, filename, compress: true);
+        return true;
+      }
 
-      final filename = 'paste_${DateTime.now().millisecondsSinceEpoch}.png';
-      final tempDir = await getTemporaryDirectory();
-      await tempDir.create(recursive: true);
-      final tempFile = File('${tempDir.path}/$filename');
-      await tempFile.writeAsBytes(bytes);
+      // 2. 尝试读取剪贴板文件
+      final files = await Pasteboard.files();
+      if (files.isNotEmpty) {
+        for (final path in files) {
+          final file = File(path);
+          if (file.existsSync()) {
+            final filename = p.basename(path);
+            final isImage = _isImageFile(filename);
+            await _processFile(file, filename, compress: isImage);
+          }
+        }
+        return true;
+      }
 
-      await _processFile(tempFile, filename, compress: true);
-      return true;
+      return false;
     } catch (e) {
-      debugPrint('[MemoEditor] 粘贴图片失败：$e');
+      debugPrint('[MemoEditor] 粘贴失败：$e');
       return false;
     }
+  }
+
+  static bool _isImageFile(String filename) {
+    final ext = filename.split('.').last.toLowerCase();
+    return {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic'}.contains(ext);
   }
 
   /// 移除一个附件（延迟删除：保存成功后才真正删远端，取消编辑则不删）
@@ -611,12 +627,23 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
     setState(() => _uploading = true);
     try {
-      final isOnline = await SettingsService.serverUrl.then((u) => u != null && u.isNotEmpty);
-      final AttachmentInfo att;
-      if (isOnline) {
-        att = await AttachmentService.uploadToServer(file, filename: p.basename(path), compress: false);
+      final configured = await SettingsService.isConfigured;
+      final filename = p.basename(path);
+      AttachmentInfo att;
+      if (configured) {
+        try {
+          att = await AttachmentService.uploadToServer(file, filename: filename, compress: false);
+        } catch (e) {
+          debugPrint('[MemoEditor] 录音上传失败，降级本地存储：$e');
+          att = await AttachmentService.saveLocally(file, filename: filename, compress: false);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('网络不可用，录音已本地保存，联网后自动上传')),
+            );
+          }
+        }
       } else {
-        att = await AttachmentService.saveLocally(file, filename: p.basename(path), compress: false);
+        att = await AttachmentService.saveLocally(file, filename: filename, compress: false);
       }
       if (mounted) setState(() => _pendingAttachments.add(att));
     } catch (e) {
