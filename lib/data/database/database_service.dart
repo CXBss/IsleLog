@@ -3,6 +3,7 @@ import 'package:isar/isar.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:rxdart/rxdart.dart';
 
+import '../models/comment_entry.dart';
 import '../models/memo_entry.dart';
 import '../models/tag_stat.dart';
 
@@ -26,7 +27,7 @@ class DatabaseService {
     final dir = await getApplicationDocumentsDirectory();
     debugPrint('[DB] 打开数据库，路径：${dir.path}');
     final isar = await Isar.open(
-      [MemoEntrySchema, TagStatSchema],
+      [MemoEntrySchema, TagStatSchema, CommentEntrySchema],
       directory: dir.path,
     );
     debugPrint('[DB] 数据库已就绪');
@@ -474,8 +475,11 @@ class DatabaseService {
     final isar = await db;
     debugPrint('[DB] 注册 watchDbChanges（含 debounce）');
     // fireImmediately: false —— 只监听后续写操作，首次加载由调用方主动触发
-    return isar.memoEntrys
-        .watchLazy(fireImmediately: false)
+    // 合并 memoEntrys 和 commentEntrys，评论变化也能触发列表刷新
+    final memoStream = isar.memoEntrys.watchLazy(fireImmediately: false);
+    final commentStream = isar.commentEntrys.watchLazy(fireImmediately: false);
+    return memoStream
+        .mergeWith([commentStream])
         .debounceTime(const Duration(milliseconds: 300));
   }
 
@@ -500,6 +504,106 @@ class DatabaseService {
       }
     });
     debugPrint('[DB] seedIfEmpty: 播种完成');
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 评论操作（CommentEntry collection）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 新建或更新一条评论。
+  /// [skipTimestamp] 为 true 时不修改 updatedAt（同步场景使用）。
+  static Future<int> saveComment(CommentEntry comment,
+      {bool skipTimestamp = false}) async {
+    final isar = await db;
+    if (!skipTimestamp) comment.updatedAt = DateTime.now();
+    final id = await isar.writeTxn(() => isar.commentEntrys.put(comment));
+    debugPrint('[DB] saveComment → id=$id memosName=${comment.memosName}');
+    return id;
+  }
+
+  /// 获取指定日记（按 parentMemosName）的所有未删除评论，按创建时间升序。
+  static Future<List<CommentEntry>> getCommentsByMemosName(
+      String parentMemosName) async {
+    final isar = await db;
+    final result = await isar.commentEntrys
+        .filter()
+        .parentMemosNameEqualTo(parentMemosName)
+        .isDeletedEqualTo(false)
+        .sortByCreatedAt()
+        .findAll();
+    debugPrint('[DB] getCommentsByMemosName($parentMemosName) → ${result.length} 条');
+    return result;
+  }
+
+  /// 获取指定日记（按本地 memoId）的所有未删除评论，用于离线新建评论的关联。
+  static Future<List<CommentEntry>> getCommentsByMemoId(int memoId) async {
+    final isar = await db;
+    final result = await isar.commentEntrys
+        .filter()
+        .memoIdEqualTo(memoId)
+        .isDeletedEqualTo(false)
+        .sortByCreatedAt()
+        .findAll();
+    debugPrint('[DB] getCommentsByMemoId($memoId) → ${result.length} 条');
+    return result;
+  }
+
+  /// 根据评论自身的远端资源名查找。
+  static Future<CommentEntry?> getCommentByMemosName(String memosName) async {
+    final isar = await db;
+    return isar.commentEntrys
+        .filter()
+        .memosNameEqualTo(memosName)
+        .findFirst();
+  }
+
+  /// 软删除评论。
+  static Future<void> softDeleteComment(int id) async {
+    final isar = await db;
+    final comment = await isar.commentEntrys.get(id);
+    if (comment == null) return;
+    await isar.writeTxn(() async {
+      comment.isDeleted = true;
+      comment.syncStatus = SyncStatus.pending;
+      comment.updatedAt = DateTime.now();
+      await isar.commentEntrys.put(comment);
+    });
+    debugPrint('[DB] softDeleteComment: id=$id');
+  }
+
+  /// 物理删除评论（同步确认后调用）。
+  static Future<void> hardDeleteComment(int id) async {
+    final isar = await db;
+    await isar.writeTxn(() => isar.commentEntrys.delete(id));
+    debugPrint('[DB] hardDeleteComment: id=$id');
+  }
+
+  /// 获取所有待同步的评论（含软删除）。
+  static Future<List<CommentEntry>> getPendingSyncComments() async {
+    final isar = await db;
+    final result = await isar.commentEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.pending)
+        .findAll();
+    debugPrint('[DB] getPendingSyncComments → ${result.length} 条');
+    return result;
+  }
+
+  /// 全文搜索评论内容，返回未删除的匹配评论，按时间倒序。
+  static Future<List<CommentEntry>> searchComments(String query) async {
+    if (query.trim().isEmpty) return [];
+    final isar = await db;
+    final all = await isar.commentEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .findAll();
+    final q = query.toLowerCase();
+    final result = all
+        .where((c) => c.content.toLowerCase().contains(q))
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    debugPrint('[DB] searchComments "$query" → ${result.length} 条');
+    return result;
   }
 
   // ────────────────────────────────────────────────────────────────

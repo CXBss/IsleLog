@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../data/database/database_service.dart';
+import '../../data/models/comment_entry.dart';
 import '../../data/models/memo_entry.dart';
 import '../../data/models/tag_stat.dart';
 import '../../features/archive/archive_view.dart';
+import '../../features/memo_detail/memo_detail_page.dart';
 import '../../features/settings/settings_page.dart';
 import '../../services/api/memos_api_service.dart';
 import '../../services/settings/settings_service.dart';
@@ -875,7 +877,7 @@ class _DaySection extends StatelessWidget {
 
 class _MemoSearchDelegate extends SearchDelegate<void> {
   @override
-  String get searchFieldLabel => '搜索日记内容…';
+  String get searchFieldLabel => '搜索日记和评论…';
 
   @override
   List<Widget> buildActions(BuildContext context) => [
@@ -900,6 +902,20 @@ class _MemoSearchDelegate extends SearchDelegate<void> {
       query.isEmpty ? const SizedBox() : _SearchResults(query: query);
 }
 
+/// 统一搜索结果条目：可以是 Memo 或 Comment
+sealed class _SearchItem {}
+
+class _MemoItem extends _SearchItem {
+  final MemoEntry memo;
+  _MemoItem(this.memo);
+}
+
+class _CommentItem extends _SearchItem {
+  final CommentEntry comment;
+  final MemoEntry? parentMemo; // null 表示父日记未找到
+  _CommentItem(this.comment, this.parentMemo);
+}
+
 class _SearchResults extends StatefulWidget {
   final String query;
   const _SearchResults({required this.query});
@@ -909,7 +925,7 @@ class _SearchResults extends StatefulWidget {
 }
 
 class _SearchResultsState extends State<_SearchResults> {
-  List<MemoEntry> _results = [];
+  List<_SearchItem> _items = [];
   bool _loading = false;
   String _lastQuery = '';
 
@@ -929,10 +945,31 @@ class _SearchResultsState extends State<_SearchResults> {
     if (q == _lastQuery) return;
     _lastQuery = q;
     setState(() => _loading = true);
-    final results = await DatabaseService.searchMemos(q);
+
+    final memos = await DatabaseService.searchMemos(q);
+    final comments = await DatabaseService.searchComments(q);
+
+    // 为每条评论查找父日记
+    final commentItems = await Future.wait(comments.map((c) async {
+      MemoEntry? parent;
+      if (c.parentMemosName != null) {
+        parent = await DatabaseService.getMemoByMemosName(c.parentMemosName!);
+      }
+      if (parent == null && c.memoId != null) {
+        parent = await DatabaseService.getMemoById(c.memoId!);
+      }
+      return _CommentItem(c, parent);
+    }));
+
+    // 合并：先 memo 结果，再 comment 结果，按时间倒序
+    final items = <_SearchItem>[
+      ...memos.map(_MemoItem.new),
+      ...commentItems,
+    ];
+
     if (mounted && _lastQuery == q) {
       setState(() {
-        _results = results;
+        _items = items;
         _loading = false;
       });
     }
@@ -941,7 +978,7 @@ class _SearchResultsState extends State<_SearchResults> {
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_results.isEmpty) {
+    if (_items.isEmpty) {
       return Center(
         child: Text('没有找到"${widget.query}"',
             style: const TextStyle(color: Colors.grey)),
@@ -949,12 +986,211 @@ class _SearchResultsState extends State<_SearchResults> {
     }
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      itemCount: _results.length,
-      itemBuilder: (ctx, i) => MemoSearchCard(
-        key: ValueKey(_results[i].id),
-        memo: _results[i],
-        query: widget.query,
+      itemCount: _items.length,
+      itemBuilder: (ctx, i) {
+        final item = _items[i];
+        return switch (item) {
+          _MemoItem(:final memo) => MemoSearchCard(
+              key: ValueKey('memo_${memo.id}'),
+              memo: memo,
+              query: widget.query,
+            ),
+          _CommentItem(:final comment, :final parentMemo) =>
+            _CommentSearchCard(
+              key: ValueKey('comment_${comment.id}'),
+              comment: comment,
+              parentMemo: parentMemo,
+              query: widget.query,
+            ),
+        };
+      },
+    );
+  }
+}
+
+/// 评论搜索结果卡片
+class _CommentSearchCard extends StatelessWidget {
+  final CommentEntry comment;
+  final MemoEntry? parentMemo;
+  final String query;
+
+  const _CommentSearchCard({
+    super.key,
+    required this.comment,
+    required this.parentMemo,
+    required this.query,
+  });
+
+  String get _dateTimeLabel {
+    final d = comment.createdAt;
+    final date =
+        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    final time =
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    return '$date $time';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        if (parentMemo == null) return;
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => MemoDetailPage(memo: parentMemo!),
+          ),
+        );
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.circular(AppDimens.cardRadius),
+          border: Border.all(color: AppColors.primaryLight, width: 1),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.06),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── 评论标识 + 时间 ─────────────────────────────
+              Row(
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      '评论',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: AppColors.primaryDark,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _dateTimeLabel,
+                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                  ),
+                  if (comment.creatorName.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      comment.creatorName.split('/').last,
+                      style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 6),
+
+              // ── 评论内容（高亮）──────────────────────────────
+              _HighlightText(text: comment.content, query: query),
+
+              // ── 所属日记摘要 ─────────────────────────────────
+              if (parentMemo != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Icon(Icons.article_outlined,
+                        size: 12, color: Colors.grey),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        () {
+                          final t = parentMemo!.content
+                              .replaceAll('\n', ' ')
+                              .trim();
+                          return t.length > 50 ? '${t.substring(0, 50)}…' : t;
+                        }(),
+                        style:
+                            TextStyle(fontSize: 11, color: Colors.grey[500]),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ] else
+                Text(
+                  '所属日记已删除',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+                ),
+            ],
+          ),
+        ),
       ),
     );
+  }
+}
+
+class _HighlightText extends StatelessWidget {
+  final String text;
+  final String query;
+
+  const _HighlightText({required this.text, required this.query});
+
+  @override
+  Widget build(BuildContext context) {
+    if (query.trim().isEmpty) {
+      return Text(
+        text,
+        style: const TextStyle(
+            fontSize: 14, height: 1.6, color: AppColors.textBody),
+        maxLines: 8,
+        overflow: TextOverflow.ellipsis,
+      );
+    }
+
+    final spans = _buildSpans(text, query.trim().toLowerCase());
+    return Text.rich(
+      TextSpan(children: spans),
+      style: const TextStyle(
+          fontSize: 14, height: 1.6, color: AppColors.textBody),
+      maxLines: 8,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
+  List<InlineSpan> _buildSpans(String text, String lowerQuery) {
+    final spans = <InlineSpan>[];
+    final lowerText = text.toLowerCase();
+    int start = 0;
+
+    while (true) {
+      final idx = lowerText.indexOf(lowerQuery, start);
+      if (idx == -1) {
+        if (start < text.length) {
+          spans.add(TextSpan(text: text.substring(start)));
+        }
+        break;
+      }
+      if (idx > start) {
+        spans.add(TextSpan(text: text.substring(start, idx)));
+      }
+      spans.add(TextSpan(
+        text: text.substring(idx, idx + lowerQuery.length),
+        style: const TextStyle(
+          backgroundColor: Color(0xFFFFE082),
+          color: Color(0xFF4E3500),
+          fontWeight: FontWeight.bold,
+        ),
+      ));
+      start = idx + lowerQuery.length;
+    }
+
+    return spans;
   }
 }

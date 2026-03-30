@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../../../data/database/database_service.dart';
 import '../../../data/models/attachment_info.dart';
+import '../../../data/models/comment_entry.dart';
 import '../../../data/models/memo_entry.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
@@ -207,6 +208,31 @@ class _MemoCardState extends State<_MemoCard> {
   MemoEntry get memo => widget.memo;
   String get displayContent => widget.displayContent;
 
+  int _commentCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCommentCount();
+  }
+
+  @override
+  void didUpdateWidget(_MemoCard old) {
+    super.didUpdateWidget(old);
+    // 列表重建时（DB 变化通知）重新加载评论数
+    _loadCommentCount();
+  }
+
+  Future<void> _loadCommentCount() async {
+    List<CommentEntry> comments;
+    if (memo.memosName != null) {
+      comments = await DatabaseService.getCommentsByMemosName(memo.memosName!);
+    } else {
+      comments = await DatabaseService.getCommentsByMemoId(memo.id);
+    }
+    if (mounted) setState(() => _commentCount = comments.length);
+  }
+
   List<AttachmentInfo> get _imageAttachments =>
       memo.attachments.where((a) => a.isImage).toList();
   List<AttachmentInfo> get _audioAttachments =>
@@ -248,9 +274,11 @@ class _MemoCardState extends State<_MemoCard> {
     if (mounted) setState(() {});
   }
 
-  void _openDetail(BuildContext context) {
-    Navigator.push(context,
+  Future<void> _openDetail(BuildContext context) async {
+    await Navigator.push(context,
         MaterialPageRoute(builder: (_) => MemoDetailPage(memo: memo)));
+    // 返回时刷新评论数（详情页可能新增/删除了评论）
+    if (mounted) _loadCommentCount();
   }
 
   void _openEdit(BuildContext context) {
@@ -515,7 +543,7 @@ class _MemoCardState extends State<_MemoCard> {
                   Icon(Icons.chat_bubble_outline,
                       size: 16, color: Colors.grey[400]),
                   const SizedBox(width: 3),
-                  Text('0',
+                  Text('$_commentCount',
                       style: TextStyle(
                           fontSize: 12, color: Colors.grey[400])),
                   const SizedBox(width: 4),

@@ -268,6 +268,43 @@ class MemosApiService {
     }
   }
 
+  // ── Comment API ───────────────────────────────────────────────
+
+  /// 拉取指定 memo 的评论列表
+  ///
+  /// [memoName]：父 memo 资源名，如 `"memos/42"`
+  Future<List<Map<String, dynamic>>> listMemoComments(String memoName) async {
+    debugPrint('[API] listMemoComments memoName=$memoName');
+    try {
+      final res = await _dio.get('/api/v1/$memoName/comments');
+      final memos = List<Map<String, dynamic>>.from(res.data['memos'] ?? []);
+      debugPrint('[API] listMemoComments → ${memos.length} 条');
+      return memos;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 创建评论（POST /api/v1/memos/{memo}/comments）
+  ///
+  /// [memoName]：父 memo 资源名；[content]：评论内容
+  Future<Map<String, dynamic>> createMemoComment({
+    required String memoName,
+    required String content,
+  }) async {
+    debugPrint('[API] createMemoComment memoName=$memoName');
+    try {
+      final res = await _dio.post(
+        '/api/v1/$memoName/comments',
+        data: {'content': content, 'state': 'NORMAL', 'visibility': 'PRIVATE'},
+      );
+      debugPrint('[API] createMemoComment 成功 name=${res.data['name']}');
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   // ── Attachment CRUD (v0.25) ───────────────────────────────────
 
   /// 上传附件（POST /api/v1/attachments）

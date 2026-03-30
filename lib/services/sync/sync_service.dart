@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
+import '../../data/models/comment_entry.dart';
 import '../../data/models/memo_entry.dart';
 import '../../shared/constants/app_constants.dart';
 import '../api/memos_api_service.dart';
@@ -100,7 +101,12 @@ class SyncService {
       // push 完成后、pull 开始前记录时间：
       // 既避免把刚推上去的条目再拉回来，又不漏掉 push 期间远端其他人的修改
       final syncTime = DateTime.now();
-      final (pulled, deleted) = await _pullUpdates(api, url, full: full);
+      final (pulled, deleted, memosWithComments) =
+          await _pullUpdates(api, url, full: full);
+      // 对 relations 中标记有评论的日记拉取评论（全量和增量都执行）
+      if (memosWithComments.isNotEmpty) {
+        await _pullCommentsBatch(api, memosWithComments);
+      }
       await SettingsService.setLastSyncTime(syncTime);
       final result = SyncResult(pushed: pushed, pulled: pulled, deleted: deleted);
       debugPrint('[Sync] _sync 完成（full=$full）：$result');
@@ -234,17 +240,73 @@ class SyncService {
     }
 
     debugPrint('[Sync] _pushPending 完成，成功推送 $count 条');
+
+    // ── 推送评论 ──
+    count += await _pushPendingComments(api);
+    return count;
+  }
+
+  /// 推送所有 pending 评论到远端
+  static Future<int> _pushPendingComments(MemosApiService api) async {
+    final pendingComments = await DatabaseService.getPendingSyncComments();
+    debugPrint('[Sync] _pushPendingComments: 待推送 ${pendingComments.length} 条');
+    int count = 0;
+
+    for (final comment in pendingComments) {
+      try {
+        if (comment.isDeleted) {
+          if (comment.memosName != null) {
+            await api.deleteMemo(comment.memosName!);
+          }
+          await DatabaseService.hardDeleteComment(comment.id);
+          debugPrint('[Sync] 评论远端删除完成 id=${comment.id}');
+        } else if (comment.memosName == null) {
+          // 新建评论：需要父 memo 的 memosName
+          final parentName = comment.parentMemosName;
+          if (parentName == null) {
+            debugPrint('[Sync] 评论缺少 parentMemosName，跳过 id=${comment.id}');
+            continue;
+          }
+          final data = await api.createMemoComment(
+            memoName: parentName,
+            content: comment.content,
+          );
+          comment
+            ..memosName = data['name'] as String?
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveComment(comment, skipTimestamp: true);
+          debugPrint('[Sync] 评论新建成功 memosName=${comment.memosName}');
+        } else {
+          // 更新评论（同普通 memo）
+          await api.updateMemo(
+            name: comment.memosName!,
+            content: comment.content,
+          );
+          comment
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveComment(comment, skipTimestamp: true);
+          debugPrint('[Sync] 评论更新成功 memosName=${comment.memosName}');
+        }
+        count++;
+      } catch (e) {
+        debugPrint('[Sync] 评论推送失败 id=${comment.id}: $e（保持 pending）');
+      }
+    }
     return count;
   }
 
   // ── Pull（远端 → 本地）──────────────────────────────────────
 
-  /// 从远端拉取更新并合并到本地
+  /// 从远端拉取更新并合并到本地。
   ///
-  /// [full]：true = 全量拉取 + 远端删除检测；false = 增量拉取（基于 lastSyncTime 过滤）
+  /// [full]：true = 全量拉取 + 远端删除检测；false = 增量拉取（基于 lastSyncTime 过滤）。
   /// 增量模式下若服务端不支持 filter，静默降级为全量拉取（但不做删除检测）。
-  /// 返回 (合并条目数, 删除条目数)。
-  static Future<(int, int)> _pullUpdates(MemosApiService api, String baseUrl,
+  /// 返回 (合并条目数, 删除条目数, 有评论的日记 memosName 集合)。
+  /// 评论集合由 relations[type=COMMENT] 提取，调用方负责后续拉取评论。
+  static Future<(int, int, Set<String>)> _pullUpdates(
+      MemosApiService api, String baseUrl,
       {bool full = false}) async {
     String? filter;
     if (!full) {
@@ -274,22 +336,32 @@ class SyncService {
     debugPrint('[Sync] 远端 NORMAL=${normalMemos.length} ARCHIVED=${archivedMemos.length}');
 
     final remoteNames = <String>{};
+    final memosWithComments = <String>{};
     int pulled = 0;
     int deleted = 0;
 
-    for (final data in normalMemos) {
-      final remoteName = data['name'] as String? ?? '';
-      if (remoteName.isEmpty) continue;
-      remoteNames.add(remoteName);
-      pulled += await _applyRemoteMemo(data, baseUrl, archived: false);
+    Future<void> processList(List<Map<String, dynamic>> list, bool archived) async {
+      for (final data in list) {
+        final remoteName = data['name'] as String? ?? '';
+        if (remoteName.isEmpty) continue;
+        remoteNames.add(remoteName);
+        pulled += await _applyRemoteMemo(data, baseUrl, archived: archived);
+        // 从 relations 收集有评论的日记：relatedMemo 是父日记
+        for (final rel in (data['relations'] as List<dynamic>? ?? [])) {
+          final relMap = rel as Map<String, dynamic>;
+          if (relMap['type'] == 'COMMENT') {
+            final parentName =
+                (relMap['relatedMemo'] as Map<String, dynamic>?)?['name'] as String?;
+            if (parentName != null && parentName.isNotEmpty) {
+              memosWithComments.add(parentName);
+            }
+          }
+        }
+      }
     }
 
-    for (final data in archivedMemos) {
-      final remoteName = data['name'] as String? ?? '';
-      if (remoteName.isEmpty) continue;
-      remoteNames.add(remoteName);
-      pulled += await _applyRemoteMemo(data, baseUrl, archived: true);
-    }
+    await processList(normalMemos, false);
+    await processList(archivedMemos, true);
 
     // 远端删除检测：仅全量模式执行
     if (full) {
@@ -303,8 +375,9 @@ class SyncService {
       }
     }
 
-    debugPrint('[Sync] _pullUpdates 完成（full=$full），拉取 $pulled 条，删除 $deleted 条');
-    return (pulled, deleted);
+    debugPrint(
+        '[Sync] _pullUpdates 完成（full=$full），拉取 $pulled 条，删除 $deleted 条，有评论日记 ${memosWithComments.length} 篇');
+    return (pulled, deleted, memosWithComments);
   }
 
   /// 将单条远端 memo 数据应用到本地，返回 1（有变化）或 0
@@ -314,6 +387,7 @@ class SyncService {
     required bool archived,
   }) async {
     final remoteName = data['name'] as String;
+
     final localMemo = await DatabaseService.getMemoByMemosName(remoteName);
 
     if (localMemo == null) {
@@ -338,12 +412,112 @@ class SyncService {
     return 0;
   }
 
-  /// 获取所有已同步且有远端 name 的本地条目（用于检测远端删除）
+  /// 将单条远端评论数据合并到本地 CommentEntry
+  static Future<int> _applyRemoteComment(
+    Map<String, dynamic> data,
+    String parentMemosName,
+  ) async {
+    final remoteName = data['name'] as String;
+    final local = await DatabaseService.getCommentByMemosName(remoteName);
+    final creator = data['creator'] as String? ?? '';
+
+    if (local == null) {
+      final comment = CommentEntry()
+        ..memosName = remoteName
+        ..parentMemosName = parentMemosName
+        ..content = data['content'] as String? ?? ''
+        ..creatorName = creator
+        ..syncStatus = SyncStatus.synced
+        ..lastSyncAt = DateTime.now();
+      final ct = data['createTime'] as String?;
+      if (ct != null) comment.createdAt = DateTime.parse(ct).toLocal();
+      final ut = data['updateTime'] as String?;
+      if (ut != null) comment.updatedAt = DateTime.parse(ut).toLocal();
+      await DatabaseService.saveComment(comment, skipTimestamp: true);
+      debugPrint('[Sync] 新增评论 $remoteName parent=$parentMemosName');
+      return 1;
+    } else if (local.syncStatus == SyncStatus.synced) {
+      local
+        ..content = data['content'] as String? ?? ''
+        ..creatorName = creator
+        ..parentMemosName = parentMemosName
+        ..syncStatus = SyncStatus.synced
+        ..lastSyncAt = DateTime.now();
+      final ut = data['updateTime'] as String?;
+      if (ut != null) local.updatedAt = DateTime.parse(ut).toLocal();
+      await DatabaseService.saveComment(local, skipTimestamp: true);
+      debugPrint('[Sync] 更新评论 $remoteName');
+      return 1;
+    } else if (local.syncStatus == SyncStatus.pending) {
+      debugPrint('[Sync] 评论冲突 $remoteName，标记 conflict');
+      local.syncStatus = SyncStatus.conflict;
+      await DatabaseService.saveComment(local, skipTimestamp: true);
+    }
+    return 0;
+  }
+
+  /// 拉取并合并单篇日记的远端评论（供详情页进入时调用）
+  ///
+  /// 静默失败：网络不可用或服务器未配置时不抛出异常。
+  static Future<void> syncMemoComments(MemoEntry memo) async {
+    if (memo.memosName == null) return; // 未同步的日记没有远端评论
+    final url = await SettingsService.serverUrl;
+    final token = await SettingsService.accessToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) return;
+
+    final api = MemosApiService(baseUrl: url, token: token);
+    try {
+      await _fetchAndApplyComments(api, memo.memosName!);
+      debugPrint('[Sync] syncMemoComments 完成 memo=${memo.memosName}');
+    } catch (e) {
+      debugPrint('[Sync] syncMemoComments 静默失败 memo=${memo.memosName}: $e');
+    }
+  }
+
+  /// 批量拉取指定日记的评论（由 _pullUpdates 提取的有评论日记集合驱动）
+  static Future<void> _pullCommentsBatch(
+      MemosApiService api, Set<String> memoNames) async {
+    debugPrint('[Sync] _pullCommentsBatch: ${memoNames.length} 篇日记需拉取评论');
+    for (final name in memoNames) {
+      try {
+        await _fetchAndApplyComments(api, name);
+      } catch (e) {
+        debugPrint('[Sync] _pullCommentsBatch 单篇失败 $name: $e');
+      }
+    }
+  }
+
+  /// 从远端拉取指定日记的评论并逐条合并到本地
+  static Future<void> _fetchAndApplyComments(
+      MemosApiService api, String memoName) async {
+    final remoteComments = await api.listMemoComments(memoName);
+    for (final data in remoteComments) {
+      final name = data['name'] as String? ?? '';
+      if (name.isEmpty) continue;
+      await _applyRemoteComment(data, memoName);
+    }
+
+    // 删除检测：本地有但远端已不存在的评论，硬删除
+    final remoteNames = remoteComments
+        .map((d) => d['name'] as String? ?? '')
+        .where((n) => n.isNotEmpty)
+        .toSet();
+    final localComments =
+        await DatabaseService.getCommentsByMemosName(memoName);
+    for (final local in localComments) {
+      if (local.memosName != null &&
+          local.syncStatus == SyncStatus.synced &&
+          !remoteNames.contains(local.memosName)) {
+        await DatabaseService.hardDeleteComment(local.id);
+        debugPrint('[Sync] 评论远端已删除，本地硬删除 id=${local.id}');
+      }
+    }
+  }
+
+  /// 获取所有有远端 name 且状态为 synced 的本地条目（用于全量同步的删除检测）
   static Future<List<MemoEntry>> _getAllSyncedWithMemosName() async {
-    // 复用 DatabaseService 封装，避免直接操作 Isar QueryBuilder 类型问题
-    final pending = await DatabaseService.getPendingSyncMemos(); // pending
     final all = await DatabaseService.getAllSyncedMemos();
-    return all.where((m) => m.memosName != null && !pending.any((p) => p.id == m.id)).toList();
+    return all.where((m) => m.memosName != null).toList();
   }
 
   // ── 远端附件下载到本地 ────────────────────────────────────────

@@ -8,9 +8,11 @@ import 'package:gal/gal.dart';
 
 import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
+import '../../data/models/comment_entry.dart';
 import '../../data/models/memo_entry.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
+import '../../services/sync/sync_service.dart';
 import '../../features/home/widgets/audio_player_widget.dart';
 import '../../features/home/widgets/file_chip_widget.dart';
 import '../../features/memo_editor/memo_editor_page.dart';
@@ -31,6 +33,16 @@ class MemoDetailPage extends StatefulWidget {
 
 class _MemoDetailPageState extends State<MemoDetailPage> {
   MemoEntry get memo => widget.memo;
+
+  // ── 评论 ──
+  List<CommentEntry> _comments = [];
+  final TextEditingController _commentCtrl = TextEditingController();
+  final FocusNode _commentFocus = FocusNode();
+  bool _commentSaving = false;
+  CommentEntry? _editingComment; // 非 null 时为编辑模式
+
+  /// 预获取的位置（用于新建评论，后台静默获取）
+  LocationInfo? _pendingLocation;
 
   String get _dateTimeLabel {
     final d = memo.createdAt;
@@ -60,6 +72,104 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
       memo.attachments.where((a) => a.isAudio).toList();
   List<AttachmentInfo> get _fileAttachments =>
       memo.attachments.where((a) => !a.isImage && !a.isAudio).toList();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadComments();
+    _prefetchLocation();
+    _syncComments();
+  }
+
+  /// 后台同步评论（静默，完成后刷新列表）
+  Future<void> _syncComments() async {
+    await SyncService.syncMemoComments(memo);
+    if (mounted) await _loadComments();
+  }
+
+  /// 后台静默获取位置，供新建评论时使用
+  Future<void> _prefetchLocation() async {
+    try {
+      final info = await LocationService.getLocation();
+      if (mounted) _pendingLocation = info;
+    } catch (_) {
+      // 获取不到就不加位置，静默忽略
+    }
+  }
+
+  @override
+  void dispose() {
+    _commentCtrl.dispose();
+    _commentFocus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadComments() async {
+    List<CommentEntry> comments;
+    if (memo.memosName != null) {
+      comments = await DatabaseService.getCommentsByMemosName(memo.memosName!);
+    } else {
+      comments = await DatabaseService.getCommentsByMemoId(memo.id);
+    }
+    if (mounted) setState(() => _comments = comments);
+  }
+
+  Future<void> _submitComment() async {
+    final content = _commentCtrl.text.trim();
+    if (content.isEmpty) return;
+    setState(() => _commentSaving = true);
+    try {
+      if (_editingComment != null) {
+        // 编辑已有评论
+        _editingComment!
+          ..content = content
+          ..syncStatus = SyncStatus.pending;
+        await DatabaseService.saveComment(_editingComment!);
+      } else {
+        // 新建评论
+        final comment = CommentEntry()
+          ..parentMemosName = memo.memosName
+          ..memoId = memo.memosName == null ? memo.id : null
+          ..content = content
+          ..location = _pendingLocation?.displayText
+          ..syncStatus = SyncStatus.pending;
+        await DatabaseService.saveComment(comment);
+      }
+      _commentCtrl.clear();
+      _editingComment = null;
+      _commentFocus.unfocus();
+      await _loadComments();
+    } finally {
+      if (mounted) setState(() => _commentSaving = false);
+    }
+  }
+
+  void _startEditComment(CommentEntry comment) {
+    setState(() => _editingComment = comment);
+    _commentCtrl.text = comment.content;
+    _commentFocus.requestFocus();
+  }
+
+  Future<void> _deleteComment(CommentEntry comment) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除评论'),
+        content: const Text('确认删除这条评论？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await DatabaseService.softDeleteComment(comment.id);
+    await _loadComments();
+  }
 
   void _openEdit(BuildContext context) {
     Navigator.pushReplacement(
@@ -126,8 +236,11 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      body: Column(
+        children: [
+          Expanded(
+          child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -248,8 +361,58 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
             // ── 底部元信息（修改时间 + 字数）─────────────────────
             const SizedBox(height: 16),
             _MetaInfoRow(memo: memo),
+
+            // ── 评论区 ────────────────────────────────────────────
+            const SizedBox(height: 20),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const Icon(Icons.chat_bubble_outline, size: 15, color: Colors.grey),
+                const SizedBox(width: 6),
+                Text('评论 ${_comments.length > 0 ? "(${_comments.length})" : ""}',
+                    style: const TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.w500)),
+              ],
+            ),
+            if (_comments.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Center(
+                  child: Text('暂无评论', style: TextStyle(fontSize: 13, color: Colors.grey[400])),
+                ),
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                padding: const EdgeInsets.only(top: 8),
+                itemCount: _comments.length,
+                itemBuilder: (_, i) => _CommentTile(
+                  comment: _comments[i],
+                  onEdit: () => _startEditComment(_comments[i]),
+                  onDelete: () => _deleteComment(_comments[i]),
+                ),
+              ),
+            const SizedBox(height: 8),
           ],
         ),
+      ),
+          ),
+
+          // ── 评论输入框（固定底部）────────────────────────────────
+          _CommentInputBar(
+            controller: _commentCtrl,
+            focusNode: _commentFocus,
+            isEditing: _editingComment != null,
+            saving: _commentSaving,
+            onSubmit: _submitComment,
+            onCancelEdit: () {
+              setState(() => _editingComment = null);
+              _commentCtrl.clear();
+              _commentFocus.unfocus();
+            },
+          ),
+        ],
       ),
     );
   }
@@ -630,6 +793,219 @@ class _DetailImageViewerState extends State<_DetailImageViewer> {
                   ),
                 ),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 单条评论 tile（长按弹出编辑/删除菜单）
+class _CommentTile extends StatelessWidget {
+  final CommentEntry comment;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const _CommentTile({
+    required this.comment,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  String get _timeLabel {
+    final d = comment.createdAt;
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  }
+
+  String get _authorLabel {
+    if (comment.creatorName.isEmpty) return '我';
+    // "users/123" → 取最后一段；若为空则显示"我"
+    final parts = comment.creatorName.split('/');
+    return parts.last.isNotEmpty ? parts.last : '我';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onLongPress: () => _showMenu(context),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 4,
+              offset: const Offset(0, 1),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 作者 + 时间 + 同步状态
+            Row(
+              children: [
+                Icon(Icons.person_outline, size: 13, color: Colors.grey[500]),
+                const SizedBox(width: 4),
+                Text(_authorLabel,
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600], fontWeight: FontWeight.w500)),
+                const Spacer(),
+                if (comment.syncStatus == SyncStatus.pending)
+                  Icon(Icons.cloud_upload_outlined, size: 13, color: Colors.grey[400]),
+                if (comment.syncStatus == SyncStatus.conflict)
+                  Icon(Icons.warning_amber_rounded, size: 13, color: Colors.orange[400]),
+                const SizedBox(width: 4),
+                Text(_timeLabel, style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+              ],
+            ),
+            const SizedBox(height: 6),
+            // 内容（Markdown 渲染）
+            MarkdownBody(
+              data: comment.content,
+              styleSheet: MarkdownStyleSheet(
+                p: const TextStyle(fontSize: 14, height: 1.5, color: AppColors.textBody),
+                code: TextStyle(fontSize: 13, backgroundColor: Colors.grey[100]),
+              ),
+            ),
+            // 位置（有则显示）
+            if (comment.location != null && comment.location!.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.location_on_outlined, size: 12, color: Colors.blueGrey[400]),
+                  const SizedBox(width: 3),
+                  Flexible(
+                    child: Text(
+                      comment.location!,
+                      style: TextStyle(fontSize: 11, color: Colors.blueGrey[400]),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showMenu(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('编辑'),
+              onTap: () { Navigator.pop(ctx); onEdit(); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: AppColors.error),
+              title: const Text('删除', style: TextStyle(color: AppColors.error)),
+              onTap: () { Navigator.pop(ctx); onDelete(); },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 底部固定评论输入框
+class _CommentInputBar extends StatelessWidget {
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final bool isEditing;
+  final bool saving;
+  final VoidCallback onSubmit;
+  final VoidCallback onCancelEdit;
+
+  const _CommentInputBar({
+    required this.controller,
+    required this.focusNode,
+    required this.isEditing,
+    required this.saving,
+    required this.onSubmit,
+    required this.onCancelEdit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border(top: BorderSide(color: Colors.grey[200]!)),
+        ),
+        padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isEditing)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.edit_outlined, size: 13, color: AppColors.primary),
+                    const SizedBox(width: 4),
+                    const Text('编辑评论', style: TextStyle(fontSize: 12, color: AppColors.primary)),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: onCancelEdit,
+                      child: const Icon(Icons.close, size: 16, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    maxLines: 4,
+                    minLines: 1,
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: '写评论…',
+                      hintStyle: TextStyle(color: Colors.grey[400], fontSize: 14),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey[300]!),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppColors.primary),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      isDense: true,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                saving
+                    ? const SizedBox(width: 36, height: 36,
+                        child: Padding(padding: EdgeInsets.all(8),
+                            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)))
+                    : IconButton(
+                        icon: const Icon(Icons.send_rounded, color: AppColors.primary),
+                        onPressed: onSubmit,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      ),
+              ],
+            ),
           ],
         ),
       ),
