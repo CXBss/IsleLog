@@ -399,7 +399,7 @@ class _MemoCardState extends State<_MemoCard> {
 
   MarkdownStyleSheet _mdStyle(BuildContext context) =>
       MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-        p: const TextStyle(fontSize: 14, height: 1.6, color: AppColors.textBody),
+        p: TextStyle(fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
         blockquote: const TextStyle(
             fontSize: 13, color: Colors.grey, fontStyle: FontStyle.italic),
         blockquoteDecoration: BoxDecoration(
@@ -414,7 +414,7 @@ class _MemoCardState extends State<_MemoCard> {
       onDoubleTap: () => _openEdit(context),
       child: Container(
         decoration: BoxDecoration(
-          color: AppColors.surfaceWhite,
+          color: AppColors.surface(context),
           borderRadius: BorderRadius.circular(AppDimens.cardRadius),
           boxShadow: [
             BoxShadow(

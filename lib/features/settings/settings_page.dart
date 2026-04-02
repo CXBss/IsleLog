@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/database/database_service.dart';
+import '../../main.dart' show themeModeNotifier;
 import '../../services/attachment/attachment_service.dart';
 import '../../services/debug/file_logger.dart';
 import '../../services/settings/settings_service.dart';
@@ -83,7 +84,6 @@ class SettingsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.scaffoldBg,
       appBar: AppBar(
         title: const Text(AppStrings.settingsTitle,
             style: TextStyle(fontWeight: FontWeight.bold)),
@@ -91,6 +91,8 @@ class SettingsPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          _ThemeModeItem(),
+          const SizedBox(height: 8),
           _SettingsItem(
             icon: Icons.cloud_outlined,
             title: 'Memos 服务器',
@@ -209,6 +211,66 @@ class _DebugLogPageState extends State<_DebugLogPage> {
   }
 }
 
+/// 外观（主题模式）切换卡片
+class _ThemeModeItem extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: themeModeNotifier,
+      builder: (_, mode, __) {
+        final isDark = mode == ThemeMode.dark ||
+            (mode == ThemeMode.system &&
+                MediaQuery.platformBrightnessOf(context) == Brightness.dark);
+        return Material(
+          color: AppColors.surface(context),
+          borderRadius: BorderRadius.circular(AppDimens.cardRadius),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Row(
+              children: [
+                Icon(isDark ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
+                    color: AppColors.primary, size: 24),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('外观',
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+                      const SizedBox(height: 2),
+                      Text(
+                        mode == ThemeMode.system ? '跟随系统' : (mode == ThemeMode.dark ? '深色' : '浅色'),
+                        style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                      ),
+                    ],
+                  ),
+                ),
+                SegmentedButton<ThemeMode>(
+                  segments: const [
+                    ButtonSegment(value: ThemeMode.light, icon: Icon(Icons.light_mode, size: 16)),
+                    ButtonSegment(value: ThemeMode.system, icon: Icon(Icons.brightness_auto, size: 16)),
+                    ButtonSegment(value: ThemeMode.dark, icon: Icon(Icons.dark_mode, size: 16)),
+                  ],
+                  selected: {mode},
+                  style: ButtonStyle(
+                    visualDensity: VisualDensity.compact,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onSelectionChanged: (s) async {
+                    final selected = s.first;
+                    themeModeNotifier.value = selected;
+                    await SettingsService.setThemeMode(selected);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _SettingsItem extends StatelessWidget {
   final IconData icon;
   final String title;
@@ -228,7 +290,7 @@ class _SettingsItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = destructive ? Colors.red : AppColors.primary;
     return Material(
-      color: AppColors.surfaceWhite,
+      color: AppColors.surface(context),
       borderRadius: BorderRadius.circular(AppDimens.cardRadius),
       child: InkWell(
         borderRadius: BorderRadius.circular(AppDimens.cardRadius),

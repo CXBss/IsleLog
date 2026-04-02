@@ -128,7 +128,6 @@ class _ServerSettingsPageState extends State<ServerSettingsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.scaffoldBg,
       appBar: AppBar(
         title: const Text('Memos 服务器',
             style: TextStyle(fontWeight: FontWeight.bold)),
@@ -151,7 +150,7 @@ class _ServerSettingsPageState extends State<ServerSettingsPage> {
           children: [
             _SectionHeader(label: AppStrings.settingsSectionServer),
             const SizedBox(height: 8),
-            _buildCard(children: [
+            _buildCard(context, children: [
               TextFormField(
                 controller: _urlCtrl,
                 keyboardType: TextInputType.url,
@@ -238,12 +237,12 @@ class _ServerSettingsPageState extends State<ServerSettingsPage> {
                         height: 16,
                         child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: AppColors.surfaceWhite))
+                            color: Colors.white))
                     : const Icon(Icons.sync),
                 label: Text(_syncing ? AppStrings.syncing : AppStrings.syncNow),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
-                  foregroundColor: AppColors.surfaceWhite,
+                  foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   shape: RoundedRectangleBorder(
                       borderRadius:
@@ -265,9 +264,9 @@ class _ServerSettingsPageState extends State<ServerSettingsPage> {
     );
   }
 
-  Widget _buildCard({required List<Widget> children}) => Container(
+  Widget _buildCard(BuildContext context, {required List<Widget> children}) => Container(
         decoration: BoxDecoration(
-          color: AppColors.surfaceWhite,
+          color: AppColors.surface(context),
           borderRadius: BorderRadius.circular(AppDimens.cardRadius),
         ),
         child: Column(children: children),

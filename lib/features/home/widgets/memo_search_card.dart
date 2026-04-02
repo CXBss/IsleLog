@@ -44,7 +44,7 @@ class MemoSearchCard extends StatelessWidget {
       child: Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: AppColors.surfaceWhite,
+        color: AppColors.surface(context),
         borderRadius: BorderRadius.circular(AppDimens.cardRadius),
         boxShadow: [
           BoxShadow(
@@ -108,8 +108,8 @@ class _HighlightText extends StatelessWidget {
     if (query.trim().isEmpty) {
       return Text(
         text,
-        style: const TextStyle(
-            fontSize: 14, height: 1.6, color: AppColors.textBody),
+        style: TextStyle(
+            fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
         maxLines: 8,
         overflow: TextOverflow.ellipsis,
       );
@@ -118,8 +118,8 @@ class _HighlightText extends StatelessWidget {
     final spans = _buildSpans(text, query.trim().toLowerCase());
     return Text.rich(
       TextSpan(children: spans),
-      style: const TextStyle(
-          fontSize: 14, height: 1.6, color: AppColors.textBody),
+      style: TextStyle(
+          fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
       maxLines: 8,
       overflow: TextOverflow.ellipsis,
     );

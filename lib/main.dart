@@ -9,13 +9,10 @@ import 'shared/constants/app_constants.dart';
 import 'shared/mock/mock_data.dart';
 import 'shared/widgets/main_scaffold.dart';
 
+/// 全局主题模式控制器，可在应用任意位置修改以实时切换主题
+final themeModeNotifier = ValueNotifier<ThemeMode>(ThemeMode.system);
+
 /// 应用入口
-///
-/// 启动流程：
-/// 1. 初始化 Isar 本地数据库
-/// 2. 若数据库为空则写入 Mock 演示数据
-/// 3. 若已配置服务器，在后台启动全量同步
-/// 4. 启动 Flutter UI
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -27,7 +24,9 @@ Future<void> main() async {
   await DatabaseService.seedIfEmpty(mockMemos);
   debugPrint('[App] Mock 数据检查完成');
 
-  // 已配置服务器时，启动后在后台自动全量同步（fire-and-forget，不阻塞启动）
+  // 读取持久化的主题模式
+  themeModeNotifier.value = await SettingsService.themeMode;
+
   final configured = await SettingsService.isConfigured;
   if (configured) {
     debugPrint('[App] 检测到服务器配置，启动后台同步...');
@@ -41,30 +40,50 @@ Future<void> main() async {
 }
 
 /// 根应用 Widget
-///
-/// 配置全局 Material3 主题（绿色主题），并以 [MainScaffold] 作为根页面。
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
+  static ThemeData _buildTheme(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: AppColors.primary,
+      brightness: brightness,
+    );
+    return ThemeData(
+      colorScheme: colorScheme,
+      useMaterial3: true,
+      scaffoldBackgroundColor: isDark ? const Color(0xFF121212) : const Color(0xFFF2F4F6),
+      appBarTheme: AppBarTheme(
+        backgroundColor: colorScheme.surface,
+        foregroundColor: colorScheme.onSurface,
+        elevation: 0,
+        scrolledUnderElevation: 1,
+        centerTitle: false,
+      ),
+      cardColor: colorScheme.surface,
+      bottomAppBarTheme: BottomAppBarThemeData(color: colorScheme.surface),
+      dividerTheme: DividerThemeData(
+        color: isDark ? Colors.white12 : Colors.black12,
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: isDark ? const Color(0xFF2A2A2A) : Colors.white,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'IsleLog',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        // 以品牌绿为种子色自动派生完整 ColorScheme
-        colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primary),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: AppColors.surfaceWhite,
-          foregroundColor: AppColors.textPrimary,
-          elevation: 0,
-          scrolledUnderElevation: 1,
-          centerTitle: false,
-        ),
-        scaffoldBackgroundColor: AppColors.scaffoldBg,
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: themeModeNotifier,
+      builder: (_, mode, __) => MaterialApp(
+        title: 'IsleLog',
+        debugShowCheckedModeBanner: false,
+        themeMode: mode,
+        theme: _buildTheme(Brightness.light),
+        darkTheme: _buildTheme(Brightness.dark),
+        home: const MainScaffold(),
       ),
-      home: const MainScaffold(),
     );
   }
 }

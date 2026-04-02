@@ -48,7 +48,6 @@ class _ArchiveViewState extends State<ArchiveView> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('归档'),
-        backgroundColor: Colors.white,
         elevation: 0,
         scrolledUnderElevation: 1,
         actions: [
@@ -62,7 +61,6 @@ class _ArchiveViewState extends State<ArchiveView> {
           ),
         ],
       ),
-      backgroundColor: const Color(0xFFF2F4F6),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _memos.isEmpty

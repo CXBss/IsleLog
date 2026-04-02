@@ -155,7 +155,6 @@ class _CalendarViewState extends State<CalendarView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.scaffoldBg,
       appBar: null,
       body: LayoutBuilder(
         builder: (ctx, constraints) {
@@ -192,7 +191,7 @@ class _CalendarViewState extends State<CalendarView> {
   /// 月份导航栏（月份切换 + 今日 + 分享）
   Widget _buildMonthHeader() {
     return Container(
-      color: AppColors.surfaceWhite,
+      color: AppColors.surface(context),
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
       child: Row(
         children: [

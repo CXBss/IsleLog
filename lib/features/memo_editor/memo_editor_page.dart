@@ -784,9 +784,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.surfaceWhite,
       appBar: AppBar(
-        backgroundColor: AppColors.surfaceWhite,
         elevation: 0,
         scrolledUnderElevation: 1,
         // 关闭按钮（取消编辑，直接返回）
@@ -1255,7 +1253,7 @@ class _TagSuggestionPanel extends StatelessWidget {
     return Container(
       width: 120,
       decoration: BoxDecoration(
-        color: AppColors.surfaceWhite,
+        color: AppColors.surface(context),
         border: Border(
           left: BorderSide(color: Colors.grey[200]!, width: 1),
         ),

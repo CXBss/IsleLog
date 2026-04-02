@@ -56,7 +56,6 @@ class _ApiSettingsPageState extends State<ApiSettingsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.scaffoldBg,
       appBar: AppBar(
         title: const Text('第三方 API',
             style: TextStyle(fontWeight: FontWeight.bold)),
@@ -125,7 +124,7 @@ class _KeyField extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: AppColors.surfaceWhite,
+        color: AppColors.surface(context),
         borderRadius: BorderRadius.circular(AppDimens.cardRadius),
       ),
       child: TextField(

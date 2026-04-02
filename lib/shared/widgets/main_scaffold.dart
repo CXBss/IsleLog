@@ -93,7 +93,7 @@ class _MainScaffoldState extends State<MainScaffold> {
         elevation: 4,
         shape: const CircleBorder(),
         tooltip: '新建日记',
-        child: const Icon(Icons.add, size: 28, color: AppColors.surfaceWhite),
+        child: const Icon(Icons.add, size: 28, color: Colors.white),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
 

@@ -26,23 +26,29 @@ abstract final class AppColors {
   /// 时间轴连线颜色
   static const Color timelineBar = Color(0xFFC8E6C9);
 
-  /// 页面通用背景色（灰白）
-  static const Color scaffoldBg = Color(0xFFF2F4F6);
-
-  /// 顶部 AppBar / 卡片背景
-  static const Color surfaceWhite = Colors.white;
-
-  /// 正文主色（深近黑）
-  static const Color textPrimary = Color(0xFF1A1A1A);
-
-  /// 卡片正文颜色
-  static const Color textBody = Color(0xFF333333);
-
   /// 成功绿（SnackBar）
   static const Color success = Colors.green;
 
   /// 错误红（SnackBar / 删除）
   static const Color error = Colors.red;
+
+  // ── 以下颜色随主题自动切换，通过 context 读取 ──────────────────
+
+  /// 页面背景色（浅色：灰白；深色：近黑）
+  static Color scaffoldBg(BuildContext context) =>
+      Theme.of(context).scaffoldBackgroundColor;
+
+  /// AppBar / 卡片 / 输入框背景（浅色：白；深色：深灰）
+  static Color surface(BuildContext context) =>
+      Theme.of(context).colorScheme.surface;
+
+  /// 正文主色
+  static Color textPrimary(BuildContext context) =>
+      Theme.of(context).colorScheme.onSurface;
+
+  /// 卡片正文颜色（比 textPrimary 略浅）
+  static Color textBody(BuildContext context) =>
+      Theme.of(context).colorScheme.onSurface;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

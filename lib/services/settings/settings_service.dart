@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 应用配置持久化服务（SharedPreferences）
@@ -120,6 +120,22 @@ class SettingsService {
     final p = await _prefs;
     await p.remove(_keyDraftContent);
     await p.remove(_keyDraftLocation);
+  }
+
+  // ── Theme Mode ────────────────────────────────────────────────
+
+  static const _keyThemeMode = 'theme_mode';
+
+  /// 获取主题模式（0=system, 1=light, 2=dark）
+  static Future<ThemeMode> get themeMode async {
+    final v = (await _prefs).getInt(_keyThemeMode) ?? 0;
+    return ThemeMode.values[v.clamp(0, 2)];
+  }
+
+  /// 保存主题模式
+  static Future<void> setThemeMode(ThemeMode mode) async {
+    await (await _prefs).setInt(_keyThemeMode, mode.index);
+    debugPrint('[Settings] setThemeMode: $mode');
   }
 
   // ── Helpers ───────────────────────────────────────────────────

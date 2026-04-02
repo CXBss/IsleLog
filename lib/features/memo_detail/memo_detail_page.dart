@@ -242,7 +242,7 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
 
   MarkdownStyleSheet _mdStyle(BuildContext context) =>
       MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-        p: const TextStyle(fontSize: 15, height: 1.7, color: AppColors.textBody),
+        p: TextStyle(fontSize: 15, height: 1.7, color: AppColors.textBody(context)),
         blockquote: const TextStyle(
           fontSize: 14,
           color: Colors.grey,
@@ -264,9 +264,7 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
   Widget build(BuildContext context) {
     var checkboxIdx = 0;
     return Scaffold(
-      backgroundColor: AppColors.scaffoldBg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
         elevation: 0,
         scrolledUnderElevation: 1,
         title: Text(
@@ -301,7 +299,7 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                 width: double.infinity,
                 padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: AppColors.surface(context),
                   borderRadius: BorderRadius.circular(AppDimens.cardRadius),
                   boxShadow: [
                     BoxShadow(
@@ -869,7 +867,7 @@ class _CommentTile extends StatelessWidget {
             MarkdownBody(
               data: comment.content,
               styleSheet: MarkdownStyleSheet(
-                p: const TextStyle(fontSize: 14, height: 1.5, color: AppColors.textBody),
+                p: TextStyle(fontSize: 14, height: 1.5, color: AppColors.textBody(context)),
                 code: TextStyle(fontSize: 13, backgroundColor: Colors.grey[100]),
               ),
             ),

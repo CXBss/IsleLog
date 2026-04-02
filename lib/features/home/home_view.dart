@@ -331,10 +331,8 @@ class _HomeViewState extends State<HomeView> {
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
-      backgroundColor: AppColors.scaffoldBg,
       drawer: _buildDrawer(),
       appBar: AppBar(
-        backgroundColor: AppColors.surfaceWhite,
         elevation: 0,
         scrolledUnderElevation: 1,
         leading: IconButton(
@@ -379,14 +377,14 @@ class _HomeViewState extends State<HomeView> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 20, 20, 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
               child: Text(
                 '日记本',
                 style: TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
+                  color: AppColors.textPrimary(context),
                 ),
               ),
             ),
@@ -477,7 +475,7 @@ class _HomeViewState extends State<HomeView> {
                               fontSize: 14,
                               color: isSelected
                                   ? AppColors.primary
-                                  : AppColors.textPrimary,
+                                  : AppColors.textPrimary(context),
                               fontWeight: isSelected
                                   ? FontWeight.w600
                                   : FontWeight.normal,
@@ -539,7 +537,7 @@ class _HomeViewState extends State<HomeView> {
   /// 顶部已选标签条，每个 chip 右侧有 × 可单独移除
   Widget _buildSelectedTagsBar() {
     return Container(
-      color: AppColors.surfaceWhite,
+      color: AppColors.surface(context),
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
       child: Row(
         children: [
@@ -722,7 +720,7 @@ class _PinnedSection extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.surface(context),
         borderRadius: BorderRadius.circular(AppDimens.cardRadius),
         boxShadow: [
           BoxShadow(
@@ -861,7 +859,7 @@ class _DaySection extends StatelessWidget {
                           fontSize: dayFontSize,
                           fontWeight: FontWeight.bold,
                           height: 1.0,
-                          color: AppColors.textPrimary,
+                          color: AppColors.textPrimary(context),
                         ),
                       ),
                       Text('${date.month}月',
@@ -1077,7 +1075,7 @@ class _CommentSearchCard extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         decoration: BoxDecoration(
-          color: AppColors.surfaceWhite,
+          color: AppColors.surface(context),
           borderRadius: BorderRadius.circular(AppDimens.cardRadius),
           border: Border.all(color: AppColors.primaryLight, width: 1),
           boxShadow: [
@@ -1179,8 +1177,8 @@ class _HighlightText extends StatelessWidget {
     if (query.trim().isEmpty) {
       return Text(
         text,
-        style: const TextStyle(
-            fontSize: 14, height: 1.6, color: AppColors.textBody),
+        style: TextStyle(
+            fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
         maxLines: 8,
         overflow: TextOverflow.ellipsis,
       );
@@ -1189,8 +1187,8 @@ class _HighlightText extends StatelessWidget {
     final spans = _buildSpans(text, query.trim().toLowerCase());
     return Text.rich(
       TextSpan(children: spans),
-      style: const TextStyle(
-          fontSize: 14, height: 1.6, color: AppColors.textBody),
+      style: TextStyle(
+          fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
       maxLines: 8,
       overflow: TextOverflow.ellipsis,
     );
