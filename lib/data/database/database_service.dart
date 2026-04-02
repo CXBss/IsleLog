@@ -607,6 +607,58 @@ class DatabaseService {
   }
 
   // ────────────────────────────────────────────────────────────────
+  // 清库
+  // ────────────────────────────────────────────────────────────────
+
+  /// 将所有未删除的日记和评论标记为 pending（待推送）。
+  ///
+  /// 保留 memosName：有 memosName 的条目 push 时走 updateMemo，
+  /// 无 memosName 的走 createMemo，确保全量推送到远端。
+  static Future<int> markAllPending() async {
+    final isar = await db;
+
+    // 日记：未删除的全部标记 pending
+    final memos = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .findAll();
+    for (final memo in memos) {
+      memo.syncStatus = SyncStatus.pending;
+    }
+
+    // 评论：未删除的全部标记 pending
+    final comments = await isar.commentEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .findAll();
+    for (final comment in comments) {
+      comment.syncStatus = SyncStatus.pending;
+    }
+
+    await isar.writeTxn(() async {
+      await isar.memoEntrys.putAll(memos);
+      await isar.commentEntrys.putAll(comments);
+    });
+
+    final total = memos.length + comments.length;
+    debugPrint('[DB] markAllPending: $total 条（日记 ${memos.length}，评论 ${comments.length}）');
+    return total;
+  }
+
+  /// 清空所有本地数据（日记、评论、标签统计），不可恢复。
+  ///
+  /// 仅用于"清除本地缓存"功能，清空后需重新同步才能恢复数据。
+  static Future<void> clearAll() async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.memoEntrys.clear();
+      await isar.commentEntrys.clear();
+      await isar.tagStats.clear();
+    });
+    debugPrint('[DB] clearAll: 所有数据已清空');
+  }
+
+  // ────────────────────────────────────────────────────────────────
   // 工具方法
   // ────────────────────────────────────────────────────────────────
 

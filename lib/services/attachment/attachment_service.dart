@@ -193,6 +193,26 @@ class AttachmentService {
     }
   }
 
+  // ── 清除本地附件缓存 ──────────────────────────────────────────
+
+  /// 删除应用私有 attachments 目录下的所有本地附件文件。
+  ///
+  /// 仅清除文件，不影响数据库中的附件记录（配合 [DatabaseService.clearAll] 一起使用）。
+  static Future<void> clearLocalCache() async {
+    try {
+      final dir = await _attachmentsDir();
+      if (!dir.existsSync()) return;
+      for (final entity in dir.listSync()) {
+        try {
+          await entity.delete(recursive: true);
+        } catch (_) {}
+      }
+      debugPrint('[Attachment] clearLocalCache: 附件缓存已清空');
+    } catch (e) {
+      debugPrint('[Attachment] clearLocalCache 失败：$e');
+    }
+  }
+
   // ── 删除远端资源 ──────────────────────────────────────────────
 
   /// 删除远端 Memos 资源（静默失败）

@@ -185,6 +185,38 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
     await _loadComments();
   }
 
+  void _showCopyMenu(BuildContext context) {
+    final messenger = ScaffoldMessenger.of(context);
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.subject_outlined),
+              title: const Text('复制纯文本'),
+              onTap: () async {
+                Navigator.pop(context);
+                await Clipboard.setData(ClipboardData(text: _displayContent));
+                messenger.showSnackBar(const SnackBar(content: Text('已复制纯文本')));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.code_outlined),
+              title: const Text('复制 Markdown'),
+              onTap: () async {
+                Navigator.pop(context);
+                await Clipboard.setData(ClipboardData(text: memo.content));
+                messenger.showSnackBar(const SnackBar(content: Text('已复制 Markdown')));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _openEdit(BuildContext context) {
     Navigator.pushReplacement(
       context,
@@ -243,6 +275,11 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
         ),
         actions: [
           _syncIcon(memo.syncStatus),
+          IconButton(
+            icon: const Icon(Icons.copy_outlined),
+            tooltip: '复制',
+            onPressed: () => _showCopyMenu(context),
+          ),
           IconButton(
             icon: const Icon(Icons.edit_outlined),
             tooltip: '编辑',

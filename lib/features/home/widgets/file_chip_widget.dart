@@ -45,36 +45,27 @@ class _FileChipWidgetState extends State<FileChipWidget> {
   void _showActions() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        margin: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.open_in_new),
-                title: const Text('打开'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _openFile();
-                },
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.save_alt),
-                title: const Text('保存'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _saveFile();
-                },
-              ),
-            ],
-          ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.open_in_new_outlined),
+              title: const Text('打开'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _openFile();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.save_alt_outlined),
+              title: const Text('保存'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _saveFile();
+              },
+            ),
+          ],
         ),
       ),
     );

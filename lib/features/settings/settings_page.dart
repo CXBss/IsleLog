@@ -1,7 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../data/database/database_service.dart';
+import '../../services/attachment/attachment_service.dart';
 import '../../services/debug/file_logger.dart';
+import '../../services/settings/settings_service.dart';
 import '../../shared/constants/app_constants.dart';
 import 'api_settings_page.dart';
 import 'server_settings_page.dart';
@@ -11,6 +14,71 @@ import 'server_settings_page.dart';
 /// 列出各配置子项，点击进入对应子页。
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
+
+  Future<void> _markAllPending(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('强制全量推送'),
+        content: const Text(
+          '将把所有本地日记和评论标记为"待推送"状态。\n\n下次同步时会把本地内容全量推送到服务器（已有远端记录的会更新，本地新建的会创建）。\n\n确定要继续吗？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final total = await DatabaseService.markAllPending();
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已标记 $total 条记录为待推送，请执行同步')),
+      );
+    }
+  }
+
+  Future<void> _clearLocalCache(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清除本地缓存'),
+        content: const Text(
+          '将删除本地所有日记、评论、附件文件及同步记录。\n\n数据不会从 Memos 服务器删除，重新同步后可恢复。\n\n确定要继续吗？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    await DatabaseService.clearAll();
+    await AttachmentService.clearLocalCache();
+    await SettingsService.clearLastSyncTime();
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('本地缓存已清除，请重新同步')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,6 +111,21 @@ class SettingsPage extends StatelessWidget {
               MaterialPageRoute(
                   builder: (_) => const ApiSettingsPage()),
             ),
+          ),
+          const SizedBox(height: 8),
+          _SettingsItem(
+            icon: Icons.cloud_upload_outlined,
+            title: '强制全量推送',
+            subtitle: '将所有本地记录标记为待推送，下次同步时全量上传',
+            onTap: () => _markAllPending(context),
+          ),
+          const SizedBox(height: 8),
+          _SettingsItem(
+            icon: Icons.delete_sweep_outlined,
+            title: '清除本地缓存',
+            subtitle: '删除所有本地数据，重新同步后可恢复',
+            onTap: () => _clearLocalCache(context),
+            destructive: true,
           ),
           if (kDebugMode) ...[
             const SizedBox(height: 8),
@@ -131,16 +214,19 @@ class _SettingsItem extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback onTap;
+  final bool destructive;
 
   const _SettingsItem({
     required this.icon,
     required this.title,
     required this.subtitle,
     required this.onTap,
+    this.destructive = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final color = destructive ? Colors.red : AppColors.primary;
     return Material(
       color: AppColors.surfaceWhite,
       borderRadius: BorderRadius.circular(AppDimens.cardRadius),
@@ -151,15 +237,17 @@ class _SettingsItem extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             children: [
-              Icon(icon, color: AppColors.primary, size: 24),
+              Icon(icon, color: color, size: 24),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(title,
-                        style: const TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.w500)),
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                            color: destructive ? Colors.red : null)),
                     const SizedBox(height: 2),
                     Text(subtitle,
                         style: TextStyle(

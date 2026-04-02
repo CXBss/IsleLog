@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../../shared/utils/image_actions.dart' as img_actions;
 
 import '../../../data/database/database_service.dart';
@@ -298,6 +299,15 @@ class _MemoCardState extends State<_MemoCard> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: const Icon(Icons.copy_outlined),
+              title: const Text('复制'),
+              onTap: () async {
+                Navigator.pop(context);
+                await Clipboard.setData(ClipboardData(text: displayContent));
+                messenger.showSnackBar(const SnackBar(content: Text('已复制')));
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.edit_outlined),
               title: const Text(AppStrings.cardEdit),

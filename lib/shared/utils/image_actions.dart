@@ -41,46 +41,37 @@ Future<Uint8List?> getImageBytes(AttachmentInfo att, {String? baseUrl}) async {
 void showImageActions(BuildContext context, AttachmentInfo att, {String? baseUrl}) {
   showModalBottomSheet(
     context: context,
-    backgroundColor: Colors.transparent,
-    builder: (ctx) => Container(
-      margin: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (_isDesktop)
-              ListTile(
-                leading: const Icon(Icons.copy),
-                title: const Text('复制'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _copyImage(context, att, baseUrl: baseUrl);
-                },
-              )
-            else
-              ListTile(
-                leading: const Icon(Icons.share),
-                title: const Text('分享'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _shareImage(context, att, baseUrl: baseUrl);
-                },
-              ),
-            const Divider(height: 1),
+    builder: (ctx) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_isDesktop)
             ListTile(
-              leading: const Icon(Icons.save_alt),
-              title: const Text('保存'),
+              leading: const Icon(Icons.copy_outlined),
+              title: const Text('复制'),
               onTap: () {
                 Navigator.pop(ctx);
-                _saveImage(context, att, baseUrl: baseUrl);
+                _copyImage(context, att, baseUrl: baseUrl);
+              },
+            )
+          else
+            ListTile(
+              leading: const Icon(Icons.share_outlined),
+              title: const Text('分享'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _shareImage(context, att, baseUrl: baseUrl);
               },
             ),
-          ],
-        ),
+          ListTile(
+            leading: const Icon(Icons.save_alt_outlined),
+            title: const Text('保存'),
+            onTap: () {
+              Navigator.pop(ctx);
+              _saveImage(context, att, baseUrl: baseUrl);
+            },
+          ),
+        ],
       ),
     ),
   );

@@ -107,8 +107,10 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     debugPrint('[MemoEditor] 初始化，模式=${_isEditing ? "编辑" : "新建"}，'
         'id=${widget.editingMemo?.id}');
 
-    _contentCtrl =
-        TextEditingController(text: widget.editingMemo?.content ?? '');
+    _contentCtrl = TextEditingController(text: widget.editingMemo?.content ?? '');
+    if (widget.editingMemo != null) {
+      _contentCtrl.selection = const TextSelection.collapsed(offset: 0);
+    }
     _locationCtrl =
         TextEditingController(text: widget.editingMemo?.location ?? '');
     _contentFocus = FocusNode(
