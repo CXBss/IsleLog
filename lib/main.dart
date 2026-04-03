@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'data/database/database_service.dart';
 import 'services/settings/settings_service.dart';
@@ -82,6 +83,13 @@ class MyApp extends StatelessWidget {
         themeMode: mode,
         theme: _buildTheme(Brightness.light),
         darkTheme: _buildTheme(Brightness.dark),
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+        locale: const Locale('zh', 'CN'),
         home: const MainScaffold(),
       ),
     );

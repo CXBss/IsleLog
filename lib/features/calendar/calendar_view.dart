@@ -106,7 +106,7 @@ class _CalendarViewState extends State<CalendarView> {
     debugPrint('[CalendarView] 加载当日列表 ${date.toLocal()}');
     setState(() => _dayLoading = true);
     final memos = await DatabaseService.getMemosByDate(date);
-    memos.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    memos.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     if (mounted) {
       setState(() {
         _selectedMemos = memos;
@@ -127,6 +127,21 @@ class _CalendarViewState extends State<CalendarView> {
   void _nextMonth() {
     final newDay = DateTime(_focusedDay.year, _focusedDay.month + 1, 1);
     debugPrint('[CalendarView] 切换到下月：${newDay.year}-${newDay.month}');
+    setState(() => _focusedDay = newDay);
+    _loadMonthData(newDay.year, newDay.month);
+  }
+
+  /// 弹出日期选择器，用户选择后跳转到对应年月
+  Future<void> _pickYearMonth() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _focusedDay,
+      firstDate: DateTime(2020, 1, 1),
+      lastDate: DateTime(2030, 12, 31),
+      helpText: '选择年月',
+    );
+    if (picked == null || !mounted) return;
+    final newDay = DateTime(picked.year, picked.month, 1);
     setState(() => _focusedDay = newDay);
     _loadMonthData(newDay.year, newDay.month);
   }
@@ -201,10 +216,13 @@ class _CalendarViewState extends State<CalendarView> {
             tooltip: AppStrings.calendarPrevMonth,
           ),
           Expanded(
-            child: Text(
-              '${_focusedDay.year}年 ${_focusedDay.month}月',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            child: GestureDetector(
+              onTap: _pickYearMonth,
+              child: Text(
+                '${_focusedDay.year}年 ${_focusedDay.month}月',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
             ),
           ),
           IconButton(
