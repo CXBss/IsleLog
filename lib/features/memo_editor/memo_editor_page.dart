@@ -748,7 +748,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       memo.attachments = _pendingAttachments;
       memo.createdAt = _selectedDateTime;
       // 编辑模式必须重置为 pending，否则同步引擎查不到该条目
+      // 用户编辑后冲突解除，清空远端冲突内容
       memo.syncStatus = SyncStatus.pending;
+      memo.conflictRemoteContent = null;
 
       await DatabaseService.saveMemo(memo);
       debugPrint('[MemoEditor] 本地保存成功，memo.id=${memo.id}');

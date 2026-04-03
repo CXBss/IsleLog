@@ -179,12 +179,7 @@ class MemosApiService {
         'attachments': attachmentNames.map((n) => {'name': n}).toList(),
         if (createTime != null)
           'createTime': createTime.toUtc().toIso8601String(),
-        if (latitude != null && longitude != null)
-          'location': {
-            'placeholder': locationPlaceholder ?? '',
-            'latitude': latitude,
-            'longitude': longitude,
-          },
+        'updateTime': DateTime.now().toUtc().toIso8601String(),
       };
       // 第一次：不带 updateMask，更新内容/附件/时间等字段
       final res = await _dio.patch('/api/v1/$name', data: body);
@@ -192,19 +187,23 @@ class MemosApiService {
       unawaited(FileLogger.log('[API] updateMemo 内容更新成功'));
 
       // 第二次：仅更新 location（需单独指定 updateMask，否则服务端忽略）
+      final maskFields = <String>[];
+      final maskedBody = <String, dynamic>{};
       if (latitude != null && longitude != null) {
+        maskFields.add('location');
+        maskedBody['location'] = {
+          'placeholder': locationPlaceholder ?? '',
+          'latitude': latitude,
+          'longitude': longitude,
+        };
+      }
+      if (maskFields.isNotEmpty) {
         await _dio.patch(
           '/api/v1/$name',
-          data: {
-            'location': {
-              'placeholder': locationPlaceholder ?? '',
-              'latitude': latitude,
-              'longitude': longitude,
-            },
-          },
-          queryParameters: {'updateMask': 'location'},
+          data: maskedBody,
+          queryParameters: {'updateMask': maskFields.join(',')},
         );
-        unawaited(FileLogger.log('[API] updateMemo location 更新成功'));
+        unawaited(FileLogger.log('[API] updateMemo mask=${maskFields.join(",")} 更新成功'));
       }
 
       return result;

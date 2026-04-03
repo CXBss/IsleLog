@@ -332,6 +332,15 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                 ),
               ),
 
+            // ── 冲突：远端版本 ────────────────────────────────────
+            if (memo.conflictRemoteContent != null) ...[
+              const SizedBox(height: 12),
+              _ConflictRemoteBlock(
+                remoteContent: memo.conflictRemoteContent!,
+                mdStyle: _mdStyle(context),
+              ),
+            ],
+
             // ── 图片附件 ──────────────────────────────────────────
             if (_imageAttachments.isNotEmpty) ...[
               const SizedBox(height: 12),
@@ -1125,4 +1134,92 @@ class _AuthImageState extends State<_AuthImage> {
       fit: widget.fit,
     );
   }
+}
+
+/// 冲突时展示远端版本内容的区块（虚线分隔 + 标签 + Markdown 渲染）
+class _ConflictRemoteBlock extends StatelessWidget {
+  final String remoteContent;
+  final MarkdownStyleSheet mdStyle;
+
+  const _ConflictRemoteBlock({
+    required this.remoteContent,
+    required this.mdStyle,
+  });
+
+  String get _displayContent {
+    var text = remoteContent;
+    text = text.replaceAll('\r\n', '\n');
+    text = text.replaceAll('\n\n', '\x00');
+    text = text.replaceAll('\n', '  \n');
+    text = text.replaceAll('\x00', '\n\n');
+    return text.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 虚线分隔
+        CustomPaint(
+          painter: _DashedLinePainter(color: Colors.orange.withValues(alpha: 0.6)),
+          child: const SizedBox(height: 1, width: double.infinity),
+        ),
+        const SizedBox(height: 8),
+        // 标签
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: Colors.orange.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Text(
+            '远端版本',
+            style: TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.w500),
+          ),
+        ),
+        const SizedBox(height: 8),
+        // 远端内容
+        Opacity(
+          opacity: 0.75,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(AppDimens.cardRadius),
+              border: Border.all(color: Colors.orange.withValues(alpha: 0.25)),
+            ),
+            child: MarkdownBody(
+              data: _displayContent,
+              styleSheet: mdStyle,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 虚线绘制器
+class _DashedLinePainter extends CustomPainter {
+  final Color color;
+  const _DashedLinePainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.2;
+    const dashWidth = 6.0;
+    const dashSpace = 4.0;
+    double x = 0;
+    while (x < size.width) {
+      canvas.drawLine(Offset(x, 0), Offset(x + dashWidth, 0), paint);
+      x += dashWidth + dashSpace;
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedLinePainter old) => old.color != color;
 }

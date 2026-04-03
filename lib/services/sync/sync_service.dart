@@ -97,16 +97,16 @@ class SyncService {
 
     final api = MemosApiService(baseUrl: url, token: token);
     try {
-      final pushed = await _pushPending(api, url, token);
-      // push 完成后、pull 开始前记录时间：
-      // 既避免把刚推上去的条目再拉回来，又不漏掉 push 期间远端其他人的修改
-      final syncTime = DateTime.now();
+      // 先 pull：检测冲突，将远端更新拉到本地
       final (pulled, deleted, memosWithComments) =
           await _pullUpdates(api, url, full: full);
-      // 对 relations 中标记有评论的日记拉取评论（全量和增量都执行）
       if (memosWithComments.isNotEmpty) {
         await _pullCommentsBatch(api, memosWithComments);
       }
+      // 再 push：冲突条目已被标记为 conflict（不是 pending），不会被推送
+      // push 完成后再记录 syncTime，避免下次增量 pull 把刚推上去的内容重复拉回
+      final pushed = await _pushPending(api, url, token);
+      final syncTime = DateTime.now();
       await SettingsService.setLastSyncTime(syncTime);
       final result = SyncResult(pushed: pushed, pulled: pulled, deleted: deleted);
       debugPrint('[Sync] _sync 完成（full=$full）：$result');
@@ -120,8 +120,9 @@ class SyncService {
     }
   }
 
-  /// 仅推送本地 pending 条目（保存日记后的后台静默推送）
+  /// 保存日记后的后台静默同步（先增量 pull 再 push）
   ///
+  /// 先 pull 检测冲突，再 push 本地改动。
   /// 静默失败：遇到任何错误只打印日志，不抛出异常，
   /// 保持 pending 状态等待下次手动同步。
   static Future<void> pushPendingBackground() async {
@@ -135,7 +136,13 @@ class SyncService {
 
     final api = MemosApiService(baseUrl: url, token: token);
     try {
+      final (_, __, memosWithComments) = await _pullUpdates(api, url, full: false);
+      if (memosWithComments.isNotEmpty) {
+        await _pullCommentsBatch(api, memosWithComments);
+      }
       final count = await _pushPending(api, url, token);
+      final syncTime = DateTime.now();
+      await SettingsService.setLastSyncTime(syncTime);
       debugPrint('[Sync] pushPendingBackground 完成，推送 $count 条');
     } catch (e) {
       // 静默失败，保持 pending 状态，等待下次手动同步
@@ -405,8 +412,19 @@ class SyncService {
       unawaited(_downloadAttachments(localMemo, baseUrl));
       return 1;
     } else if (localMemo.syncStatus == SyncStatus.pending) {
+      // 本地有未推送修改，远端也有新版本 → 冲突
+      // 保留本地 content 不变，将远端内容存入 conflictRemoteContent
+      final remoteContent = data['content'] as String? ?? '';
       debugPrint('[Sync] 检测到冲突，标记 conflict: $remoteName');
-      localMemo.syncStatus = SyncStatus.conflict;
+      localMemo
+        ..syncStatus = SyncStatus.conflict
+        ..conflictRemoteContent = remoteContent;
+      await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+    } else if (localMemo.syncStatus == SyncStatus.conflict) {
+      // 已是冲突状态，远端又有新版本 → 只更新远端版本内容，不覆盖本地
+      final remoteContent = data['content'] as String? ?? '';
+      debugPrint('[Sync] 冲突状态下远端再次更新，更新 conflictRemoteContent: $remoteName');
+      localMemo.conflictRemoteContent = remoteContent;
       await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
     }
     return 0;

@@ -68,6 +68,13 @@ class MemoEntry {
   ///
   /// 不建索引，通过扩展方法 [MemoEntryAttachmentExt] 读写强类型列表。
   List<String> attachmentsJson = [];
+
+  /// 冲突时保存的远端版本内容（null 表示无冲突）
+  ///
+  /// Pull 时检测到本地 pending、远端也有更新，则将远端内容存入此字段，
+  /// 同时保持本地 content 不变，syncStatus 置为 conflict。
+  /// 用户编辑保存后清空此字段，syncStatus 改回 pending。
+  String? conflictRemoteContent;
 }
 
 /// [MemoEntry] 附件读写扩展

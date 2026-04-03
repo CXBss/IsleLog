@@ -27,6 +27,10 @@ class _HomeViewState extends State<HomeView> {
   static const _weekdays = ['一', '二', '三', '四', '五', '六', '日'];
   static const _pageSize = 50;
 
+  // ── 冲突条目 ───────────────────────────────────────────────────
+  List<MemoEntry> _conflictMemos = [];
+  bool _conflictExpanded = true;
+
   // ── 置顶条目 ───────────────────────────────────────────────────
   List<MemoEntry> _pinnedMemos = [];
   bool _pinnedExpanded = true;
@@ -60,6 +64,7 @@ class _HomeViewState extends State<HomeView> {
   void initState() {
     super.initState();
     _scrollCtrl.addListener(_onScroll);
+    _loadConflicts();
     _loadPinned();
     _loadNextPage();
     _loadTagStats();
@@ -77,10 +82,16 @@ class _HomeViewState extends State<HomeView> {
   Future<void> _initDbWatch() async {
     final stream = await DatabaseService.watchDbChanges();
     _dbSub = stream.listen((_) {
+      _loadConflicts();
       _loadPinned();
       _resetAndReload();
       _loadTagStats();
     });
+  }
+
+  Future<void> _loadConflicts() async {
+    final conflicts = await DatabaseService.getConflictMemos();
+    if (mounted) setState(() => _conflictMemos = conflicts);
   }
 
   Future<void> _loadPinned() async {
@@ -602,8 +613,11 @@ class _HomeViewState extends State<HomeView> {
     }
 
     final groups = _groupByDay(memos);
+    final hasConflicts = _conflictMemos.isNotEmpty;
     final hasPinned = _pinnedMemos.isNotEmpty;
+    final conflictOffset = hasConflicts ? 1 : 0;
     final pinnedOffset = hasPinned ? 1 : 0;
+    final headerOffset = conflictOffset + pinnedOffset;
 
     return LayoutBuilder(
       builder: (ctx, constraints) {
@@ -620,10 +634,21 @@ class _HomeViewState extends State<HomeView> {
               key: const PageStorageKey('home_timeline'),
               controller: _scrollCtrl,
               padding: EdgeInsets.fromLTRB(hPad, 12, hPad, bottomPad),
-              itemCount: groups.length + pinnedOffset + (hasMore ? 1 : 0),
+              itemCount: groups.length + headerOffset + (hasMore ? 1 : 0),
               itemBuilder: (ctx, i) {
-                // 置顶层（第 0 项）
-                if (hasPinned && i == 0) {
+                // 冲突层（第 0 项，最顶部）
+                if (hasConflicts && i == 0) {
+                  return _ConflictSection(
+                    key: const ValueKey('conflict'),
+                    memos: _conflictMemos,
+                    expanded: _conflictExpanded,
+                    onToggle: () =>
+                        setState(() => _conflictExpanded = !_conflictExpanded),
+                    onTagTap: _toggleTag,
+                  );
+                }
+                // 置顶层
+                if (hasPinned && i == conflictOffset) {
                   return _PinnedSection(
                     key: const ValueKey('pinned'),
                     memos: _pinnedMemos,
@@ -633,9 +658,9 @@ class _HomeViewState extends State<HomeView> {
                     onTagTap: _toggleTag,
                   );
                 }
-                final gi = i - pinnedOffset;
+                final gi = i - headerOffset;
                 // 加载更多指示
-                if (gi == groups.length) {
+                if (gi < 0 || gi == groups.length) {
                   return const Padding(
                     key: ValueKey('loading_more'),
                     padding: EdgeInsets.symmetric(vertical: 16),
@@ -694,6 +719,110 @@ class _SelectedTagChip extends StatelessWidget {
             onTap: onRemove,
             child: const Icon(Icons.close, size: 14, color: AppColors.primaryDark),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 冲突日记区块（位于置顶区上方，可收起）
+class _ConflictSection extends StatelessWidget {
+  final List<MemoEntry> memos;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final void Function(String tag) onTagTap;
+
+  const _ConflictSection({
+    super.key,
+    required this.memos,
+    required this.expanded,
+    required this.onToggle,
+    required this.onTagTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: AppColors.surface(context),
+        borderRadius: BorderRadius.circular(AppDimens.cardRadius),
+        border: Border.all(color: Colors.orange.withValues(alpha: 0.5), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── 标题行 ──────────────────────────────────────────
+          InkWell(
+            onTap: onToggle,
+            borderRadius: BorderRadius.vertical(
+              top: const Radius.circular(AppDimens.cardRadius),
+              bottom: expanded
+                  ? Radius.zero
+                  : const Radius.circular(AppDimens.cardRadius),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, size: 15, color: Colors.orange),
+                  const SizedBox(width: 6),
+                  const Text(
+                    '同步冲突',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.orange,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '${memos.length}',
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.orange),
+                    ),
+                  ),
+                  const Spacer(),
+                  Icon(
+                    expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: Colors.grey[400],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // ── 日记列表 ─────────────────────────────────────────
+          if (expanded) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: Column(
+                children: memos
+                    .map((m) => MemoTimelineCard(
+                          key: ValueKey(m.id),
+                          memo: m,
+                          isLast: true,
+                          showTimeline: false,
+                          onTagTap: onTagTap,
+                        ))
+                    .toList(),
+              ),
+            ),
+          ],
         ],
       ),
     );

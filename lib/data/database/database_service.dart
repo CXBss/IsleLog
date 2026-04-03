@@ -29,6 +29,7 @@ class DatabaseService {
     final isar = await Isar.open(
       [MemoEntrySchema, TagStatSchema, CommentEntrySchema],
       directory: dir.path,
+      inspector: true,
     );
     debugPrint('[DB] 数据库已就绪');
     return isar;
@@ -189,6 +190,19 @@ class DatabaseService {
         .sortByCreatedAtDesc()
         .findAll();
     debugPrint('[DB] getPinnedMemos → ${result.length} 条');
+    return result;
+  }
+
+  /// 获取所有冲突状态的日记（syncStatus == conflict），按创建时间倒序。
+  static Future<List<MemoEntry>> getConflictMemos() async {
+    final isar = await db;
+    final result = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .syncStatusEqualTo(SyncStatus.conflict)
+        .sortByCreatedAtDesc()
+        .findAll();
+    debugPrint('[DB] getConflictMemos → ${result.length} 条');
     return result;
   }
 

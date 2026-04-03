@@ -22,69 +22,74 @@ const MemoEntrySchema = CollectionSchema(
       name: r'attachmentsJson',
       type: IsarType.stringList,
     ),
-    r'content': PropertySchema(
+    r'conflictRemoteContent': PropertySchema(
       id: 1,
+      name: r'conflictRemoteContent',
+      type: IsarType.string,
+    ),
+    r'content': PropertySchema(
+      id: 2,
       name: r'content',
       type: IsarType.string,
     ),
     r'createdAt': PropertySchema(
-      id: 2,
+      id: 3,
       name: r'createdAt',
       type: IsarType.dateTime,
     ),
     r'isArchived': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'isArchived',
       type: IsarType.bool,
     ),
     r'isDeleted': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'isDeleted',
       type: IsarType.bool,
     ),
     r'isPinned': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'isPinned',
       type: IsarType.bool,
     ),
     r'lastSyncAt': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'lastSyncAt',
       type: IsarType.dateTime,
     ),
     r'latitude': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'latitude',
       type: IsarType.double,
     ),
     r'location': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'location',
       type: IsarType.string,
     ),
     r'longitude': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'longitude',
       type: IsarType.double,
     ),
     r'memosName': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'memosName',
       type: IsarType.string,
     ),
     r'syncStatus': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrysyncStatusEnumValueMap,
     ),
     r'tags': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'tags',
       type: IsarType.stringList,
     ),
     r'updatedAt': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'updatedAt',
       type: IsarType.dateTime,
     )
@@ -156,6 +161,12 @@ int _memoEntryEstimateSize(
       bytesCount += value.length * 3;
     }
   }
+  {
+    final value = object.conflictRemoteContent;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.content.length * 3;
   {
     final value = object.location;
@@ -186,19 +197,20 @@ void _memoEntrySerialize(
   Map<Type, List<int>> allOffsets,
 ) {
   writer.writeStringList(offsets[0], object.attachmentsJson);
-  writer.writeString(offsets[1], object.content);
-  writer.writeDateTime(offsets[2], object.createdAt);
-  writer.writeBool(offsets[3], object.isArchived);
-  writer.writeBool(offsets[4], object.isDeleted);
-  writer.writeBool(offsets[5], object.isPinned);
-  writer.writeDateTime(offsets[6], object.lastSyncAt);
-  writer.writeDouble(offsets[7], object.latitude);
-  writer.writeString(offsets[8], object.location);
-  writer.writeDouble(offsets[9], object.longitude);
-  writer.writeString(offsets[10], object.memosName);
-  writer.writeByte(offsets[11], object.syncStatus.index);
-  writer.writeStringList(offsets[12], object.tags);
-  writer.writeDateTime(offsets[13], object.updatedAt);
+  writer.writeString(offsets[1], object.conflictRemoteContent);
+  writer.writeString(offsets[2], object.content);
+  writer.writeDateTime(offsets[3], object.createdAt);
+  writer.writeBool(offsets[4], object.isArchived);
+  writer.writeBool(offsets[5], object.isDeleted);
+  writer.writeBool(offsets[6], object.isPinned);
+  writer.writeDateTime(offsets[7], object.lastSyncAt);
+  writer.writeDouble(offsets[8], object.latitude);
+  writer.writeString(offsets[9], object.location);
+  writer.writeDouble(offsets[10], object.longitude);
+  writer.writeString(offsets[11], object.memosName);
+  writer.writeByte(offsets[12], object.syncStatus.index);
+  writer.writeStringList(offsets[13], object.tags);
+  writer.writeDateTime(offsets[14], object.updatedAt);
 }
 
 MemoEntry _memoEntryDeserialize(
@@ -209,22 +221,23 @@ MemoEntry _memoEntryDeserialize(
 ) {
   final object = MemoEntry();
   object.attachmentsJson = reader.readStringList(offsets[0]) ?? [];
-  object.content = reader.readString(offsets[1]);
-  object.createdAt = reader.readDateTime(offsets[2]);
+  object.conflictRemoteContent = reader.readStringOrNull(offsets[1]);
+  object.content = reader.readString(offsets[2]);
+  object.createdAt = reader.readDateTime(offsets[3]);
   object.id = id;
-  object.isArchived = reader.readBool(offsets[3]);
-  object.isDeleted = reader.readBool(offsets[4]);
-  object.isPinned = reader.readBool(offsets[5]);
-  object.lastSyncAt = reader.readDateTimeOrNull(offsets[6]);
-  object.latitude = reader.readDoubleOrNull(offsets[7]);
-  object.location = reader.readStringOrNull(offsets[8]);
-  object.longitude = reader.readDoubleOrNull(offsets[9]);
-  object.memosName = reader.readStringOrNull(offsets[10]);
+  object.isArchived = reader.readBool(offsets[4]);
+  object.isDeleted = reader.readBool(offsets[5]);
+  object.isPinned = reader.readBool(offsets[6]);
+  object.lastSyncAt = reader.readDateTimeOrNull(offsets[7]);
+  object.latitude = reader.readDoubleOrNull(offsets[8]);
+  object.location = reader.readStringOrNull(offsets[9]);
+  object.longitude = reader.readDoubleOrNull(offsets[10]);
+  object.memosName = reader.readStringOrNull(offsets[11]);
   object.syncStatus =
-      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[11])] ??
+      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[12])] ??
           SyncStatus.pending;
-  object.tags = reader.readStringList(offsets[12]) ?? [];
-  object.updatedAt = reader.readDateTime(offsets[13]);
+  object.tags = reader.readStringList(offsets[13]) ?? [];
+  object.updatedAt = reader.readDateTime(offsets[14]);
   return object;
 }
 
@@ -238,31 +251,33 @@ P _memoEntryDeserializeProp<P>(
     case 0:
       return (reader.readStringList(offset) ?? []) as P;
     case 1:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 2:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 3:
-      return (reader.readBool(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 4:
       return (reader.readBool(offset)) as P;
     case 5:
       return (reader.readBool(offset)) as P;
     case 6:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 7:
-      return (reader.readDoubleOrNull(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 8:
-      return (reader.readStringOrNull(offset)) as P;
-    case 9:
       return (reader.readDoubleOrNull(offset)) as P;
-    case 10:
+    case 9:
       return (reader.readStringOrNull(offset)) as P;
+    case 10:
+      return (reader.readDoubleOrNull(offset)) as P;
     case 11:
+      return (reader.readStringOrNull(offset)) as P;
+    case 12:
       return (_MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           SyncStatus.pending) as P;
-    case 12:
-      return (reader.readStringList(offset) ?? []) as P;
     case 13:
+      return (reader.readStringList(offset) ?? []) as P;
+    case 14:
       return (reader.readDateTime(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -903,6 +918,161 @@ extension MemoEntryQueryFilter
         upper,
         includeUpper,
       );
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'conflictRemoteContent',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'conflictRemoteContent',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'conflictRemoteContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'conflictRemoteContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'conflictRemoteContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'conflictRemoteContent',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'conflictRemoteContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'conflictRemoteContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'conflictRemoteContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'conflictRemoteContent',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'conflictRemoteContent',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      conflictRemoteContentIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'conflictRemoteContent',
+        value: '',
+      ));
     });
   }
 
@@ -2036,6 +2206,20 @@ extension MemoEntryQueryLinks
     on QueryBuilder<MemoEntry, MemoEntry, QFilterCondition> {}
 
 extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy>
+      sortByConflictRemoteContent() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'conflictRemoteContent', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy>
+      sortByConflictRemoteContentDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'conflictRemoteContent', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByContent() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'content', Sort.asc);
@@ -2183,6 +2367,20 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
 
 extension MemoEntryQuerySortThenBy
     on QueryBuilder<MemoEntry, MemoEntry, QSortThenBy> {
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy>
+      thenByConflictRemoteContent() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'conflictRemoteContent', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy>
+      thenByConflictRemoteContentDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'conflictRemoteContent', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByContent() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'content', Sort.asc);
@@ -2348,6 +2546,14 @@ extension MemoEntryQueryWhereDistinct
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByConflictRemoteContent(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'conflictRemoteContent',
+          caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByContent(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -2442,6 +2648,13 @@ extension MemoEntryQueryProperty
       attachmentsJsonProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'attachmentsJson');
+    });
+  }
+
+  QueryBuilder<MemoEntry, String?, QQueryOperations>
+      conflictRemoteContentProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'conflictRemoteContent');
     });
   }
 
