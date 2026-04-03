@@ -66,17 +66,20 @@ flutter run
 
 | 分类 | 技术 |
 |------|------|
-| UI 框架 | Flutter + Material 3 |
+| UI 框架 | Flutter + Material 3（绿色主题） |
 | 本地数据库 | [Isar](https://isar.dev/) 3.x |
 | 网络请求 | [Dio](https://pub.dev/packages/dio) 5.x |
-| 响应式 | [RxDart](https://pub.dev/packages/rxdart) |
-| Markdown | [flutter_markdown](https://pub.dev/packages/flutter_markdown) |
+| 响应式 | [RxDart](https://pub.dev/packages/rxdart)（Stream 合并、debounce） |
+| Markdown 渲染 | [flutter_markdown](https://pub.dev/packages/flutter_markdown) |
 | 日历 | [table_calendar](https://pub.dev/packages/table_calendar) + [lunar](https://pub.dev/packages/lunar) |
-| 音频录制 | [record](https://pub.dev/packages/record) |
-| 音频播放 | [just_audio](https://pub.dev/packages/just_audio) |
-| 位置服务 | [geolocator](https://pub.dev/packages/geolocator) |
+| 音频录制 | [record](https://pub.dev/packages/record)（AudioEncoder.aacLc → .m4a） |
+| 音频播放 | [just_audio](https://pub.dev/packages/just_audio)（本地优先，fallback 远端流） |
+| 位置服务 | [geolocator](https://pub.dev/packages/geolocator) + 高德/天地图逆地理编码 |
 | 相册保存 | [gal](https://pub.dev/packages/gal) |
+| 文件选择 | [file_picker](https://pub.dev/packages/file_picker) |
+| 图片处理 | [flutter_image_compress](https://pub.dev/packages/flutter_image_compress) + [image_picker](https://pub.dev/packages/image_picker) |
 | 配置持久化 | [shared_preferences](https://pub.dev/packages/shared_preferences) |
+| 路由 | [go_router](https://pub.dev/packages/go_router) 14.x |
 
 ---
 
@@ -113,27 +116,59 @@ flutter run
 
 ```
 lib/
-├── main.dart                     # 应用入口
+├── main.dart                                    # 入口：DB 初始化 → Mock 播种 → 启动后台同步 → runApp
 ├── data/
-│   ├── models/                   # Isar 数据模型（MemoEntry / CommentEntry / TagStat）
-│   └── database/                 # DatabaseService（本地 CRUD）
+│   ├── models/
+│   │   ├── memo_entry.dart                      # 日记模型（Isar collection）
+│   │   ├── comment_entry.dart                   # 评论模型（Isar collection）
+│   │   ├── tag_stat.dart                        # 标签统计缓存（Isar collection）
+│   │   └── attachment_info.dart                 # 附件信息（非 Isar，JSON 序列化）
+│   └── database/
+│       └── database_service.dart                # Isar 单例封装，所有 CRUD 入口
 ├── services/
-│   ├── api/                      # Memos REST API 客户端
-│   ├── sync/                     # 双向同步引擎
-│   ├── attachment/               # 附件上传下载管理
-│   ├── location/                 # 位置获取与逆地理编码
-│   ├── settings/                 # 配置持久化
-│   └── debug/                    # 文件日志（调试用）
+│   ├── api/
+│   │   └── memos_api_service.dart               # Memos REST API 客户端（Dio + Bearer Token）
+│   ├── sync/
+│   │   └── sync_service.dart                    # 双向同步引擎（增量/全量/评论同步）
+│   ├── attachment/
+│   │   ├── attachment_service.dart              # 附件上传下载、本地缓存管理
+│   │   └── audio_manager.dart                   # 全局单例音频管理器（同一时刻只播一个）
+│   ├── location/
+│   │   └── location_service.dart                # GPS 定位 + 逆地理编码 + WGS84→GCJ-02 转换
+│   ├── settings/
+│   │   └── settings_service.dart                # SharedPreferences 封装（服务器、Token、同步时间等）
+│   └── debug/
+│       └── file_logger.dart                     # 文件日志（调试用，写入应用文档目录）
 ├── features/
-│   ├── home/                     # 主页时间线 + 搜索
-│   ├── calendar/                 # 日历视图
-│   ├── memo_editor/              # 日记编辑器
-│   ├── memo_detail/              # 日记详情 + 评论区
-│   ├── archive/                  # 归档列表
-│   └── settings/                 # 设置页面
+│   ├── home/
+│   │   ├── home_view.dart                       # 主页时间线（分页、标签筛选、搜索、置顶、同步）
+│   │   └── widgets/
+│   │       ├── memo_timeline_card.dart          # 时间线单条卡片（含时间轴装饰、评论数）
+│   │       ├── memo_search_card.dart            # 搜索结果卡片（关键词高亮）
+│   │       ├── audio_player_widget.dart         # 音频播放控件（进度条 + 剩余时长）
+│   │       └── file_chip_widget.dart            # 非图片/音频附件标签（点击用系统打开）
+│   ├── calendar/
+│   │   └── calendar_view.dart                   # 日历视图（月份高亮、按需加载、日期详情）
+│   ├── memo_editor/
+│   │   └── memo_editor_page.dart                # 新建/编辑日记（工具栏两行：格式化 + 附件录音位置）
+│   ├── memo_detail/
+│   │   └── memo_detail_page.dart                # 日记详情页（全文 Markdown、附件、评论区）
+│   ├── archive/
+│   │   └── archive_view.dart                    # 归档日记列表
+│   └── settings/
+│       ├── settings_page.dart                   # 设置入口（侧边抽屉）
+│       ├── server_settings_page.dart            # 服务器配置（地址 + Token + 连接测试）
+│       └── api_settings_page.dart               # 第三方 API 配置（高德/天地图 Key）
 └── shared/
-    ├── widgets/                  # 主骨架（底部导航 + FAB）
-    └── constants/                # 全局颜色 / 字符串 / 尺寸常量
+    ├── widgets/
+    │   ├── main_scaffold.dart                   # 主骨架：底部导航（主页/日历）+ 居中 FAB
+    │   └── image_preview_dialog.dart            # 图片预览对话框（支持缩放、保存、分享）
+    ├── constants/
+    │   └── app_constants.dart                   # 全局常量：AppColors / AppStrings / AppDimens
+    ├── mock/
+    │   └── mock_data.dart                       # 演示用假数据（DB 为空时自动播种）
+    └── utils/
+        └── image_actions.dart                   # 图片操作工具（复制、下载、分享等）
 ```
 
 ---
