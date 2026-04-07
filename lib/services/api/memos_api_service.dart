@@ -369,6 +369,62 @@ class MemosApiService {
     }
   }
 
+  // ── Single Memo Fetch ─────────────────────────────────────────
+
+  /// 获取单条 memo 详情
+  ///
+  /// [id]：memo 的数字 ID（如 "memos/42" 中的 42）
+  Future<Map<String, dynamic>> getMemo(String id) async {
+    debugPrint('[API] getMemo id=$id');
+    try {
+      final res = await _dio.get('/api/v1/memos/$id');
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  // ── Changelog API ─────────────────────────────────────────────
+
+  /// 获取最新一条变更记录（全量同步后调用，保存 id 作为增量游标）
+  ///
+  /// 若无任何变更记录，返回 null。
+  Future<Map<String, dynamic>?> getLatestChangelog() async {
+    debugPrint('[API] getLatestChangelog');
+    try {
+      final res = await _dio.get('/api/v1/changelogs/latest');
+      final data = res.data;
+      if (data is Map && data['changelog'] != null) {
+        return Map<String, dynamic>.from(data['changelog'] as Map);
+      }
+      return null;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 获取 id > sinceId 的所有变更，升序排列
+  ///
+  /// [sinceId]：上次同步保存的游标，传 -1 或 0 返回全量
+  Future<List<Map<String, dynamic>>> listChangelogs(int sinceId) async {
+    debugPrint('[API] listChangelogs sinceId=$sinceId');
+    try {
+      final res = await _dio.get(
+        '/api/v1/changelogs',
+        queryParameters: {'sinceId': sinceId},
+      );
+      final data = res.data;
+      if (data is Map) {
+        return List<Map<String, dynamic>>.from(
+            (data['changelogs'] as List<dynamic>? ?? []).map(
+                (e) => Map<String, dynamic>.from(e as Map)));
+      }
+      return [];
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   // ── Connection Test ───────────────────────────────────────────
 
   /// 测试连接：获取当前用户信息

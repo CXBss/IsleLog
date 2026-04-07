@@ -193,12 +193,19 @@ class _HomeViewState extends State<HomeView> {
   Future<void> _loadNextPage() async {
     if (_loadingMore || !_hasMore) return;
     _loadingMore = true;
+    final queryOffset = _offset; // 快照查询时的 offset
     final pixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
     debugPrint('[HomeView] _loadNextPage triggered, pixels=$pixels');
     final page = await DatabaseService.getMemosPaged(
-        offset: _offset, limit: _pageSize);
+        offset: queryOffset, limit: _pageSize);
     if (mounted) {
       setState(() {
+        // 若 _resetAndReload 在此期间重置了 _offset，丢弃结果避免重复
+        if (_offset != queryOffset) {
+          _loadingMore = false;
+          _initialLoading = false;
+          return;
+        }
         _memos.addAll(page);
         _offset += page.length;
         _hasMore = page.length == _pageSize;
@@ -213,13 +220,20 @@ class _HomeViewState extends State<HomeView> {
   Future<void> _loadTagFiltered() async {
     if (_loadingMore || !_tagHasMore) return;
     _loadingMore = true;
+    final queryOffset = _tagOffset; // 快照查询时的 offset
     final page = await DatabaseService.getMemosByTags(
       tags: _selectedTags.toList(),
-      offset: _tagOffset,
+      offset: queryOffset,
       limit: _pageSize,
     );
     if (mounted) {
       setState(() {
+        // 若 _resetAndReload 在此期间重置了 _tagOffset，丢弃结果避免重复
+        if (_tagOffset != queryOffset) {
+          _loadingMore = false;
+          _initialLoading = false;
+          return;
+        }
         _tagFilteredMemos.addAll(page);
         _tagOffset += page.length;
         _tagHasMore = page.length == _pageSize;

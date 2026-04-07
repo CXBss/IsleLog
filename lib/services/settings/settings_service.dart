@@ -138,6 +138,29 @@ class SettingsService {
     debugPrint('[Settings] setThemeMode: $mode');
   }
 
+  // ── Changelog Cursor ──────────────────────────────────────────
+
+  static const _keyLastChangelogId = 'last_changelog_id';
+
+  /// 获取上次同步保存的 changelog 游标（未同步过时返回 -1）
+  static Future<int> get lastChangelogId async {
+    final str = (await _prefs).getString(_keyLastChangelogId);
+    if (str == null) return -1;
+    return int.tryParse(str) ?? -1;
+  }
+
+  /// 保存 changelog 游标（int64，使用字符串存储避免精度丢失）
+  static Future<void> setLastChangelogId(int id) async {
+    debugPrint('[Settings] setLastChangelogId: $id');
+    await (await _prefs).setString(_keyLastChangelogId, id.toString());
+  }
+
+  /// 清除 changelog 游标（触发下次增量同步降级为全量）
+  static Future<void> clearLastChangelogId() async {
+    debugPrint('[Settings] clearLastChangelogId');
+    await (await _prefs).remove(_keyLastChangelogId);
+  }
+
   // ── Helpers ───────────────────────────────────────────────────
 
   /// 是否已完整配置服务器（URL 和 Token 均非空才算已配置）

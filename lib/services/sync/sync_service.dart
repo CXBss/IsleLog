@@ -85,7 +85,7 @@ class SyncService {
 
   /// 内部同步实现
   ///
-  /// [full]：true = 全量拉取 + 删除检测；false = 增量拉取
+  /// [full]：true = 全量拉取 + 删除检测；false = 基于 changelog 增量拉取
   static Future<SyncResult> _sync({required bool full}) async {
     // 前置检查：确保服务器已配置
     final url = await SettingsService.serverUrl;
@@ -104,10 +104,14 @@ class SyncService {
         await _pullCommentsBatch(api, memosWithComments);
       }
       // 再 push：冲突条目已被标记为 conflict（不是 pending），不会被推送
-      // push 完成后再记录 syncTime，避免下次增量 pull 把刚推上去的内容重复拉回
       final pushed = await _pushPending(api, url, token);
-      final syncTime = DateTime.now();
-      await SettingsService.setLastSyncTime(syncTime);
+      await SettingsService.setLastSyncTime(DateTime.now());
+
+      // 全量同步完成后，获取最新 changelogId 作为下次增量同步游标
+      if (full) {
+        await _saveLatestChangelogId(api);
+      }
+
       final result = SyncResult(pushed: pushed, pulled: pulled, deleted: deleted);
       debugPrint('[Sync] _sync 完成（full=$full）：$result');
       return result;
@@ -117,6 +121,18 @@ class SyncService {
     } catch (e) {
       debugPrint('[Sync] _sync 未知异常：$e');
       return SyncResult(error: e.toString());
+    }
+  }
+
+  /// 全量同步后调用，将服务端最新 changelogId 保存为增量游标
+  static Future<void> _saveLatestChangelogId(MemosApiService api) async {
+    try {
+      final latest = await api.getLatestChangelog();
+      final id = latest != null ? (latest['id'] as int?) ?? -1 : -1;
+      await SettingsService.setLastChangelogId(id);
+      debugPrint('[Sync] 已保存 changelogId 游标: $id');
+    } catch (e) {
+      debugPrint('[Sync] 获取最新 changelogId 失败（忽略）: $e');
     }
   }
 
@@ -141,8 +157,7 @@ class SyncService {
         await _pullCommentsBatch(api, memosWithComments);
       }
       final count = await _pushPending(api, url, token);
-      final syncTime = DateTime.now();
-      await SettingsService.setLastSyncTime(syncTime);
+      await SettingsService.setLastSyncTime(DateTime.now());
       debugPrint('[Sync] pushPendingBackground 完成，推送 $count 条');
     } catch (e) {
       // 静默失败，保持 pending 状态，等待下次手动同步
@@ -308,44 +323,29 @@ class SyncService {
 
   /// 从远端拉取更新并合并到本地。
   ///
-  /// [full]：true = 全量拉取 + 远端删除检测；false = 增量拉取（基于 lastSyncTime 过滤）。
-  /// 增量模式下若服务端不支持 filter，静默降级为全量拉取（但不做删除检测）。
+  /// [full]：true = 全量拉取 + 远端删除检测；
+  ///         false = 基于 changelog 增量拉取，若变更数超阈值则自动降级全量。
   /// 返回 (合并条目数, 删除条目数, 有评论的日记 memosName 集合)。
-  /// 评论集合由 relations[type=COMMENT] 提取，调用方负责后续拉取评论。
   static Future<(int, int, Set<String>)> _pullUpdates(
       MemosApiService api, String baseUrl,
       {bool full = false}) async {
-    String? filter;
     if (!full) {
-      final lastSync = await SettingsService.lastSyncTime;
-      if (lastSync != null) {
-        final ts = lastSync.millisecondsSinceEpoch ~/ 1000;
-        filter = 'updated_ts >= $ts';
-        debugPrint('[Sync] _pullUpdates 增量拉取，filter=$filter');
-      } else {
-        debugPrint('[Sync] _pullUpdates 首次同步，全量拉取');
-      }
-    } else {
-      debugPrint('[Sync] _pullUpdates 全量拉取（full=true）');
+      return _pullByChangelog(api, baseUrl);
     }
+    return _pullFull(api, baseUrl);
+  }
 
-    // 同时拉取 NORMAL 和 ARCHIVED 两个状态
-    List<Map<String, dynamic>> normalMemos;
-    List<Map<String, dynamic>> archivedMemos;
-    try {
-      normalMemos = await api.listAllMemos(filter: filter, state: 'NORMAL');
-      archivedMemos = await api.listAllMemos(filter: filter, state: 'ARCHIVED');
-    } catch (e) {
-      debugPrint('[Sync] filter 不支持，回退全量拉取：$e');
-      normalMemos = await api.listAllMemos(state: 'NORMAL');
-      archivedMemos = await api.listAllMemos(state: 'ARCHIVED');
-    }
+  /// 全量拉取：拉取所有条目 + 删除检测
+  static Future<(int, int, Set<String>)> _pullFull(
+      MemosApiService api, String baseUrl) async {
+    debugPrint('[Sync] _pullFull 全量拉取开始');
+    final normalMemos = await api.listAllMemos(state: 'NORMAL');
+    final archivedMemos = await api.listAllMemos(state: 'ARCHIVED');
     debugPrint('[Sync] 远端 NORMAL=${normalMemos.length} ARCHIVED=${archivedMemos.length}');
 
     final remoteNames = <String>{};
     final memosWithComments = <String>{};
     int pulled = 0;
-    int deleted = 0;
 
     Future<void> processList(List<Map<String, dynamic>> list, bool archived) async {
       for (final data in list) {
@@ -353,38 +353,134 @@ class SyncService {
         if (remoteName.isEmpty) continue;
         remoteNames.add(remoteName);
         pulled += await _applyRemoteMemo(data, baseUrl, archived: archived);
-        // 从 relations 收集有评论的日记：relatedMemo 是父日记
-        for (final rel in (data['relations'] as List<dynamic>? ?? [])) {
-          final relMap = rel as Map<String, dynamic>;
-          if (relMap['type'] == 'COMMENT') {
-            final parentName =
-                (relMap['relatedMemo'] as Map<String, dynamic>?)?['name'] as String?;
-            if (parentName != null && parentName.isNotEmpty) {
-              memosWithComments.add(parentName);
-            }
-          }
-        }
+        _collectCommentRefs(data, memosWithComments);
       }
     }
 
     await processList(normalMemos, false);
     await processList(archivedMemos, true);
 
-    // 远端删除检测：仅全量模式执行
-    if (full) {
-      final allLocal = await _getAllSyncedWithMemosName();
-      for (final local in allLocal) {
-        if (!remoteNames.contains(local.memosName)) {
-          debugPrint('[Sync] 远端已删除，本地同步删除 id=${local.id} memosName=${local.memosName}');
-          await DatabaseService.hardDelete(local.id);
-          deleted++;
-        }
+    // 删除检测
+    int deleted = 0;
+    final allLocal = await _getAllSyncedWithMemosName();
+    for (final local in allLocal) {
+      if (!remoteNames.contains(local.memosName)) {
+        debugPrint('[Sync] 远端已删除，本地同步删除 id=${local.id} memosName=${local.memosName}');
+        await DatabaseService.hardDelete(local.id);
+        deleted++;
       }
     }
 
-    debugPrint(
-        '[Sync] _pullUpdates 完成（full=$full），拉取 $pulled 条，删除 $deleted 条，有评论日记 ${memosWithComments.length} 篇');
+    debugPrint('[Sync] _pullFull 完成，拉取 $pulled 条，删除 $deleted 条');
     return (pulled, deleted, memosWithComments);
+  }
+
+  /// 增量拉取：通过 changelog 驱动，超阈值时降级为全量
+  ///
+  /// 动态阈值 = max(300, 本地总日记数 × 0.3)，
+  /// 避免小库用户阈值过低、大库用户阈值固定不足的问题。
+  static Future<(int, int, Set<String>)> _pullByChangelog(
+      MemosApiService api, String baseUrl) async {
+    final sinceId = await SettingsService.lastChangelogId;
+
+    // 首次同步（无游标）→ 直接全量
+    if (sinceId == -1) {
+      debugPrint('[Sync] _pullByChangelog 无游标，降级全量');
+      return _pullFull(api, baseUrl);
+    }
+
+    debugPrint('[Sync] _pullByChangelog 增量，sinceId=$sinceId');
+    final List<Map<String, dynamic>> changelogs;
+    try {
+      changelogs = await api.listChangelogs(sinceId);
+    } catch (e) {
+      debugPrint('[Sync] listChangelogs 失败，降级全量：$e');
+      return _pullFull(api, baseUrl);
+    }
+
+    debugPrint('[Sync] changelog 数量: ${changelogs.length}');
+
+    // 动态阈值：max(300, 本地总数 × 30%)
+    final localTotal = await DatabaseService.getMemoCount();
+    final threshold = (localTotal * 0.3).ceil().clamp(300, 999999);
+    debugPrint('[Sync] 降级阈值: $threshold（本地总数 $localTotal）');
+
+    if (changelogs.length >= threshold) {
+      debugPrint('[Sync] changelog 超过阈值 $threshold，降级全量同步');
+      return _pullFull(api, baseUrl);
+    }
+
+    // 按 entity 分类处理
+    final memoNames = <String>{};      // 需要拉取最新数据的 memo
+    final deletedNames = <String>{};   // 需要本地删除的 memo
+
+    for (final log in changelogs) {
+      final entity = log['entity'] as String? ?? '';
+      final entityId = log['entityId'] as String? ?? '';
+      final action = log['action'] as String? ?? '';
+      if (entity != 'memo' || entityId.isEmpty) continue;
+      if (action == 'DELETE') {
+        deletedNames.add(entityId);
+      } else {
+        memoNames.add(entityId);
+      }
+    }
+    // 已删除的不再拉取
+    memoNames.removeAll(deletedNames);
+
+    debugPrint('[Sync] changelog 涉及 memo: 更新/新增 ${memoNames.length} 条，删除 ${deletedNames.length} 条');
+
+    int pulled = 0;
+    int deleted = 0;
+    final memosWithComments = <String>{};
+
+    // 拉取有变化的 memo 详情
+    for (final name in memoNames) {
+      try {
+        final idPart = name.split('/').last;
+        final data = await api.getMemo(idPart);
+        final state = data['state'] as String? ?? 'NORMAL';
+        pulled += await _applyRemoteMemo(data, baseUrl, archived: state == 'ARCHIVED');
+        _collectCommentRefs(data, memosWithComments);
+      } catch (e) {
+        debugPrint('[Sync] 拉取 memo $name 详情失败：$e');
+      }
+    }
+
+    // 处理远端删除
+    for (final name in deletedNames) {
+      final local = await DatabaseService.getMemoByMemosName(name);
+      if (local != null && local.syncStatus == SyncStatus.synced) {
+        await DatabaseService.hardDelete(local.id);
+        deleted++;
+        debugPrint('[Sync] changelog 删除本地 memo $name');
+      }
+    }
+
+    // 更新 changelog 游标为本批最后一条 id
+    if (changelogs.isNotEmpty) {
+      final newId = changelogs.last['id'] as int;
+      await SettingsService.setLastChangelogId(newId);
+      debugPrint('[Sync] 更新 changelogId 游标: $newId');
+    }
+
+    debugPrint('[Sync] _pullByChangelog 完成，拉取 $pulled 条，删除 $deleted 条');
+    return (pulled, deleted, memosWithComments);
+  }
+
+  /// 从 memo 数据中提取有评论引用的日记名（relations[type=COMMENT]）
+  static void _collectCommentRefs(
+      Map<String, dynamic> data, Set<String> memosWithComments) {
+    for (final rel in (data['relations'] as List<dynamic>? ?? [])) {
+      final relMap = rel as Map<String, dynamic>;
+      if (relMap['type'] == 'COMMENT') {
+        final parentName =
+            (relMap['relatedMemo'] as Map<String, dynamic>?)?['name'] as String?;
+        if (parentName != null && parentName.isNotEmpty) {
+          memosWithComments.add(parentName);
+        }
+      }
+    }
   }
 
   /// 将单条远端 memo 数据应用到本地，返回 1（有变化）或 0
