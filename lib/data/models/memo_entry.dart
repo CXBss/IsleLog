@@ -11,6 +11,13 @@ enum SyncStatus {
   conflict, // 有冲突（本地与远端均有修改）
 }
 
+/// 待办状态（带索引，供待办页直接查询，避免全表扫描）
+enum TodoStatus {
+  none,       // 无待办项
+  hasPending, // 有未完成待办（至少一个 - [ ]）
+  allDone,    // 全部已完成（只有 - [x]，无 - [ ]）
+}
+
 /// 日记/备忘录本地数据模型
 @collection
 class MemoEntry {
@@ -75,6 +82,14 @@ class MemoEntry {
   /// 同时保持本地 content 不变，syncStatus 置为 conflict。
   /// 用户编辑保存后清空此字段，syncStatus 改回 pending。
   String? conflictRemoteContent;
+
+  /// 待办状态（带索引，由 saveMemo 在解析 content 时自动更新）
+  @enumerated
+  @Index()
+  TodoStatus todoStatus = TodoStatus.none;
+
+  /// 未完成待办数量（待办页角标显示"剩余 N 项"）
+  int pendingTodoCount = 0;
 }
 
 /// [MemoEntry] 附件读写扩展

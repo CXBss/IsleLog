@@ -113,6 +113,7 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 | `weather` | int，天气枚举 **[IsleLog 扩展]** |
 | `location` | `{ placeholder, latitude, longitude }` **[IsleLog 扩展]** |
 | `displayTime` | RFC3339，展示时间 **[IsleLog 扩展]** |
+| `createTime` | RFC3339，Memos 客户端用此字段改时间，服务端映射到 `display_ts` **[兼容处理]** |
 | `attachments` | 附件列表，全量替换 |
 
 ---
@@ -407,7 +408,8 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 **请求体**
 ```json
 {
-  "content": "# 文章标题\n正文内容...",
+  "title": "文章标题",
+  "content": "正文内容...",
   "visibility": "PRIVATE",
   "parent": "folders/111",
   "attachments": [{ "name": "attachments/456" }]
@@ -430,6 +432,7 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 
 | 字段 | 说明 |
 |------|------|
+| `title` | 文章标题 |
 | `content` | 正文 |
 | `visibility` | `PRIVATE` / `PROTECTED` / `PUBLIC` |
 | `state` | `NORMAL` / `ARCHIVED` |
@@ -614,6 +617,7 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 ```json
 {
   "type": "ARTICLE",
+  "title": "文章标题",
   "parent": "folders/111"
 }
 ```

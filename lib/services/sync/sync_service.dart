@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../data/database/database_service.dart';
+import '../../data/models/article_entry.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/comment_entry.dart';
+import '../../data/models/folder_entry.dart';
 import '../../data/models/memo_entry.dart';
 import '../../shared/constants/app_constants.dart';
 import '../api/memos_api_service.dart';
@@ -103,6 +105,9 @@ class SyncService {
       if (memosWithComments.isNotEmpty) {
         await _pullCommentsBatch(api, memosWithComments);
       }
+      // 拉取文件夹和文章（先文件夹，再文章）
+      await _pullFolders(api);
+      await _pullArticles(api);
       // 再 push：冲突条目已被标记为 conflict（不是 pending），不会被推送
       final pushed = await _pushPending(api, url, token);
       await SettingsService.setLastSyncTime(DateTime.now());
@@ -110,6 +115,8 @@ class SyncService {
       // 全量同步完成后，获取最新 changelogId 作为下次增量同步游标
       if (full) {
         await _saveLatestChangelogId(api);
+        // 全量同步完成后重建待办索引（Pull 的数据通过 skipTimestamp 写入，绕过了 saveMemo 的自动更新）
+        await DatabaseService.rebuildTodoStatus();
       }
 
       final result = SyncResult(pushed: pushed, pulled: pulled, deleted: deleted);
@@ -416,6 +423,10 @@ class SyncService {
 
     // ── 推送评论 ──
     count += await _pushPendingComments(api);
+    // ── 推送文件夹（先于文章，确保 folderName 有值）──
+    count += await _pushPendingFolders(api);
+    // ── 推送文章 ──
+    count += await _pushPendingArticles(api);
     return count;
   }
 
@@ -962,5 +973,272 @@ class SyncService {
     }
     debugPrint('[Sync] 解析附件 ${result.length} 个');
     return result;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 文件夹同步
+  // ────────────────────────────────────────────────────────────────
+
+  /// 推送所有 pending 文件夹到远端
+  ///
+  /// 先推文件夹，再推文章，保证文章 push 时 folderName 已有值。
+  static Future<int> _pushPendingFolders(MemosApiService api) async {
+    final pending = await DatabaseService.getPendingSyncFolders();
+    debugPrint('[Sync] _pushPendingFolders: ${pending.length} 个待推送');
+    int count = 0;
+    for (final folder in pending) {
+      try {
+        if (folder.isDeleted) {
+          if (folder.folderName != null) {
+            await api.deleteFolder(folder.folderName!);
+          }
+          await DatabaseService.hardDeleteFolder(folder.id);
+        } else if (folder.folderName == null) {
+          // 新建文件夹
+          // 若有离线父文件夹，先尝试解析 parentFolderName
+          String? parentFolderName = folder.parentFolderName;
+          if (parentFolderName == null && folder.localParentFolderId != null) {
+            // 父文件夹可能还没同步，尝试从本地获取 folderName
+            final parentEntry = await (await DatabaseService.db)
+                .folderEntrys.get(folder.localParentFolderId!);
+            if (parentEntry != null && parentEntry.folderName != null) {
+              parentFolderName = parentEntry.folderName;
+            }
+          }
+          final data = await api.createFolder(
+            title: folder.title,
+            parent: parentFolderName,
+          );
+          folder
+            ..folderName = data['name'] as String?
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveFolder(folder, skipTimestamp: true);
+          // 更新依赖此 localFolderId 的文章/子文件夹
+          await _resolveLocalFolderRefs(folder);
+        } else {
+          // 更新文件夹
+          await api.updateFolder(
+            name: folder.folderName!,
+            title: folder.title,
+            parent: folder.parentFolderName,
+          );
+          folder
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveFolder(folder, skipTimestamp: true);
+        }
+        count++;
+      } catch (e) {
+        debugPrint('[Sync] 文件夹推送失败 id=${folder.id}: $e（保持 pending）');
+      }
+    }
+    debugPrint('[Sync] _pushPendingFolders 完成，推送 $count 个');
+    return count;
+  }
+
+  /// 文件夹同步成功后，将引用其 localId 的文章/子文件夹更新为 folderName
+  static Future<void> _resolveLocalFolderRefs(FolderEntry folder) async {
+    if (folder.folderName == null) return;
+    await DatabaseService.resolveLocalFolderRefs(folder.id, folder.folderName!);
+  }
+
+  /// 从远端拉取文件夹列表，合并到本地
+  static Future<int> _pullFolders(MemosApiService api) async {
+    debugPrint('[Sync] _pullFolders 开始');
+    int pulled = 0;
+    try {
+      final remoteFolders = await api.listFolders();
+      final remoteNames = remoteFolders.map((f) => f['name'] as String).toSet();
+
+      for (final data in remoteFolders) {
+        final name = data['name'] as String;
+        final local = await DatabaseService.getFolderByFolderName(name);
+        if (local == null) {
+          // 远端有，本地无 → 新增
+          final folder = FolderEntry()
+            ..folderName = name
+            ..title = data['title'] as String? ?? ''
+            ..parentFolderName = data['parent'] as String?
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveFolder(folder, skipTimestamp: true);
+          pulled++;
+        } else if (local.syncStatus == SyncStatus.synced) {
+          // 本地已同步 → 覆盖为远端最新
+          local
+            ..title = data['title'] as String? ?? ''
+            ..parentFolderName = data['parent'] as String?
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveFolder(local, skipTimestamp: true);
+          pulled++;
+        }
+        // 本地 pending → 保持本地版本，不覆盖
+      }
+
+      // 检测远端已删除的文件夹（本地 synced 但远端不存在）
+      final localSynced = await DatabaseService.getAllSyncedFolders();
+      for (final local in localSynced) {
+        if (local.folderName != null && !remoteNames.contains(local.folderName)) {
+          await DatabaseService.hardDeleteFolder(local.id);
+          debugPrint('[Sync] 文件夹远端已删除，本地物理删除 folderName=${local.folderName}');
+        }
+      }
+    } catch (e) {
+      debugPrint('[Sync] _pullFolders 失败: $e');
+    }
+    debugPrint('[Sync] _pullFolders 完成，拉取 $pulled 个');
+    return pulled;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 文章同步
+  // ────────────────────────────────────────────────────────────────
+
+  /// 推送所有 pending 文章到远端
+  static Future<int> _pushPendingArticles(MemosApiService api) async {
+    final pending = await DatabaseService.getPendingSyncArticles();
+    debugPrint('[Sync] _pushPendingArticles: ${pending.length} 篇待推送');
+    int count = 0;
+    for (final article in pending) {
+      try {
+        // 如果 folderName 还空但有 localFolderId，尝试从本地获取
+        if (article.folderName == null && article.localFolderId != null) {
+          final isar = await DatabaseService.db;
+          final folder = await isar.folderEntrys.get(article.localFolderId!);
+          if (folder != null && folder.folderName != null) {
+            article.folderName = folder.folderName;
+          } else {
+            // 父文件夹还未同步，跳过本文章，等下次
+            debugPrint('[Sync] 文章 id=${article.id} 的文件夹尚未同步，跳过');
+            continue;
+          }
+        }
+
+        if (article.isDeleted) {
+          if (article.articleName != null) {
+            await api.deleteArticle(article.articleName!);
+          }
+          await DatabaseService.hardDeleteArticle(article.id);
+        } else if (article.articleName == null) {
+          // 新建：folderName 为 null 且 localFolderId 也为 null → 放根目录，不传 parent
+          final data = await api.createArticle(
+            title: article.title,
+            content: article.content,
+            visibility: article.visibility,
+            parent: article.folderName, // null 时服务端放根目录
+          );
+          article
+            ..articleName = data['name'] as String?
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveArticle(article, skipTimestamp: true);
+        } else {
+          // 更新：始终传 parent，让服务端能正确写入或清空 parent_id
+          await api.updateArticle(
+            name: article.articleName!,
+            title: article.title,
+            content: article.content,
+            visibility: article.visibility,
+            pinned: article.isPinned,
+            parent: article.folderName, // null = 根目录
+            updateParent: true,
+          );
+          article
+            ..syncStatus = SyncStatus.synced
+            ..lastSyncAt = DateTime.now();
+          await DatabaseService.saveArticle(article, skipTimestamp: true);
+        }
+        count++;
+      } catch (e) {
+        debugPrint('[Sync] 文章推送失败 id=${article.id}: $e（保持 pending）');
+      }
+    }
+    debugPrint('[Sync] _pushPendingArticles 完成，推送 $count 篇');
+    return count;
+  }
+
+  /// 从远端拉取文章列表，合并到本地
+  static Future<int> _pullArticles(MemosApiService api) async {
+    debugPrint('[Sync] _pullArticles 开始');
+    int pulled = 0;
+    try {
+      final remoteArticles = await api.listAllArticles();
+      final remoteNames = remoteArticles.map((a) => a['name'] as String).toSet();
+
+      for (final data in remoteArticles) {
+        final name = data['name'] as String;
+        final local = await DatabaseService.getArticleByArticleName(name);
+        if (local == null) {
+          final article = _articleFromRemote(data);
+          await DatabaseService.saveArticle(article, skipTimestamp: true);
+          pulled++;
+        } else if (local.syncStatus == SyncStatus.synced) {
+          _applyRemoteArticle(local, data);
+          await DatabaseService.saveArticle(local, skipTimestamp: true);
+          pulled++;
+        } else if (local.syncStatus == SyncStatus.pending) {
+          // 双方都改了 → 标记 conflict
+          local
+            ..conflictRemoteContent = data['content'] as String?
+            ..conflictRemoteTitle = data['title'] as String?
+            ..syncStatus = SyncStatus.conflict;
+          await DatabaseService.saveArticle(local, skipTimestamp: true);
+          debugPrint('[Sync] 文章冲突 articleName=$name');
+        }
+      }
+
+      // 检测远端已删除的文章
+      final localSynced = await DatabaseService.getAllSyncedArticles();
+      for (final local in localSynced) {
+        if (local.articleName != null && !remoteNames.contains(local.articleName)) {
+          await DatabaseService.hardDeleteArticle(local.id);
+          debugPrint('[Sync] 文章远端已删除，本地物理删除 articleName=${local.articleName}');
+        }
+      }
+    } catch (e) {
+      debugPrint('[Sync] _pullArticles 失败: $e');
+    }
+    debugPrint('[Sync] _pullArticles 完成，拉取 $pulled 篇');
+    return pulled;
+  }
+
+  static ArticleEntry _articleFromRemote(Map<String, dynamic> data) {
+    final article = ArticleEntry()
+      ..articleName = data['name'] as String?
+      ..title = data['title'] as String? ?? ''
+      ..content = data['content'] as String? ?? ''
+      ..folderName = data['parent'] as String?
+      ..visibility = data['visibility'] as String? ?? 'PRIVATE'
+      ..isPinned = data['pinned'] as bool? ?? false
+      ..isArchived = (data['state'] as String?) == 'ARCHIVED'
+      ..syncStatus = SyncStatus.synced
+      ..lastSyncAt = DateTime.now();
+    final createTime = data['createTime'] as String?;
+    if (createTime != null) {
+      article.createdAt = DateTime.parse(createTime).toLocal();
+    }
+    final updateTime = data['updateTime'] as String?;
+    if (updateTime != null) {
+      article.updatedAt = DateTime.parse(updateTime).toLocal();
+    }
+    return article;
+  }
+
+  static void _applyRemoteArticle(ArticleEntry article, Map<String, dynamic> data) {
+    article
+      ..title = data['title'] as String? ?? ''
+      ..content = data['content'] as String? ?? ''
+      ..folderName = data['parent'] as String?
+      ..visibility = data['visibility'] as String? ?? 'PRIVATE'
+      ..isPinned = data['pinned'] as bool? ?? false
+      ..isArchived = (data['state'] as String?) == 'ARCHIVED'
+      ..syncStatus = SyncStatus.synced
+      ..lastSyncAt = DateTime.now();
+    final updateTime = data['updateTime'] as String?;
+    if (updateTime != null) {
+      article.updatedAt = DateTime.parse(updateTime).toLocal();
+    }
   }
 }

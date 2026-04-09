@@ -445,6 +445,200 @@ class MemosApiService {
     }
   }
 
+  // ── Article API ───────────────────────────────────────────────
+
+  /// 分页列出文章
+  Future<({List<Map<String, dynamic>> articles, String? nextPageToken})>
+      listArticles({
+    int pageSize = 100,
+    String? pageToken,
+    String state = 'NORMAL',
+  }) async {
+    debugPrint('[API] listArticles pageSize=$pageSize pageToken=$pageToken state=$state');
+    try {
+      final params = <String, dynamic>{'pageSize': pageSize, 'state': state};
+      if (pageToken != null) params['pageToken'] = pageToken;
+      final res = await _dio.get('/api/v1/articles', queryParameters: params);
+      final articles = List<Map<String, dynamic>>.from(res.data['articles'] ?? []);
+      final next = res.data['nextPageToken'] as String?;
+      debugPrint('[API] listArticles 返回 ${articles.length} 条');
+      return (
+        articles: articles,
+        nextPageToken: (next == null || next.isEmpty) ? null : next,
+      );
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 自动翻页，获取全部文章
+  Future<List<Map<String, dynamic>>> listAllArticles({String state = 'NORMAL'}) async {
+    debugPrint('[API] listAllArticles 开始全量拉取');
+    final all = <Map<String, dynamic>>[];
+    String? pageToken;
+    do {
+      final result = await listArticles(pageToken: pageToken, state: state);
+      all.addAll(result.articles);
+      pageToken = result.nextPageToken;
+    } while (pageToken != null);
+    debugPrint('[API] listAllArticles 完成，共 ${all.length} 条');
+    return all;
+  }
+
+  /// 获取单篇文章
+  Future<Map<String, dynamic>> getArticle(String id) async {
+    debugPrint('[API] getArticle id=$id');
+    try {
+      final res = await _dio.get('/api/v1/articles/$id');
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 创建文章
+  Future<Map<String, dynamic>> createArticle({
+    required String title,
+    required String content,
+    String visibility = 'PRIVATE',
+    String? parent,
+    List<String> attachmentNames = const [],
+  }) async {
+    debugPrint('[API] createArticle title="$title" parent=$parent');
+    try {
+      final body = <String, dynamic>{
+        'title': title,
+        'content': content,
+        'visibility': visibility,
+        if (parent != null) 'parent': parent,
+        if (attachmentNames.isNotEmpty)
+          'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+      };
+      final res = await _dio.post('/api/v1/articles', data: body);
+      final result = Map<String, dynamic>.from(res.data as Map);
+      debugPrint('[API] createArticle 成功 name=${result["name"]}');
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 更新文章（PATCH，只更新指定字段）
+  ///
+  /// [parent]：文件夹资源名（`folders/123`）；传空字符串或 `null` 表示移到根目录。
+  /// 注意：`parent` 始终显式写入 body（即使为 null），让服务端能清空 parent_id。
+  /// 用 [updateParent] 标记是否需要更新 parent 字段，避免漏传。
+  Future<Map<String, dynamic>> updateArticle({
+    required String name,
+    String? title,
+    String? content,
+    String? visibility,
+    String? state,
+    bool? pinned,
+    String? parent,
+    bool updateParent = false,
+    List<String>? attachmentNames,
+  }) async {
+    debugPrint('[API] updateArticle name=$name parent=$parent updateParent=$updateParent');
+    try {
+      final body = <String, dynamic>{
+        if (title != null) 'title': title,
+        if (content != null) 'content': content,
+        if (visibility != null) 'visibility': visibility,
+        if (state != null) 'state': state,
+        if (pinned != null) 'pinned': pinned,
+        // parent 需要显式传，null/空字符串均表示放根目录；不传则服务端不更新
+        if (updateParent) 'parent': parent,
+        if (attachmentNames != null)
+          'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+      };
+      final res = await _dio.patch('/api/v1/$name', data: body);
+      final result = Map<String, dynamic>.from(res.data as Map);
+      debugPrint('[API] updateArticle 成功');
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 删除文章（软删除）
+  Future<void> deleteArticle(String name) async {
+    debugPrint('[API] deleteArticle name=$name');
+    try {
+      await _dio.delete('/api/v1/$name');
+      debugPrint('[API] deleteArticle 成功');
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  // ── Folder API ────────────────────────────────────────────────
+
+  /// 获取所有文件夹列表
+  Future<List<Map<String, dynamic>>> listFolders() async {
+    debugPrint('[API] listFolders');
+    try {
+      final res = await _dio.get('/api/v1/folders');
+      final folders = List<Map<String, dynamic>>.from(res.data['folders'] ?? []);
+      debugPrint('[API] listFolders → ${folders.length} 个');
+      return folders;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 创建文件夹
+  Future<Map<String, dynamic>> createFolder({
+    required String title,
+    String? parent,
+  }) async {
+    debugPrint('[API] createFolder title="$title" parent=$parent');
+    try {
+      final body = <String, dynamic>{
+        'title': title,
+        if (parent != null) 'parent': parent,
+      };
+      final res = await _dio.post('/api/v1/folders', data: body);
+      final result = Map<String, dynamic>.from(res.data as Map);
+      debugPrint('[API] createFolder 成功 name=${result["name"]}');
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 更新文件夹（重命名/移动）
+  Future<Map<String, dynamic>> updateFolder({
+    required String name,
+    String? title,
+    String? parent,
+  }) async {
+    debugPrint('[API] updateFolder name=$name');
+    try {
+      final body = <String, dynamic>{
+        if (title != null) 'title': title,
+        'parent': parent, // null 表示移到根目录，显式传入
+      };
+      final res = await _dio.patch('/api/v1/$name', data: body);
+      final result = Map<String, dynamic>.from(res.data as Map);
+      debugPrint('[API] updateFolder 成功');
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 删除文件夹
+  Future<void> deleteFolder(String name) async {
+    debugPrint('[API] deleteFolder name=$name');
+    try {
+      await _dio.delete('/api/v1/$name');
+      debugPrint('[API] deleteFolder 成功');
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   // ── Error Wrapping ────────────────────────────────────────────
 
   /// 将 [DioException] 包装为用户友好的 [MemosApiException]

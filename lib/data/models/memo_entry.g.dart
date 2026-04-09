@@ -77,19 +77,30 @@ const MemoEntrySchema = CollectionSchema(
       name: r'memosName',
       type: IsarType.string,
     ),
-    r'syncStatus': PropertySchema(
+    r'pendingTodoCount': PropertySchema(
       id: 12,
+      name: r'pendingTodoCount',
+      type: IsarType.long,
+    ),
+    r'syncStatus': PropertySchema(
+      id: 13,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrysyncStatusEnumValueMap,
     ),
     r'tags': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'tags',
       type: IsarType.stringList,
     ),
+    r'todoStatus': PropertySchema(
+      id: 15,
+      name: r'todoStatus',
+      type: IsarType.byte,
+      enumMap: _MemoEntrytodoStatusEnumValueMap,
+    ),
     r'updatedAt': PropertySchema(
-      id: 14,
+      id: 16,
       name: r'updatedAt',
       type: IsarType.dateTime,
     )
@@ -136,6 +147,19 @@ const MemoEntrySchema = CollectionSchema(
           name: r'tags',
           type: IndexType.value,
           caseSensitive: true,
+        )
+      ],
+    ),
+    r'todoStatus': IndexSchema(
+      id: 2903163888650175290,
+      name: r'todoStatus',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'todoStatus',
+          type: IndexType.value,
+          caseSensitive: false,
         )
       ],
     )
@@ -208,9 +232,11 @@ void _memoEntrySerialize(
   writer.writeString(offsets[9], object.location);
   writer.writeDouble(offsets[10], object.longitude);
   writer.writeString(offsets[11], object.memosName);
-  writer.writeByte(offsets[12], object.syncStatus.index);
-  writer.writeStringList(offsets[13], object.tags);
-  writer.writeDateTime(offsets[14], object.updatedAt);
+  writer.writeLong(offsets[12], object.pendingTodoCount);
+  writer.writeByte(offsets[13], object.syncStatus.index);
+  writer.writeStringList(offsets[14], object.tags);
+  writer.writeByte(offsets[15], object.todoStatus.index);
+  writer.writeDateTime(offsets[16], object.updatedAt);
 }
 
 MemoEntry _memoEntryDeserialize(
@@ -233,11 +259,15 @@ MemoEntry _memoEntryDeserialize(
   object.location = reader.readStringOrNull(offsets[9]);
   object.longitude = reader.readDoubleOrNull(offsets[10]);
   object.memosName = reader.readStringOrNull(offsets[11]);
+  object.pendingTodoCount = reader.readLong(offsets[12]);
   object.syncStatus =
-      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[12])] ??
+      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[13])] ??
           SyncStatus.pending;
-  object.tags = reader.readStringList(offsets[13]) ?? [];
-  object.updatedAt = reader.readDateTime(offsets[14]);
+  object.tags = reader.readStringList(offsets[14]) ?? [];
+  object.todoStatus =
+      _MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offsets[15])] ??
+          TodoStatus.none;
+  object.updatedAt = reader.readDateTime(offsets[16]);
   return object;
 }
 
@@ -273,11 +303,16 @@ P _memoEntryDeserializeProp<P>(
     case 11:
       return (reader.readStringOrNull(offset)) as P;
     case 12:
+      return (reader.readLong(offset)) as P;
+    case 13:
       return (_MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           SyncStatus.pending) as P;
-    case 13:
-      return (reader.readStringList(offset) ?? []) as P;
     case 14:
+      return (reader.readStringList(offset) ?? []) as P;
+    case 15:
+      return (_MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offset)] ??
+          TodoStatus.none) as P;
+    case 16:
       return (reader.readDateTime(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -293,6 +328,16 @@ const _MemoEntrysyncStatusValueEnumMap = {
   0: SyncStatus.pending,
   1: SyncStatus.synced,
   2: SyncStatus.conflict,
+};
+const _MemoEntrytodoStatusEnumValueMap = {
+  'none': 0,
+  'hasPending': 1,
+  'allDone': 2,
+};
+const _MemoEntrytodoStatusValueEnumMap = {
+  0: TodoStatus.none,
+  1: TodoStatus.hasPending,
+  2: TodoStatus.allDone,
 };
 
 Id _memoEntryGetId(MemoEntry object) {
@@ -327,6 +372,14 @@ extension MemoEntryQueryWhereSort
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(
         const IndexWhereClause.any(indexName: r'tags'),
+      );
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterWhere> anyTodoStatus() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        const IndexWhereClause.any(indexName: r'todoStatus'),
       );
     });
   }
@@ -688,6 +741,96 @@ extension MemoEntryQueryWhere
               upper: [''],
             ));
       }
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterWhereClause> todoStatusEqualTo(
+      TodoStatus todoStatus) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'todoStatus',
+        value: [todoStatus],
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterWhereClause> todoStatusNotEqualTo(
+      TodoStatus todoStatus) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'todoStatus',
+              lower: [],
+              upper: [todoStatus],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'todoStatus',
+              lower: [todoStatus],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'todoStatus',
+              lower: [todoStatus],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'todoStatus',
+              lower: [],
+              upper: [todoStatus],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterWhereClause> todoStatusGreaterThan(
+    TodoStatus todoStatus, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'todoStatus',
+        lower: [todoStatus],
+        includeLower: include,
+        upper: [],
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterWhereClause> todoStatusLessThan(
+    TodoStatus todoStatus, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'todoStatus',
+        lower: [],
+        upper: [todoStatus],
+        includeUpper: include,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterWhereClause> todoStatusBetween(
+    TodoStatus lowerTodoStatus,
+    TodoStatus upperTodoStatus, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'todoStatus',
+        lower: [lowerTodoStatus],
+        includeLower: includeLower,
+        upper: [upperTodoStatus],
+        includeUpper: includeUpper,
+      ));
     });
   }
 }
@@ -1871,6 +2014,62 @@ extension MemoEntryQueryFilter
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      pendingTodoCountEqualTo(int value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'pendingTodoCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      pendingTodoCountGreaterThan(
+    int value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'pendingTodoCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      pendingTodoCountLessThan(
+    int value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'pendingTodoCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      pendingTodoCountBetween(
+    int lower,
+    int upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'pendingTodoCount',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> syncStatusEqualTo(
       SyncStatus value) {
     return QueryBuilder.apply(this, (query) {
@@ -2144,6 +2343,60 @@ extension MemoEntryQueryFilter
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> todoStatusEqualTo(
+      TodoStatus value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'todoStatus',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      todoStatusGreaterThan(
+    TodoStatus value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'todoStatus',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> todoStatusLessThan(
+    TodoStatus value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'todoStatus',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> todoStatusBetween(
+    TodoStatus lower,
+    TodoStatus upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'todoStatus',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> updatedAtEqualTo(
       DateTime value) {
     return QueryBuilder.apply(this, (query) {
@@ -2340,6 +2593,19 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByPendingTodoCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'pendingTodoCount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy>
+      sortByPendingTodoCountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'pendingTodoCount', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortBySyncStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'syncStatus', Sort.asc);
@@ -2349,6 +2615,18 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortBySyncStatusDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'syncStatus', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByTodoStatus() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'todoStatus', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByTodoStatusDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'todoStatus', Sort.desc);
     });
   }
 
@@ -2513,6 +2791,19 @@ extension MemoEntryQuerySortThenBy
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByPendingTodoCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'pendingTodoCount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy>
+      thenByPendingTodoCountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'pendingTodoCount', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenBySyncStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'syncStatus', Sort.asc);
@@ -2522,6 +2813,18 @@ extension MemoEntryQuerySortThenBy
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenBySyncStatusDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'syncStatus', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByTodoStatus() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'todoStatus', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByTodoStatusDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'todoStatus', Sort.desc);
     });
   }
 
@@ -2617,6 +2920,12 @@ extension MemoEntryQueryWhereDistinct
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByPendingTodoCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'pendingTodoCount');
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctBySyncStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'syncStatus');
@@ -2626,6 +2935,12 @@ extension MemoEntryQueryWhereDistinct
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByTags() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'tags');
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByTodoStatus() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'todoStatus');
     });
   }
 
@@ -2718,6 +3033,12 @@ extension MemoEntryQueryProperty
     });
   }
 
+  QueryBuilder<MemoEntry, int, QQueryOperations> pendingTodoCountProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'pendingTodoCount');
+    });
+  }
+
   QueryBuilder<MemoEntry, SyncStatus, QQueryOperations> syncStatusProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'syncStatus');
@@ -2727,6 +3048,12 @@ extension MemoEntryQueryProperty
   QueryBuilder<MemoEntry, List<String>, QQueryOperations> tagsProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'tags');
+    });
+  }
+
+  QueryBuilder<MemoEntry, TodoStatus, QQueryOperations> todoStatusProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'todoStatus');
     });
   }
 

@@ -3,7 +3,9 @@ import 'package:isar/isar.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:rxdart/rxdart.dart';
 
+import '../models/article_entry.dart';
 import '../models/comment_entry.dart';
+import '../models/folder_entry.dart';
 import '../models/memo_entry.dart';
 import '../models/tag_stat.dart';
 
@@ -27,7 +29,7 @@ class DatabaseService {
     final dir = await getApplicationDocumentsDirectory();
     debugPrint('[DB] 打开数据库，路径：${dir.path}');
     final isar = await Isar.open(
-      [MemoEntrySchema, TagStatSchema, CommentEntrySchema],
+      [MemoEntrySchema, TagStatSchema, CommentEntrySchema, ArticleEntrySchema, FolderEntrySchema],
       directory: dir.path,
       inspector: true,
     );
@@ -47,8 +49,9 @@ class DatabaseService {
   static Future<int> saveMemo(MemoEntry memo,
       {bool skipTimestamp = false}) async {
     final isar = await db;
-    // 每次保存前重新解析正文中的标签
+    // 每次保存前重新解析正文中的标签，并更新待办状态
     memo.tags = extractTags(memo.content);
+    _updateTodoStatus(memo);
     if (!skipTimestamp) memo.updatedAt = DateTime.now();
     final id = await isar.writeTxn(() => isar.memoEntrys.put(memo));
     debugPrint(
@@ -492,8 +495,10 @@ class DatabaseService {
     // 合并 memoEntrys 和 commentEntrys，评论变化也能触发列表刷新
     final memoStream = isar.memoEntrys.watchLazy(fireImmediately: false);
     final commentStream = isar.commentEntrys.watchLazy(fireImmediately: false);
+    final articleStream = isar.articleEntrys.watchLazy(fireImmediately: false);
+    final folderStream = isar.folderEntrys.watchLazy(fireImmediately: false);
     return memoStream
-        .mergeWith([commentStream])
+        .mergeWith([commentStream, articleStream, folderStream])
         .debounceTime(const Duration(milliseconds: 300));
   }
 
@@ -668,6 +673,8 @@ class DatabaseService {
       await isar.memoEntrys.clear();
       await isar.commentEntrys.clear();
       await isar.tagStats.clear();
+      await isar.articleEntrys.clear();
+      await isar.folderEntrys.clear();
     });
     debugPrint('[DB] clearAll: 所有数据已清空');
   }
@@ -691,5 +698,373 @@ class DatabaseService {
         .toList();
     if (tags.isNotEmpty) debugPrint('[DB] extractTags: $tags');
     return tags;
+  }
+
+  /// 根据正文中的待办语法更新 [MemoEntry.todoStatus] 和 [MemoEntry.pendingTodoCount]。
+  ///
+  /// `- [ ]` 为未完成待办，`- [x]` 为已完成待办（大小写不敏感）。
+  static void _updateTodoStatus(MemoEntry memo) {
+    final pendingCount = RegExp(r'- \[ \]').allMatches(memo.content).length;
+    final doneCount = RegExp(r'- \[[xX]\]').allMatches(memo.content).length;
+    memo.pendingTodoCount = pendingCount;
+    if (pendingCount == 0 && doneCount == 0) {
+      memo.todoStatus = TodoStatus.none;
+    } else if (pendingCount > 0) {
+      memo.todoStatus = TodoStatus.hasPending;
+    } else {
+      memo.todoStatus = TodoStatus.allDone;
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 待办查询
+  // ────────────────────────────────────────────────────────────────
+
+  /// 全量重新扫描所有日记，修正 todoStatus / pendingTodoCount。
+  ///
+  /// 适用场景：同步完成后、手动触发修复状态不一致。
+  /// 只更新有变化的条目，减少无谓写操作。
+  /// 返回实际更新的条目数。
+  static Future<int> rebuildTodoStatus() async {
+    final isar = await db;
+    final all = await isar.memoEntrys.filter().isDeletedEqualTo(false).findAll();
+    final toUpdate = <MemoEntry>[];
+    for (final memo in all) {
+      final prevStatus = memo.todoStatus;
+      final prevCount = memo.pendingTodoCount;
+      _updateTodoStatus(memo);
+      if (memo.todoStatus != prevStatus || memo.pendingTodoCount != prevCount) {
+        toUpdate.add(memo);
+      }
+    }
+    if (toUpdate.isNotEmpty) {
+      await isar.writeTxn(() => isar.memoEntrys.putAll(toUpdate));
+    }
+    debugPrint('[DB] rebuildTodoStatus: 扫描 ${all.length} 条，更新 ${toUpdate.length} 条');
+    return toUpdate.length;
+  }
+
+  /// 获取含有待办项的日记，按创建时间倒序。
+  ///
+  /// [filter] 为 null 时返回全部（hasPending + allDone）；
+  /// 传 [TodoStatus.hasPending] 返回未完成；传 [TodoStatus.allDone] 返回已完成。
+  static Future<List<MemoEntry>> getMemosWithTodo({TodoStatus? filter}) async {
+    final isar = await db;
+    late List<MemoEntry> result;
+    if (filter != null) {
+      result = await isar.memoEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .todoStatusEqualTo(filter)
+          .sortByCreatedAtDesc()
+          .findAll();
+    } else {
+      result = await isar.memoEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .todoStatusEqualTo(TodoStatus.hasPending)
+          .or()
+          .todoStatusEqualTo(TodoStatus.allDone)
+          .sortByCreatedAtDesc()
+          .findAll();
+    }
+    debugPrint('[DB] getMemosWithTodo filter=$filter → ${result.length} 条');
+    return result;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 文章（ArticleEntry）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 新建或更新一篇文章。
+  ///
+  /// [skipTimestamp] 为 true 时不修改 updatedAt（同步场景使用）。
+  static Future<int> saveArticle(ArticleEntry article,
+      {bool skipTimestamp = false}) async {
+    final isar = await db;
+    if (!skipTimestamp) article.updatedAt = DateTime.now();
+    final id = await isar.writeTxn(() => isar.articleEntrys.put(article));
+    debugPrint('[DB] saveArticle → id=$id title="${article.title}"');
+    return id;
+  }
+
+  /// 软删除文章。
+  static Future<void> softDeleteArticle(int id) async {
+    final isar = await db;
+    final article = await isar.articleEntrys.get(id);
+    if (article == null) return;
+    await isar.writeTxn(() async {
+      article.isDeleted = true;
+      article.syncStatus = SyncStatus.pending;
+      article.updatedAt = DateTime.now();
+      await isar.articleEntrys.put(article);
+    });
+    debugPrint('[DB] softDeleteArticle: id=$id');
+  }
+
+  /// 物理删除文章（同步确认后调用）。
+  static Future<bool> hardDeleteArticle(int id) async {
+    final isar = await db;
+    final deleted = await isar.writeTxn(() => isar.articleEntrys.delete(id));
+    debugPrint('[DB] hardDeleteArticle: id=$id, 成功=$deleted');
+    return deleted;
+  }
+
+  /// 获取指定文件夹下的文章（分页）。
+  ///
+  /// [folderName] 为 null 时返回根目录文章（folderName == null 且 localFolderId == null）；
+  /// 传入具体 folderName 或 localFolderId 时返回该文件夹的文章。
+  static Future<List<ArticleEntry>> getArticlesPaged({
+    String? folderName,
+    int? localFolderId,
+    bool rootOnly = false,
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final isar = await db;
+    late List<ArticleEntry> result;
+    if (rootOnly) {
+      // 根目录：folderName 为 null 且 localFolderId 为 null
+      final all = await isar.articleEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .isArchivedEqualTo(false)
+          .folderNameIsNull()
+          .localFolderIdIsNull()
+          .sortByCreatedAtDesc()
+          .findAll();
+      result = all;
+    } else if (folderName != null) {
+      result = await isar.articleEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .isArchivedEqualTo(false)
+          .folderNameEqualTo(folderName)
+          .sortByCreatedAtDesc()
+          .findAll();
+    } else if (localFolderId != null) {
+      result = await isar.articleEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .isArchivedEqualTo(false)
+          .localFolderIdEqualTo(localFolderId)
+          .sortByCreatedAtDesc()
+          .findAll();
+    } else {
+      result = await isar.articleEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .isArchivedEqualTo(false)
+          .sortByCreatedAtDesc()
+          .findAll();
+    }
+    final end = (offset + limit).clamp(0, result.length);
+    final page = offset >= result.length ? <ArticleEntry>[] : result.sublist(offset, end);
+    debugPrint('[DB] getArticlesPaged → ${page.length} 条');
+    return page;
+  }
+
+  /// 根据本地 id 获取文章。
+  static Future<ArticleEntry?> getArticleById(int id) async {
+    final isar = await db;
+    return isar.articleEntrys.get(id);
+  }
+
+  /// 根据远端资源名获取文章。
+  static Future<ArticleEntry?> getArticleByArticleName(String articleName) async {
+    final isar = await db;
+    return isar.articleEntrys
+        .filter()
+        .articleNameEqualTo(articleName)
+        .findFirst();
+  }
+
+  /// 获取所有待同步的文章（含软删除）。
+  static Future<List<ArticleEntry>> getPendingSyncArticles() async {
+    final isar = await db;
+    final result = await isar.articleEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.pending)
+        .findAll();
+    debugPrint('[DB] getPendingSyncArticles → ${result.length} 条');
+    return result;
+  }
+
+  /// 获取所有已同步的未删除文章（用于检测远端删除）。
+  static Future<List<ArticleEntry>> getAllSyncedArticles() async {
+    final isar = await db;
+    return isar.articleEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.synced)
+        .isDeletedEqualTo(false)
+        .findAll();
+  }
+
+  /// 文章全文搜索（title + content）。
+  static Future<List<ArticleEntry>> searchArticles(String query) async {
+    if (query.trim().isEmpty) return [];
+    final isar = await db;
+    final all = await isar.articleEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .findAll();
+    final q = query.toLowerCase();
+    final result = all
+        .where((a) =>
+            a.title.toLowerCase().contains(q) ||
+            a.content.toLowerCase().contains(q))
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    debugPrint('[DB] searchArticles "$query" → ${result.length} 条');
+    return result;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 文件夹（FolderEntry）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 新建或更新一个文件夹。
+  static Future<int> saveFolder(FolderEntry folder,
+      {bool skipTimestamp = false}) async {
+    final isar = await db;
+    if (!skipTimestamp) folder.updatedAt = DateTime.now();
+    final id = await isar.writeTxn(() => isar.folderEntrys.put(folder));
+    debugPrint('[DB] saveFolder → id=$id title="${folder.title}"');
+    return id;
+  }
+
+  /// 软删除文件夹。
+  ///
+  /// 同时将该文件夹下的子文件夹（parentFolderName/localParentFolderId）
+  /// 和文章（folderName/localFolderId）的 parent 置 null（提升到根目录），
+  /// 与服务端删除行为保持一致。
+  static Future<void> softDeleteFolder(int id) async {
+    final isar = await db;
+    final folder = await isar.folderEntrys.get(id);
+    if (folder == null) return;
+
+    await isar.writeTxn(() async {
+      // 标记文件夹软删除
+      folder.isDeleted = true;
+      folder.syncStatus = SyncStatus.pending;
+      folder.updatedAt = DateTime.now();
+      await isar.folderEntrys.put(folder);
+
+      // 子文件夹提升到根目录
+      final childFolders = folder.folderName != null
+          ? await isar.folderEntrys
+              .filter()
+              .parentFolderNameEqualTo(folder.folderName)
+              .findAll()
+          : await isar.folderEntrys
+              .filter()
+              .localParentFolderIdEqualTo(id)
+              .findAll();
+      for (final child in childFolders) {
+        child.parentFolderName = null;
+        child.localParentFolderId = null;
+        child.syncStatus = SyncStatus.pending;
+        child.updatedAt = DateTime.now();
+      }
+      await isar.folderEntrys.putAll(childFolders);
+
+      // 文件夹内文章提升到根目录
+      final articles = folder.folderName != null
+          ? await isar.articleEntrys
+              .filter()
+              .folderNameEqualTo(folder.folderName)
+              .findAll()
+          : await isar.articleEntrys
+              .filter()
+              .localFolderIdEqualTo(id)
+              .findAll();
+      for (final article in articles) {
+        article.folderName = null;
+        article.localFolderId = null;
+        article.syncStatus = SyncStatus.pending;
+        article.updatedAt = DateTime.now();
+      }
+      await isar.articleEntrys.putAll(articles);
+    });
+    debugPrint('[DB] softDeleteFolder: id=$id，子文件夹和文章已提升到根目录');
+  }
+
+  /// 物理删除文件夹（同步确认后调用）。
+  static Future<bool> hardDeleteFolder(int id) async {
+    final isar = await db;
+    final deleted = await isar.writeTxn(() => isar.folderEntrys.delete(id));
+    debugPrint('[DB] hardDeleteFolder: id=$id, 成功=$deleted');
+    return deleted;
+  }
+
+  /// 获取所有未删除的文件夹，按 title 排序。
+  static Future<List<FolderEntry>> getAllFolders() async {
+    final isar = await db;
+    final result = await isar.folderEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .sortByTitle()
+        .findAll();
+    debugPrint('[DB] getAllFolders → ${result.length} 个文件夹');
+    return result;
+  }
+
+  /// 根据远端资源名获取文件夹。
+  static Future<FolderEntry?> getFolderByFolderName(String folderName) async {
+    final isar = await db;
+    return isar.folderEntrys
+        .filter()
+        .folderNameEqualTo(folderName)
+        .findFirst();
+  }
+
+  /// 获取所有待同步的文件夹（含软删除）。
+  static Future<List<FolderEntry>> getPendingSyncFolders() async {
+    final isar = await db;
+    final result = await isar.folderEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.pending)
+        .findAll();
+    debugPrint('[DB] getPendingSyncFolders → ${result.length} 个待同步');
+    return result;
+  }
+
+  /// 获取所有已同步的未删除文件夹（用于检测远端删除）。
+  static Future<List<FolderEntry>> getAllSyncedFolders() async {
+    final isar = await db;
+    return isar.folderEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.synced)
+        .isDeletedEqualTo(false)
+        .findAll();
+  }
+
+  /// 文件夹同步成功后，将引用其 localId 的文章和子文件夹更新为 folderName。
+  ///
+  /// 由 SyncService 在文件夹 create 成功后调用。
+  static Future<void> resolveLocalFolderRefs(int localId, String folderName) async {
+    final isar = await db;
+
+    final articles = await isar.articleEntrys
+        .filter()
+        .localFolderIdEqualTo(localId)
+        .findAll();
+    for (final a in articles) {
+      a.folderName = folderName;
+    }
+    if (articles.isNotEmpty) {
+      await isar.writeTxn(() => isar.articleEntrys.putAll(articles));
+    }
+
+    final children = await isar.folderEntrys
+        .filter()
+        .localParentFolderIdEqualTo(localId)
+        .findAll();
+    for (final c in children) {
+      c.parentFolderName = folderName;
+    }
+    if (children.isNotEmpty) {
+      await isar.writeTxn(() => isar.folderEntrys.putAll(children));
+    }
   }
 }
