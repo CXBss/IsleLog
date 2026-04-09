@@ -165,6 +165,157 @@ class SyncService {
     }
   }
 
+  /// 编辑保存后的后台冲突检查 + 推送
+  ///
+  /// 相比 [pushPendingBackground]，优先针对刚保存的 memo 做精准冲突检测：
+  /// 拿到 changelog 后先判断当前 memo 是否冲突，再用同一批 changelog 数据
+  /// 处理其他条目，避免二次请求。
+  ///
+  /// 流程：
+  /// 1. 新建日记（无 memosName）→ 无需检查，直接走完整 pull+push
+  /// 2. 已同步日记 → 获取 changelog：
+  ///    a. 当前 memo 有远端变更 → 拉取远端内容标记 conflict，其余条目正常 pull+push
+  ///    b. 无变更 → 用同批 changelog 处理所有条目，再 push
+  ///    c. changelog 请求失败 → 降级为完整 pull+push
+  ///
+  /// 静默失败：遇到任何错误只打印日志，不抛出异常。
+  static Future<void> checkConflictAndPush(MemoEntry memo) async {
+    debugPrint('[Sync] checkConflictAndPush 开始 id=${memo.id} memosName=${memo.memosName}');
+    final url = await SettingsService.serverUrl;
+    final token = await SettingsService.accessToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      debugPrint('[Sync] checkConflictAndPush 终止：未配置服务器');
+      return;
+    }
+
+    final api = MemosApiService(baseUrl: url, token: token);
+    try {
+      // 新建日记：无远端 ID，直接走完整 pull+push（拉取可能与新内容相关的变更）
+      if (memo.memosName == null) {
+        debugPrint('[Sync] 新建日记，走完整 pull+push');
+        final (_, __, memosWithComments) = await _pullUpdates(api, url, full: false);
+        if (memosWithComments.isNotEmpty) await _pullCommentsBatch(api, memosWithComments);
+        await _pushPending(api, url, token);
+        await SettingsService.setLastSyncTime(DateTime.now());
+        return;
+      }
+
+      // 已同步日记：先拿 changelog
+      final sinceId = await SettingsService.lastChangelogId;
+      debugPrint('[Sync] 查 changelog sinceId=$sinceId');
+
+      List<Map<String, dynamic>> changelogs;
+      try {
+        changelogs = await api.listChangelogs(sinceId);
+      } catch (e) {
+        // changelog 请求失败 → 降级完整 pull+push
+        debugPrint('[Sync] listChangelogs 失败，降级完整 pull+push：$e');
+        final (_, __, memosWithComments) = await _pullUpdates(api, url, full: false);
+        if (memosWithComments.isNotEmpty) await _pullCommentsBatch(api, memosWithComments);
+        await _pushPending(api, url, token);
+        await SettingsService.setLastSyncTime(DateTime.now());
+        return;
+      }
+
+      debugPrint('[Sync] changelog 数量: ${changelogs.length}');
+
+      // 检查当前 memo 是否有远端变更
+      final memoIdPart = memo.memosName!.split('/').last;
+      final hasRemoteChange = changelogs.any((log) {
+        final entity = log['entity'] as String? ?? '';
+        final entityId = log['entityId'] as String? ?? '';
+        final action = log['action'] as String? ?? '';
+        // entityId 可能是完整 memosName 或只有数字 ID 部分
+        return entity == 'memo' &&
+            (entityId == memo.memosName || entityId == memoIdPart) &&
+            action != 'DELETE';
+      });
+
+      if (hasRemoteChange) {
+        // 当前 memo 有远端变更 → 精准拉取并标记 conflict
+        debugPrint('[Sync] 发现远端变更，拉取内容并标记 conflict: ${memo.memosName}');
+        try {
+          final remoteData = await api.getMemo(memoIdPart);
+          final remoteContent = remoteData['content'] as String? ?? '';
+          final latestMemo = await DatabaseService.getMemoById(memo.id);
+          if (latestMemo != null) {
+            latestMemo
+              ..syncStatus = SyncStatus.conflict
+              ..conflictRemoteContent = remoteContent;
+            await DatabaseService.saveMemo(latestMemo, skipTimestamp: true);
+            debugPrint('[Sync] 已标记 conflict id=${memo.id}');
+          }
+        } catch (e) {
+          debugPrint('[Sync] 拉取远端内容失败，保持 pending：$e');
+        }
+      }
+
+      // 无论当前 memo 是否冲突，都用同批 changelog 处理其余条目 + 推送
+      // （当前 memo 若已标记 conflict，_pushPending 会自动跳过它）
+      await _applyChangelogData(api, url, changelogs);
+      await _pushPending(api, url, token);
+      await SettingsService.setLastSyncTime(DateTime.now());
+
+      // 更新 changelog 游标
+      if (changelogs.isNotEmpty) {
+        final newId = changelogs.last['id'] as int;
+        await SettingsService.setLastChangelogId(newId);
+        debugPrint('[Sync] 更新 changelogId 游标: $newId');
+      }
+    } catch (e) {
+      debugPrint('[Sync] checkConflictAndPush 静默失败：$e');
+    }
+  }
+
+  /// 将已获取的 changelog 列表应用到本地（供 [checkConflictAndPush] 复用，避免二次请求）
+  ///
+  /// 逻辑与 [_pullByChangelog] 的核心处理部分相同，但跳过 changelog 请求和游标更新。
+  static Future<void> _applyChangelogData(
+      MemosApiService api, String baseUrl, List<Map<String, dynamic>> changelogs) async {
+    final memoNames = <String>{};
+    final deletedNames = <String>{};
+
+    for (final log in changelogs) {
+      final entity = log['entity'] as String? ?? '';
+      final entityId = log['entityId'] as String? ?? '';
+      final action = log['action'] as String? ?? '';
+      if (entity != 'memo' || entityId.isEmpty) continue;
+      if (action == 'DELETE') {
+        deletedNames.add(entityId);
+      } else {
+        memoNames.add(entityId);
+      }
+    }
+    memoNames.removeAll(deletedNames);
+
+    debugPrint('[Sync] _applyChangelogData: 更新/新增 ${memoNames.length} 条，删除 ${deletedNames.length} 条');
+
+    final memosWithComments = <String>{};
+    for (final name in memoNames) {
+      try {
+        final idPart = name.split('/').last;
+        final data = await api.getMemo(idPart);
+        final state = data['state'] as String? ?? 'NORMAL';
+        await _applyRemoteMemo(data, baseUrl, archived: state == 'ARCHIVED');
+        _collectCommentRefs(data, memosWithComments);
+      } catch (e) {
+        debugPrint('[Sync] _applyChangelogData 拉取 $name 失败：$e');
+      }
+    }
+
+    for (final name in deletedNames) {
+      final local = await DatabaseService.getMemoByMemosName(name);
+      if (local != null && local.syncStatus == SyncStatus.synced) {
+        await DatabaseService.hardDelete(local.id);
+        debugPrint('[Sync] changelog 删除本地 memo $name');
+      }
+    }
+
+    if (memosWithComments.isNotEmpty) {
+      await _pullCommentsBatch(api, memosWithComments);
+    }
+  }
+
   // ── Push（本地 pending → 远端）───────────────────────────────
 
   /// 将所有 pending 条目推送到远端

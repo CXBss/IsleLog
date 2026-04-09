@@ -159,8 +159,6 @@ class MemosApiService {
   /// [content]：新的 Markdown 正文
   /// [visibility]：新的可见性
   /// [attachmentNames]：附件资源名列表（如 ["attachments/xxx"]），传空列表则清空附件
-  ///
-  /// 通过 `updateMask` 告知服务端要更新的字段。
   Future<Map<String, dynamic>> updateMemo({
     required String name,
     required String content,
@@ -180,32 +178,16 @@ class MemosApiService {
         if (createTime != null)
           'createTime': createTime.toUtc().toIso8601String(),
         'updateTime': DateTime.now().toUtc().toIso8601String(),
+        if (locationPlaceholder != null || (latitude != null && longitude != null))
+          'location': {
+            'placeholder': locationPlaceholder ?? '',
+            'latitude': latitude,
+            'longitude': longitude,
+          },
       };
-      // 第一次：不带 updateMask，更新内容/附件/时间等字段
       final res = await _dio.patch('/api/v1/$name', data: body);
       final result = Map<String, dynamic>.from(res.data);
-      unawaited(FileLogger.log('[API] updateMemo 内容更新成功'));
-
-      // 第二次：仅更新 location（需单独指定 updateMask，否则服务端忽略）
-      final maskFields = <String>[];
-      final maskedBody = <String, dynamic>{};
-      if (latitude != null && longitude != null) {
-        maskFields.add('location');
-        maskedBody['location'] = {
-          'placeholder': locationPlaceholder ?? '',
-          'latitude': latitude,
-          'longitude': longitude,
-        };
-      }
-      if (maskFields.isNotEmpty) {
-        await _dio.patch(
-          '/api/v1/$name',
-          data: maskedBody,
-          queryParameters: {'updateMask': maskFields.join(',')},
-        );
-        unawaited(FileLogger.log('[API] updateMemo mask=${maskFields.join(",")} 更新成功'));
-      }
-
+      unawaited(FileLogger.log('[API] updateMemo 成功'));
       return result;
     } on DioException catch (e) {
       throw _wrap(e);

@@ -765,10 +765,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       if (!_isEditing) await SettingsService.clearDraft();
 
       // 后台静默推送到远端（fire-and-forget，不阻塞 UI 返回）
+      // 先查 changelog 检查远端是否有变更：有则标记 conflict，无则推送
       final configured = await SettingsService.isConfigured;
       if (configured) {
-        debugPrint('[MemoEditor] 服务器已配置，启动后台推送...');
-        unawaited(SyncService.pushPendingBackground());
+        debugPrint('[MemoEditor] 服务器已配置，启动后台冲突检查+推送...');
+        unawaited(SyncService.checkConflictAndPush(memo));
       }
 
       if (mounted) Navigator.pop(context, true);

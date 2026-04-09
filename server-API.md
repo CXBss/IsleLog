@@ -146,6 +146,21 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 
 ---
 
+### 更新评论
+`PATCH /api/v1/comments/:id` **[IsleLog 扩展]**
+
+**请求体**
+```json
+{
+  "content": "修改后的评论",
+  "location": "上海",
+  "latitude": 31.23,
+  "longitude": 121.47
+}
+```
+
+---
+
 ## Memo 版本历史
 
 ### 版本列表
@@ -209,6 +224,37 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 
 ## 附件
 
+**附件响应结构**
+```json
+{
+  "name": "attachments/456",
+  "createTime": "2026-01-01T10:00:00Z",
+  "filename": "photo.jpg",
+  "type": "image/jpeg",
+  "size": 102400,
+  "externalLink": "/file/attachments/456/photo.jpg",
+  "memo": "memos/123"
+}
+```
+> `memo` 字段不存在表示附件尚未关联任何 memo。`content` 字段仅上传时传入，响应中不返回。
+
+---
+
+### 附件列表
+`GET /api/v1/attachments` **[Memos 兼容]**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `pageSize` | int | 每页数量，默认 50，最大 1000 |
+| `pageToken` | string | 分页游标（暂未实现，预留） |
+
+**响应**
+```json
+{ "attachments": [ /* 附件对象数组 */ ] }
+```
+
+---
+
 ### 上传附件
 `POST /api/v1/attachments` **[Memos 兼容]**
 
@@ -216,21 +262,31 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 ```json
 {
   "filename": "photo.jpg",
-  "mimeType": "image/jpeg",
-  "content": "<base64 编码的文件内容>"
+  "type": "image/jpeg",
+  "content": "<base64 编码的文件内容>",
+  "memo": "memos/123"
 }
 ```
+> `memo` 可选，传入则上传后直接关联到对应 memo。
 
-**响应**
+---
+
+### 获取附件
+`GET /api/v1/attachments/:id` **[Memos 兼容]**
+
+---
+
+### 更新附件
+`PATCH /api/v1/attachments/:id` **[Memos 兼容]**
+
+**请求体**
 ```json
 {
-  "name": "attachments/456",
-  "filename": "photo.jpg",
-  "mimeType": "image/jpeg",
-  "size": 102400,
-  "externalLink": "/file/attachments/456/photo.jpg"
+  "filename": "new-name.jpg",
+  "memo": "memos/123"
 }
 ```
+> `memo` 传空字符串解除关联，传 `"memos/123"` 重新绑定。
 
 ---
 
@@ -238,6 +294,34 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 `DELETE /api/v1/attachments/:id` **[Memos 兼容]**
 
 同时删除磁盘文件。
+
+---
+
+### 列出 Memo 的附件
+`GET /api/v1/memos/:id/attachments` **[Memos 兼容]**
+
+**响应**
+```json
+{ "attachments": [ /* 附件对象数组 */ ] }
+```
+
+---
+
+### 设置 Memo 的附件
+`PATCH /api/v1/memos/:id/attachments` **[Memos 兼容]**
+
+全量替换 memo 关联的附件列表（先解除旧关联，再绑定新列表）。
+
+**请求体**
+```json
+{
+  "name": "memos/123",
+  "attachments": [
+    { "name": "attachments/456" },
+    { "name": "attachments/789" }
+  ]
+}
+```
 
 ---
 
@@ -463,6 +547,7 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 **响应**
 ```json
 {
+  "total": 2,
   "changelogs": [
     {
       "id": 987654321,
@@ -482,7 +567,11 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 }
 ```
 
-> `action` 取值：`CREATE` / `UPDATE` / `DELETE`。`entity` 取值：`memo` / `comment` / `attachment`。
+> `action` 取值：`CREATE` / `UPDATE` / `DELETE`。`entity` 取值：`memo` / `article` / `comment` / `attachment`。
+>
+> `entity=comment` 时，`entityId` 格式为 `memos/{id}`，直接用 `GET /api/v1/memos/{id}` 拉取。
+>
+> 客户端判断 `total >= 300` 时放弃增量，直接走全量同步。
 
 ---
 
