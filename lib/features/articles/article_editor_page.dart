@@ -1,15 +1,26 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:pasteboard/pasteboard.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../../data/database/database_service.dart';
 import '../../data/models/article_entry.dart';
+import '../../data/models/attachment_info.dart';
 import '../../data/models/folder_entry.dart';
 import '../../data/models/memo_entry.dart';
+import '../../services/attachment/attachment_service.dart';
+import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
+import '../revision_history/revision_history_page.dart';
 
 /// 文章新建 / 编辑页面
 ///
@@ -35,6 +46,7 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
 
   bool _saving = false;
   bool _previewMode = false;
+  bool _uploading = false;
 
   /// 当前选中的文件夹（null = 根目录）
   FolderEntry? _selectedFolder;
@@ -42,7 +54,19 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
 
   String _visibility = 'PRIVATE';
 
+  /// 本次编辑的附件列表
+  final List<AttachmentInfo> _pendingAttachments = [];
+
+  /// 编辑模式下被移除的旧附件
+  final List<AttachmentInfo> _removedAttachments = [];
+
   bool get _isEditing => widget.editingArticle != null;
+
+  static bool get _isMobile =>
+      defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.android;
+
+  static bool get _isDesktop => !_isMobile;
 
   @override
   void initState() {
@@ -50,18 +74,14 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
     final article = widget.editingArticle;
     _titleCtrl = TextEditingController(text: article?.title ?? '');
     _contentCtrl = TextEditingController(text: article?.content ?? '');
-    _contentFocus = FocusNode(onKeyEvent: (node, event) {
-      // Desktop: Ctrl+S 保存
-      if (event is KeyDownEvent &&
-          event.logicalKey == LogicalKeyboardKey.keyS &&
-          HardwareKeyboard.instance.isControlPressed) {
-        _save();
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    });
+    _contentFocus = FocusNode(onKeyEvent: _onKeyEvent);
     _visibility = article?.visibility ?? 'PRIVATE';
     _selectedFolder = widget.initialFolder;
+
+    if (article != null) {
+      _pendingAttachments.addAll(article.attachments);
+    }
+
     _loadFolders(article);
   }
 
@@ -103,6 +123,232 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
     }
   }
 
+  // ── 键盘快捷键 ─────────────────────────────────────────────────
+
+  bool _pasteBusy = false;
+  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+    // Ctrl+S 或 Cmd/Ctrl+Enter 保存
+    final isCtrlOrCmdPressed = HardwareKeyboard.instance.isMetaPressed ||
+        HardwareKeyboard.instance.isControlPressed;
+    if (isCtrlOrCmdPressed && event.logicalKey == LogicalKeyboardKey.keyS) {
+      _save();
+      return KeyEventResult.handled;
+    }
+    if (isCtrlOrCmdPressed && event.logicalKey == LogicalKeyboardKey.enter) {
+      _save();
+      return KeyEventResult.handled;
+    }
+
+    // Ctrl/Cmd+V：桌面端先判断剪贴板是否有图片
+    if (_isDesktop) {
+      final isCtrlOrCmd = HardwareKeyboard.instance.isMetaPressed ||
+          HardwareKeyboard.instance.isControlPressed;
+      if (isCtrlOrCmd && event.logicalKey == LogicalKeyboardKey.keyV) {
+        if (_pasteBusy) return KeyEventResult.handled;
+        _pasteBusy = true;
+        _handlePasteImage().then((handled) {
+          _pasteBusy = false;
+          if (!handled) _pasteText();
+        });
+        return KeyEventResult.handled;
+      }
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  Future<void> _pasteText() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data?.text == null || data!.text!.isEmpty) return;
+    final text = _contentCtrl.text;
+    final sel = _contentCtrl.selection;
+    final start = sel.isValid ? sel.start : text.length;
+    final end = sel.isValid ? sel.end : text.length;
+    final newText = text.replaceRange(start, end, data.text!);
+    _contentCtrl.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + data.text!.length),
+    );
+  }
+
+  Future<bool> _handlePasteImage() async {
+    if (!_isDesktop) return false;
+    try {
+      final bytes = await Pasteboard.image;
+      if (bytes != null && bytes.isNotEmpty) {
+        final filename = 'paste_${DateTime.now().millisecondsSinceEpoch}.png';
+        final tempDir = await getTemporaryDirectory();
+        await tempDir.create(recursive: true);
+        final tempFile = File('${tempDir.path}/$filename');
+        await tempFile.writeAsBytes(bytes);
+        await _processFile(tempFile, filename, compress: true);
+        return true;
+      }
+      final files = await Pasteboard.files();
+      if (files.isNotEmpty) {
+        for (final path in files) {
+          final file = File(path);
+          if (file.existsSync()) {
+            final filename = p.basename(path);
+            await _processFile(file, filename, compress: _isImageFile(filename));
+          }
+        }
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('[ArticleEditor] 粘贴失败：$e');
+      return false;
+    }
+  }
+
+  // ── 附件选择与上传 ─────────────────────────────────────────────
+
+  Future<void> _pickAttachment() async {
+    final choice = await showModalBottomSheet<_AttachType>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('图片'),
+              onTap: () => Navigator.pop(context, _AttachType.image),
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_file),
+              title: const Text('其他文件'),
+              onTap: () => Navigator.pop(context, _AttachType.file),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null) return;
+
+    if (choice == _AttachType.camera) {
+      await _takePhoto();
+      return;
+    }
+
+    FileType fileType;
+    switch (choice) {
+      case _AttachType.image:
+        fileType = FileType.image;
+      case _AttachType.camera:
+        return;
+      case _AttachType.file:
+        fileType = FileType.any;
+    }
+
+    final result = await FilePicker.platform.pickFiles(
+      type: fileType,
+      withData: false,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final picked = result.files.first;
+    if (picked.path == null) return;
+
+    bool compress = true;
+    if (choice == _AttachType.image && mounted) {
+      final useCompress = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('图片质量'),
+          content: const Text('压缩后上传可节省流量，原图保留完整画质。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('原图'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('压缩'),
+            ),
+          ],
+        ),
+      );
+      if (useCompress == null) return;
+      compress = useCompress;
+    }
+
+    await _processFile(File(picked.path!), picked.name, compress: compress);
+  }
+
+  Future<void> _takePhoto() async {
+    final picker = ImagePicker();
+    XFile? photo;
+    try {
+      photo = await picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85,
+        maxWidth: 2048,
+        maxHeight: 2048,
+      );
+    } catch (e) {
+      debugPrint('[ArticleEditor] 拍照失败：$e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('无法访问相机：$e')),
+        );
+      }
+      return;
+    }
+    if (photo == null) return;
+    final filename = photo.name.isNotEmpty
+        ? photo.name
+        : 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    await _processFile(File(photo.path), filename, compress: true);
+  }
+
+  Future<void> _processFile(File file, String filename, {bool compress = true}) async {
+    setState(() => _uploading = true);
+    try {
+      final configured = await SettingsService.isConfigured;
+      AttachmentInfo info;
+      if (configured) {
+        try {
+          info = await AttachmentService.uploadToServer(file, filename: filename, compress: compress);
+        } catch (e) {
+          debugPrint('[ArticleEditor] 在线上传失败，降级本地存储：$e');
+          info = await AttachmentService.saveLocally(file, filename: filename, compress: compress);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('网络不可用，附件已本地保存，联网后自动上传')),
+            );
+          }
+        }
+      } else {
+        info = await AttachmentService.saveLocally(file, filename: filename, compress: compress);
+      }
+      if (mounted) setState(() => _pendingAttachments.add(info));
+    } catch (e) {
+      debugPrint('[ArticleEditor] 附件处理失败：$e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('附件处理失败：$e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  void _removeAttachment(AttachmentInfo att) {
+    setState(() => _pendingAttachments.remove(att));
+    _removedAttachments.add(att);
+  }
+
+  static bool _isImageFile(String filename) {
+    final ext = filename.split('.').last.toLowerCase();
+    return {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic'}.contains(ext);
+  }
+
+  // ── 保存 ───────────────────────────────────────────────────────
+
   Future<void> _save() async {
     final title = _titleCtrl.text.trim();
     final content = _contentCtrl.text.trim();
@@ -121,8 +367,15 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
       article.syncStatus = SyncStatus.pending;
       article.folderName = _selectedFolder?.folderName;
       article.localFolderId = _selectedFolder?.id;
+      article.attachments = _pendingAttachments;
       await DatabaseService.saveArticle(article);
-      // 后台静默推送（静默失败，不阻塞保存）
+
+      // 保存成功后才删除被移除的附件
+      for (final att in _removedAttachments) {
+        if (att.remoteResName != null) AttachmentService.deleteRemote(att.remoteResName!);
+        if (att.localPath != null) AttachmentService.deleteLocal(att.localPath!);
+      }
+
       unawaited(SyncService.pushPendingBackground());
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -136,6 +389,8 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
     }
   }
 
+  // ── 格式化工具 ─────────────────────────────────────────────────
+
   void _wrapSelection(String prefix, String suffix) {
     final ctrl = _contentCtrl;
     final sel = ctrl.selection;
@@ -147,8 +402,10 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
     final newText = ctrl.text.replaceRange(sel.start, sel.end, '$prefix$selected$suffix');
     ctrl.value = ctrl.value.copyWith(
       text: newText,
-      selection: TextSelection.collapsed(offset: sel.start + prefix.length + selected.length + suffix.length),
+      selection: TextSelection.collapsed(
+          offset: sel.start + prefix.length + selected.length + suffix.length),
     );
+    _contentFocus.requestFocus();
   }
 
   void _insertAtCursor(String text) {
@@ -160,6 +417,7 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
       text: newText,
       selection: TextSelection.collapsed(offset: pos + text.length),
     );
+    _contentFocus.requestFocus();
   }
 
   void _insertLinePrefix(String prefix) {
@@ -172,7 +430,10 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
       text: newText,
       selection: TextSelection.collapsed(offset: pos + prefix.length),
     );
+    _contentFocus.requestFocus();
   }
+
+  // ── build ──────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -213,6 +474,21 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
             visibility: _visibility,
             onChanged: (v) => setState(() => _visibility = v),
           ),
+          // 编辑历史
+          if (_isEditing && widget.editingArticle!.articleName != null)
+            IconButton(
+              icon: const Icon(Icons.history),
+              tooltip: '编辑历史',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => RevisionHistoryPage(
+                    memoName: widget.editingArticle!.articleName!,
+                    title: widget.editingArticle!.title,
+                  ),
+                ),
+              ),
+            ),
           // 保存
           _saving
               ? const Padding(
@@ -274,6 +550,12 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
                     ),
                   ),
           ),
+          // 附件预览条（有附件时展示）
+          if (_pendingAttachments.isNotEmpty)
+            _AttachmentBar(
+              attachments: _pendingAttachments,
+              onRemove: _removeAttachment,
+            ),
           // 格式化工具栏
           if (!_previewMode) _buildToolbar(),
         ],
@@ -282,36 +564,85 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
   }
 
   Widget _buildToolbar() {
-    return Container(
-      height: 44,
-      color: AppColors.surface(context),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        child: Row(
+    return SafeArea(
+      top: false,
+      child: Container(
+        color: AppColors.surface(context),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            _ToolbarBtn(icon: Icons.title, tooltip: '标题',
-                onTap: () => _insertLinePrefix('# ')),
-            _ToolbarBtn(label: 'B', tooltip: '粗体',
-                onTap: () => _wrapSelection('**', '**')),
-            _ToolbarBtn(label: 'I', tooltip: '斜体',
-                onTap: () => _wrapSelection('*', '*')),
-            _ToolbarBtn(label: '`', tooltip: '行内代码',
-                onTap: () => _wrapSelection('`', '`')),
-            _ToolbarBtn(icon: Icons.code, tooltip: '代码块',
-                onTap: () => _insertAtCursor('```\n\n```')),
-            _ToolbarBtn(icon: Icons.link, tooltip: '链接',
-                onTap: () => _wrapSelection('[', '](url)')),
-            _ToolbarBtn(icon: Icons.format_list_numbered, tooltip: '有序列表',
-                onTap: () => _insertLinePrefix('1. ')),
-            _ToolbarBtn(icon: Icons.format_list_bulleted, tooltip: '无序列表',
-                onTap: () => _insertLinePrefix('- ')),
-            _ToolbarBtn(icon: Icons.check_box_outlined, tooltip: '待办项',
-                onTap: () => _insertLinePrefix('- [ ] ')),
-            _ToolbarBtn(icon: Icons.horizontal_rule, tooltip: '分隔线',
-                onTap: () => _insertAtCursor('\n---\n')),
-            _ToolbarBtn(icon: Icons.format_quote, tooltip: '引用',
-                onTap: () => _insertLinePrefix('> ')),
+            const Divider(height: 1),
+            // 格式化按钮行
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Row(
+                children: [
+                  _ToolbarBtn(icon: Icons.title, tooltip: '标题',
+                      onTap: () => _insertLinePrefix('# ')),
+                  _ToolbarBtn(label: 'B', tooltip: '粗体',
+                      onTap: () => _wrapSelection('**', '**')),
+                  _ToolbarBtn(label: 'I', tooltip: '斜体',
+                      onTap: () => _wrapSelection('*', '*')),
+                  _ToolbarBtn(label: '`', tooltip: '行内代码',
+                      onTap: () => _wrapSelection('`', '`')),
+                  _ToolbarBtn(icon: Icons.code, tooltip: '代码块',
+                      onTap: () => _insertAtCursor('```\n\n```')),
+                  _ToolbarBtn(icon: Icons.link, tooltip: '链接',
+                      onTap: () => _wrapSelection('[', '](url)')),
+                  _ToolbarBtn(icon: Icons.format_list_numbered, tooltip: '有序列表',
+                      onTap: () => _insertLinePrefix('1. ')),
+                  _ToolbarBtn(icon: Icons.format_list_bulleted, tooltip: '无序列表',
+                      onTap: () => _insertLinePrefix('- ')),
+                  _ToolbarBtn(icon: Icons.check_box_outlined, tooltip: '待办项',
+                      onTap: () => _insertLinePrefix('- [ ] ')),
+                  _ToolbarBtn(icon: Icons.horizontal_rule, tooltip: '分隔线',
+                      onTap: () => _insertAtCursor('\n---\n')),
+                  _ToolbarBtn(icon: Icons.format_quote, tooltip: '引用',
+                      onTap: () => _insertLinePrefix('> ')),
+                ],
+              ),
+            ),
+            // 附件操作行
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+              child: Row(
+                children: [
+                  // 拍照（仅移动端）
+                  if (_isMobile)
+                    IconButton(
+                      icon: const Icon(Icons.camera_alt_outlined),
+                      color: Colors.grey[600],
+                      iconSize: 22,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      tooltip: '拍照',
+                      onPressed: _uploading ? null : _takePhoto,
+                    ),
+                  // 添加附件 / 上传中指示
+                  _uploading
+                      ? const SizedBox(
+                          width: 36,
+                          height: 36,
+                          child: Padding(
+                            padding: EdgeInsets.all(8),
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: AppColors.primary),
+                          ),
+                        )
+                      : IconButton(
+                          icon: const Icon(Icons.attach_file),
+                          color: Colors.grey[600],
+                          iconSize: 22,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          tooltip: '添加附件',
+                          onPressed: _pickAttachment,
+                        ),
+                  const Spacer(),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -331,6 +662,148 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
           setState(() => _selectedFolder = folder);
           Navigator.pop(ctx);
         },
+      ),
+    );
+  }
+}
+
+// ── 附件类型枚举 ───────────────────────────────────────────────────
+
+enum _AttachType { camera, image, file }
+
+// ── 附件预览条 ─────────────────────────────────────────────────────
+
+class _AttachmentBar extends StatelessWidget {
+  final List<AttachmentInfo> attachments;
+  final ValueChanged<AttachmentInfo> onRemove;
+
+  const _AttachmentBar({required this.attachments, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 80,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        border: Border(top: BorderSide(color: Colors.grey[200]!)),
+      ),
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: attachments.length,
+        separatorBuilder: (ctx, i) => const SizedBox(width: 8),
+        itemBuilder: (ctx, i) =>
+            _AttachThumb(attachment: attachments[i], onRemove: onRemove),
+      ),
+    );
+  }
+}
+
+class _AttachThumb extends StatefulWidget {
+  final AttachmentInfo attachment;
+  final ValueChanged<AttachmentInfo> onRemove;
+
+  const _AttachThumb({required this.attachment, required this.onRemove});
+
+  @override
+  State<_AttachThumb> createState() => _AttachThumbState();
+}
+
+class _AttachThumbState extends State<_AttachThumb> {
+  String _baseUrl = '';
+
+  @override
+  void initState() {
+    super.initState();
+    SettingsService.serverUrl.then((v) {
+      if (mounted) setState(() => _baseUrl = v ?? '');
+    });
+  }
+
+  AttachmentInfo get attachment => widget.attachment;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Container(
+          width: 64,
+          height: 64,
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.grey[300]!),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: _buildThumbContent(),
+          ),
+        ),
+        Positioned(
+          top: -6,
+          right: -6,
+          child: GestureDetector(
+            onTap: () => widget.onRemove(attachment),
+            child: Container(
+              width: 18,
+              height: 18,
+              decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+              child: const Icon(Icons.close, size: 12, color: Colors.white),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildThumbContent() {
+    if (attachment.isImage) {
+      final path = attachment.localPath;
+      if (path != null) {
+        final file = File(path);
+        if (file.existsSync()) {
+          return Image.file(file, fit: BoxFit.cover,
+              errorBuilder: (ctx, err, st) => _iconFallback());
+        }
+      }
+      final url = attachment.fullUrl(_baseUrl);
+      if (url != null && url.isNotEmpty) {
+        return Image.network(url, fit: BoxFit.cover,
+            errorBuilder: (ctx, err, st) => _iconFallback());
+      }
+    }
+    return _iconFallback();
+  }
+
+  Widget _iconFallback() {
+    IconData icon;
+    if (attachment.isAudio) {
+      icon = Icons.music_note;
+    } else if (attachment.mimeType == 'application/pdf') {
+      icon = Icons.picture_as_pdf_outlined;
+    } else if (attachment.isImage) {
+      icon = Icons.image_outlined;
+    } else {
+      icon = Icons.insert_drive_file_outlined;
+    }
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 22, color: Colors.grey[500]),
+          const SizedBox(height: 2),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: Text(
+              attachment.filename,
+              style: TextStyle(fontSize: 8, color: Colors.grey[600]),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -363,7 +836,9 @@ class _ToolbarBtn extends StatelessWidget {
             child: icon != null
                 ? Icon(icon, size: 18, color: Colors.grey[700])
                 : Text(label!,
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
                         color: Colors.grey[700])),
           ),
         ),
@@ -441,4 +916,3 @@ class _FolderPickerSheet extends StatelessWidget {
     );
   }
 }
-

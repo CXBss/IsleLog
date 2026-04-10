@@ -17,6 +17,7 @@ import '../../services/sync/sync_service.dart';
 import '../../features/home/widgets/audio_player_widget.dart';
 import '../../features/home/widgets/file_chip_widget.dart';
 import '../../features/memo_editor/memo_editor_page.dart';
+import '../../features/revision_history/revision_history_page.dart';
 import '../../shared/constants/app_constants.dart';
 
 /// 日记详情页
@@ -273,6 +274,20 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
         ),
         actions: [
           _syncIcon(memo.syncStatus),
+          if (memo.memosName != null)
+            IconButton(
+              icon: const Icon(Icons.history),
+              tooltip: '编辑历史',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => RevisionHistoryPage(
+                    memoName: memo.memosName!,
+                    title: '',
+                  ),
+                ),
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.copy_outlined),
             tooltip: '复制',

@@ -1231,6 +1231,7 @@ class SyncService {
       ..title = data['title'] as String? ?? ''
       ..content = data['content'] as String? ?? ''
       ..folderName = data['parent'] as String?
+      ..localFolderId = null // 同步后以远端 folderName 为准，清除离线关联
       ..visibility = data['visibility'] as String? ?? 'PRIVATE'
       ..isPinned = data['pinned'] as bool? ?? false
       ..isArchived = (data['state'] as String?) == 'ARCHIVED'

@@ -997,6 +997,42 @@ class DatabaseService {
     return deleted;
   }
 
+  /// 获取指定父文件夹的直接子文件夹，按 title 排序。
+  ///
+  /// [parentFolderName] 和 [localParentFolderId] 均为 null 时返回根目录文件夹。
+  static Future<List<FolderEntry>> getFoldersByParent({
+    String? parentFolderName,
+    int? localParentFolderId,
+  }) async {
+    final isar = await db;
+    late List<FolderEntry> result;
+    if (parentFolderName != null) {
+      result = await isar.folderEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .parentFolderNameEqualTo(parentFolderName)
+          .sortByTitle()
+          .findAll();
+    } else if (localParentFolderId != null) {
+      result = await isar.folderEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .localParentFolderIdEqualTo(localParentFolderId)
+          .sortByTitle()
+          .findAll();
+    } else {
+      // 根目录：parentFolderName == null 且 localParentFolderId == null
+      result = await isar.folderEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .parentFolderNameIsNull()
+          .localParentFolderIdIsNull()
+          .sortByTitle()
+          .findAll();
+    }
+    return result;
+  }
+
   /// 获取所有未删除的文件夹，按 title 排序。
   static Future<List<FolderEntry>> getAllFolders() async {
     final isar = await db;

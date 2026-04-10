@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mime/mime.dart';
 
+import '../../data/models/memo_revision.dart';
 import '../debug/file_logger.dart';
 
 /// Memos API 请求异常
@@ -634,6 +635,46 @@ class MemosApiService {
     try {
       await _dio.delete('/api/v1/$name');
       debugPrint('[API] deleteFolder 成功');
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  // ── Revision History ─────────────────────────────────────────
+
+  /// 获取 memo/文章的版本列表
+  ///
+  /// [memoName]：资源名，如 `"memos/42"` 或 `"articles/7"`
+  Future<List<MemoRevision>> listMemoRevisions(String memoName) async {
+    final id = memoName.split('/').last;
+    debugPrint('[API] listMemoRevisions memoName=$memoName id=$id');
+    try {
+      final res = await _dio.get('/api/v1/revisions/$id');
+      final data = res.data as Map<String, dynamic>;
+      final list = (data['revisions'] as List<dynamic>? ?? [])
+          .map((e) => MemoRevision.fromJson(e as Map<String, dynamic>))
+          .toList();
+      debugPrint('[API] listMemoRevisions 返回 ${list.length} 条');
+      return list;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 获取指定版本的 diff 详情
+  ///
+  /// [memoName]：资源名，如 `"memos/42"`
+  /// [version]：版本号
+  Future<MemoRevisionDetail> getMemoRevision(
+      String memoName, int version) async {
+    final id = memoName.split('/').last;
+    debugPrint('[API] getMemoRevision memoName=$memoName version=$version');
+    try {
+      final res = await _dio.get('/api/v1/revisions/$id/$version');
+      final detail =
+          MemoRevisionDetail.fromJson(res.data as Map<String, dynamic>);
+      debugPrint('[API] getMemoRevision 返回 ${detail.details.length} 个字段');
+      return detail;
     } on DioException catch (e) {
       throw _wrap(e);
     }

@@ -16,6 +16,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import '../../../data/database/database_service.dart' as db_svc;
 import '../../../features/memo_detail/memo_detail_page.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
+import '../../../features/revision_history/revision_history_page.dart';
 import '../../../services/location/location_service.dart';
 import '../../../services/settings/settings_service.dart'; // Bearer Token 用于图片认证
 import '../../../services/sync/sync_service.dart';
@@ -346,6 +347,23 @@ class _MemoCardState extends State<_MemoCard> {
                 }
               },
             ),
+            if (memo.memosName != null)
+              ListTile(
+                leading: const Icon(Icons.history),
+                title: const Text('编辑历史'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => RevisionHistoryPage(
+                        memoName: memo.memosName!,
+                        title: '',
+                      ),
+                    ),
+                  );
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.delete_outline, color: AppColors.error),
               title: const Text(AppStrings.cardDelete,
