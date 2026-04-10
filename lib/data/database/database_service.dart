@@ -31,6 +31,7 @@ class DatabaseService {
     final isar = await Isar.open(
       [MemoEntrySchema, TagStatSchema, CommentEntrySchema, ArticleEntrySchema, FolderEntrySchema],
       directory: dir.path,
+      name: 'isle_v2', // v2: 新增 originalContent 字段，旧 default.isar 自动废弃
       inspector: true,
     );
     debugPrint('[DB] 数据库已就绪');

@@ -143,6 +143,59 @@ class SyncService {
     }
   }
 
+  /// 直接推送单条 memo 到远端，不经过 pull（用于冲突解决后的推送）
+  ///
+  /// 抛出异常由调用方处理，不静默失败。
+  static Future<void> pushSingleMemo(MemoEntry memo) async {
+    debugPrint('[Sync] pushSingleMemo 开始 id=${memo.id} memosName=${memo.memosName}');
+    final url = await SettingsService.serverUrl;
+    final token = await SettingsService.accessToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      throw Exception('未配置服务器');
+    }
+    final api = MemosApiService(baseUrl: url, token: token);
+    await _uploadPendingAttachments(api, memo, url, token);
+    final attachmentNames = memo.attachments
+        .where((a) => a.remoteResName != null)
+        .map((a) => a.remoteResName!)
+        .toList();
+
+    if (memo.memosName == null) {
+      final remoteData = await api.createMemo(
+        content: memo.content,
+        attachmentNames: attachmentNames,
+        createTime: memo.createdAt,
+        locationPlaceholder: memo.location,
+        latitude: memo.latitude,
+        longitude: memo.longitude,
+      );
+      memo
+        ..memosName = remoteData['name'] as String?
+        ..syncStatus = SyncStatus.synced
+        ..lastSyncAt = DateTime.now();
+    } else {
+      await api.updateMemo(
+        name: memo.memosName!,
+        content: memo.content,
+        attachmentNames: attachmentNames,
+        createTime: memo.createdAt,
+        locationPlaceholder: memo.location,
+        latitude: memo.latitude,
+        longitude: memo.longitude,
+      );
+      if (memo.isPinned) {
+        await api.pinMemo(memo.memosName!);
+      } else {
+        await api.unpinMemo(memo.memosName!);
+      }
+      memo
+        ..syncStatus = SyncStatus.synced
+        ..lastSyncAt = DateTime.now();
+    }
+    await DatabaseService.saveMemo(memo, skipTimestamp: true);
+    debugPrint('[Sync] pushSingleMemo 成功 memosName=${memo.memosName}');
+  }
+
   /// 保存日记后的后台静默同步（先增量 pull 再 push）
   ///
   /// 先 pull 检测冲突，再 push 本地改动。

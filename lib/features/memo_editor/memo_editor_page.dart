@@ -16,11 +16,13 @@ import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
 import '../../data/models/tag_stat.dart';
+import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
+import '../conflict/conflict_overview_page.dart';
 
 /// 新建 / 编辑日记页面
 ///
@@ -138,6 +140,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           address: m.location,
         );
       }
+      // 记录编辑前内容快照，供单条冲突三方对比使用
+      m.originalContent = m.content;
     }
 
     // 新建模式下恢复草稿；移动端自动获取位置（草稿无位置时）
@@ -764,15 +768,18 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       // 保存成功后清除草稿
       if (!_isEditing) await SettingsService.clearDraft();
 
-      // 后台静默推送到远端（fire-and-forget，不阻塞 UI 返回）
-      // 先查 changelog 检查远端是否有变更：有则标记 conflict，无则推送
+      // 编辑模式（有 memosName）：前台拉取线上内容做三方对比
+      // 新建模式：直接后台推送
       final configured = await SettingsService.isConfigured;
-      if (configured) {
-        debugPrint('[MemoEditor] 服务器已配置，启动后台冲突检查+推送...');
-        unawaited(SyncService.checkConflictAndPush(memo));
+      if (configured && _isEditing && memo.memosName != null) {
+        await _checkConflictAndPushOrNavigate(memo);
+      } else if (configured) {
+        debugPrint('[MemoEditor] 新建日记，后台推送...');
+        unawaited(SyncService.pushPendingBackground());
+        if (mounted) Navigator.pop(context, true);
+      } else {
+        if (mounted) Navigator.pop(context, true);
       }
-
-      if (mounted) Navigator.pop(context, true);
     } catch (e) {
       debugPrint('[MemoEditor] 保存失败：$e');
       if (mounted) {
@@ -781,6 +788,72 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         );
         setState(() => _saving = false);
       }
+    }
+  }
+
+  /// 拉取线上内容，三方对比决定是否弹出冲突处理流程
+  ///
+  /// 无冲突（远端 == originalContent）→ 直接推送并返回
+  /// 有冲突 → 跳转概览页，由用户处理后再推送
+  Future<void> _checkConflictAndPushOrNavigate(MemoEntry memo) async {
+    final url = await SettingsService.serverUrl;
+    final token = await SettingsService.accessToken;
+    if (url == null || token == null) {
+      if (mounted) Navigator.pop(context, true);
+      return;
+    }
+
+    setState(() => _saving = true);
+
+    try {
+      final api = MemosApiService(baseUrl: url, token: token);
+      final memoId = memo.memosName!.split('/').last;
+      final remoteData = await api.getMemo(memoId);
+      final remoteContent = remoteData['content'] as String? ?? '';
+      final originalContent = memo.originalContent ?? '';
+
+      // 三方对比：远端内容与编辑前快照相同 → 无冲突，直接单条推送
+      if (remoteContent == originalContent) {
+        debugPrint('[MemoEditor] 无冲突，直接推送');
+        memo.originalContent = null;
+        await DatabaseService.saveMemo(memo, skipTimestamp: true);
+        await SyncService.pushSingleMemo(memo);
+        if (mounted) Navigator.pop(context, true);
+        return;
+      }
+
+      // 有冲突 → 停止 loading，跳转概览页
+      debugPrint('[MemoEditor] 发现冲突，跳转概览页');
+      setState(() => _saving = false);
+      if (!mounted) return;
+
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ConflictOverviewPage(
+            memo: memo,
+            remoteContent: remoteContent,
+            onResolved: (resolvedContent) async {
+              // 用户在编辑页完成处理 → 更新 content，清空快照，直接单条推送
+              memo.content = resolvedContent;
+              memo.originalContent = null;
+              memo.syncStatus = SyncStatus.pending;
+              memo.conflictRemoteContent = null;
+              await DatabaseService.saveMemo(memo);
+              await SyncService.pushSingleMemo(memo);
+            },
+          ),
+        ),
+      );
+      // 概览页关闭后返回编辑页，再 pop 编辑页
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      debugPrint('[MemoEditor] 冲突检测失败，降级后台推送：$e');
+      // 网络失败：清空快照，降级为后台整体同步（此时无法精确判断冲突）
+      memo.originalContent = null;
+      await DatabaseService.saveMemo(memo, skipTimestamp: true);
+      unawaited(SyncService.pushPendingBackground());
+      if (mounted) Navigator.pop(context, true);
     }
   }
 

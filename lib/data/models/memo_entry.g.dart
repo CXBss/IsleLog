@@ -77,30 +77,35 @@ const MemoEntrySchema = CollectionSchema(
       name: r'memosName',
       type: IsarType.string,
     ),
-    r'pendingTodoCount': PropertySchema(
+    r'originalContent': PropertySchema(
       id: 12,
+      name: r'originalContent',
+      type: IsarType.string,
+    ),
+    r'pendingTodoCount': PropertySchema(
+      id: 13,
       name: r'pendingTodoCount',
       type: IsarType.long,
     ),
     r'syncStatus': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrysyncStatusEnumValueMap,
     ),
     r'tags': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'tags',
       type: IsarType.stringList,
     ),
     r'todoStatus': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'todoStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrytodoStatusEnumValueMap,
     ),
     r'updatedAt': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'updatedAt',
       type: IsarType.dateTime,
     )
@@ -204,6 +209,12 @@ int _memoEntryEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
+  {
+    final value = object.originalContent;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.tags.length * 3;
   {
     for (var i = 0; i < object.tags.length; i++) {
@@ -232,11 +243,12 @@ void _memoEntrySerialize(
   writer.writeString(offsets[9], object.location);
   writer.writeDouble(offsets[10], object.longitude);
   writer.writeString(offsets[11], object.memosName);
-  writer.writeLong(offsets[12], object.pendingTodoCount);
-  writer.writeByte(offsets[13], object.syncStatus.index);
-  writer.writeStringList(offsets[14], object.tags);
-  writer.writeByte(offsets[15], object.todoStatus.index);
-  writer.writeDateTime(offsets[16], object.updatedAt);
+  writer.writeString(offsets[12], object.originalContent);
+  writer.writeLong(offsets[13], object.pendingTodoCount);
+  writer.writeByte(offsets[14], object.syncStatus.index);
+  writer.writeStringList(offsets[15], object.tags);
+  writer.writeByte(offsets[16], object.todoStatus.index);
+  writer.writeDateTime(offsets[17], object.updatedAt);
 }
 
 MemoEntry _memoEntryDeserialize(
@@ -259,15 +271,16 @@ MemoEntry _memoEntryDeserialize(
   object.location = reader.readStringOrNull(offsets[9]);
   object.longitude = reader.readDoubleOrNull(offsets[10]);
   object.memosName = reader.readStringOrNull(offsets[11]);
-  object.pendingTodoCount = reader.readLong(offsets[12]);
+  object.originalContent = reader.readStringOrNull(offsets[12]);
+  object.pendingTodoCount = reader.readLong(offsets[13]);
   object.syncStatus =
-      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[13])] ??
+      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[14])] ??
           SyncStatus.pending;
-  object.tags = reader.readStringList(offsets[14]) ?? [];
+  object.tags = reader.readStringList(offsets[15]) ?? [];
   object.todoStatus =
-      _MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offsets[15])] ??
+      _MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offsets[16])] ??
           TodoStatus.none;
-  object.updatedAt = reader.readDateTime(offsets[16]);
+  object.updatedAt = reader.readDateTime(offsets[17]);
   return object;
 }
 
@@ -303,16 +316,18 @@ P _memoEntryDeserializeProp<P>(
     case 11:
       return (reader.readStringOrNull(offset)) as P;
     case 12:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 13:
+      return (reader.readLong(offset)) as P;
+    case 14:
       return (_MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           SyncStatus.pending) as P;
-    case 14:
-      return (reader.readStringList(offset) ?? []) as P;
     case 15:
+      return (reader.readStringList(offset) ?? []) as P;
+    case 16:
       return (_MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           TodoStatus.none) as P;
-    case 16:
+    case 17:
       return (reader.readDateTime(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -2015,6 +2030,160 @@ extension MemoEntryQueryFilter
   }
 
   QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'originalContent',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'originalContent',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'originalContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'originalContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'originalContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'originalContent',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'originalContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'originalContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'originalContent',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'originalContent',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'originalContent',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      originalContentIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'originalContent',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
       pendingTodoCountEqualTo(int value) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
@@ -2593,6 +2762,18 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByOriginalContent() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originalContent', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByOriginalContentDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originalContent', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByPendingTodoCount() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'pendingTodoCount', Sort.asc);
@@ -2791,6 +2972,18 @@ extension MemoEntryQuerySortThenBy
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByOriginalContent() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originalContent', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByOriginalContentDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originalContent', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByPendingTodoCount() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'pendingTodoCount', Sort.asc);
@@ -2920,6 +3113,14 @@ extension MemoEntryQueryWhereDistinct
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByOriginalContent(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'originalContent',
+          caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByPendingTodoCount() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'pendingTodoCount');
@@ -3030,6 +3231,12 @@ extension MemoEntryQueryProperty
   QueryBuilder<MemoEntry, String?, QQueryOperations> memosNameProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'memosName');
+    });
+  }
+
+  QueryBuilder<MemoEntry, String?, QQueryOperations> originalContentProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'originalContent');
     });
   }
 

@@ -83,6 +83,12 @@ class MemoEntry {
   /// 用户编辑保存后清空此字段，syncStatus 改回 pending。
   String? conflictRemoteContent;
 
+  /// 编辑前的内容快照（用于单条冲突三方对比）
+  ///
+  /// 编辑器打开时记录当时的 content，推送成功后清空。
+  /// 有此字段时可做三方对比：originalContent（编辑前）vs content（本地新）vs 远端内容。
+  String? originalContent;
+
   /// 待办状态（带索引，由 saveMemo 在解析 content 时自动更新）
   @enumerated
   @Index()
