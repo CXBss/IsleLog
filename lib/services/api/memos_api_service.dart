@@ -553,7 +553,9 @@ class MemosApiService {
         if (attachmentNames != null)
           'attachments': attachmentNames.map((n) => {'name': n}).toList(),
       };
-      final res = await _dio.patch('/api/v1/$name', data: body);
+      // articleName 存储为服务端返回的 "memos/xxx"，但文章操作路径是 /articles/:id
+      final articlePath = name.replaceFirst('memos/', 'articles/');
+      final res = await _dio.patch('/api/v1/$articlePath', data: body);
       final result = Map<String, dynamic>.from(res.data as Map);
       debugPrint('[API] updateArticle 成功');
       return result;
@@ -566,7 +568,9 @@ class MemosApiService {
   Future<void> deleteArticle(String name) async {
     debugPrint('[API] deleteArticle name=$name');
     try {
-      await _dio.delete('/api/v1/$name');
+      // articleName 存储为服务端返回的 "memos/xxx"，但文章操作路径是 /articles/:id
+      final articlePath = name.replaceFirst('memos/', 'articles/');
+      await _dio.delete('/api/v1/$articlePath');
       debugPrint('[API] deleteArticle 成功');
     } on DioException catch (e) {
       throw _wrap(e);
