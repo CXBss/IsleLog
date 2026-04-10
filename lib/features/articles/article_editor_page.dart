@@ -16,10 +16,12 @@ import '../../data/models/article_entry.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/folder_entry.dart';
 import '../../data/models/memo_entry.dart';
+import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
+import '../conflict/article_conflict_overview_page.dart';
 import '../revision_history/revision_history_page.dart';
 
 /// 文章新建 / 编辑页面
@@ -80,6 +82,9 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
 
     if (article != null) {
       _pendingAttachments.addAll(article.attachments);
+      // 记录编辑前快照，供冲突三方对比使用
+      article.originalContent = article.content;
+      article.originalTitle = article.title;
     }
 
     _loadFolders(article);
@@ -376,8 +381,15 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
         if (att.localPath != null) AttachmentService.deleteLocal(att.localPath!);
       }
 
-      unawaited(SyncService.pushPendingBackground());
-      if (mounted) Navigator.pop(context, true);
+      final configured = await SettingsService.isConfigured;
+      if (configured && _isEditing && article.articleName != null) {
+        await _checkConflictAndPushOrNavigate(article);
+      } else if (configured) {
+        unawaited(SyncService.pushPendingBackground());
+        if (mounted) Navigator.pop(context, true);
+      } else {
+        if (mounted) Navigator.pop(context, true);
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -386,6 +398,80 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
       }
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  /// 拉取线上文章内容，三方对比决定是否弹出冲突处理流程
+  ///
+  /// 无冲突（远端 title+content == originalTitle+originalContent）→ 直接推送并返回
+  /// 有冲突 → 跳转概览页，由用户处理后再推送
+  Future<void> _checkConflictAndPushOrNavigate(ArticleEntry article) async {
+    final url = await SettingsService.serverUrl;
+    final token = await SettingsService.accessToken;
+    if (url == null || token == null) {
+      unawaited(SyncService.pushPendingBackground());
+      if (mounted) Navigator.pop(context, true);
+      return;
+    }
+
+    try {
+      final api = MemosApiService(baseUrl: url, token: token);
+      // articleName 格式为 "memos/xxx" 或 "articles/xxx"，getArticle 只需数字 id
+      final articleId = article.articleName!.split('/').last;
+      final remoteData = await api.getArticle(articleId);
+      final remoteTitle = remoteData['title'] as String? ?? '';
+      final remoteContent = remoteData['content'] as String? ?? '';
+      final originalTitle = article.originalTitle ?? '';
+      final originalContent = article.originalContent ?? '';
+
+      // 三方对比：远端与编辑前快照相同 → 无冲突
+      if (remoteTitle == originalTitle && remoteContent == originalContent) {
+        debugPrint('[ArticleEditor] 无冲突，直接推送');
+        article.originalTitle = null;
+        article.originalContent = null;
+        await DatabaseService.saveArticle(article, skipTimestamp: true);
+        await SyncService.pushSingleArticle(article);
+        if (mounted) Navigator.pop(context, true);
+        return;
+      }
+
+      // 有冲突，跳转概览页
+      debugPrint('[ArticleEditor] 发现冲突，进入冲突处理流程');
+      article.conflictRemoteTitle = remoteTitle;
+      article.conflictRemoteContent = remoteContent;
+      article.syncStatus = SyncStatus.conflict;
+      await DatabaseService.saveArticle(article, skipTimestamp: true);
+
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ArticleConflictOverviewPage(
+            article: article,
+            remoteTitle: remoteTitle,
+            remoteContent: remoteContent,
+            onResolved: (resolvedTitle, resolvedContent) async {
+              article.title = resolvedTitle;
+              article.content = resolvedContent;
+              article.originalTitle = null;
+              article.originalContent = null;
+              article.syncStatus = SyncStatus.pending;
+              article.conflictRemoteTitle = null;
+              article.conflictRemoteContent = null;
+              await DatabaseService.saveArticle(article);
+              await SyncService.pushSingleArticle(article);
+            },
+          ),
+        ),
+      );
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      debugPrint('[ArticleEditor] 冲突检测失败，降级后台推送：$e');
+      article.originalTitle = null;
+      article.originalContent = null;
+      await DatabaseService.saveArticle(article, skipTimestamp: true);
+      unawaited(SyncService.pushPendingBackground());
+      if (mounted) Navigator.pop(context, true);
     }
   }
 

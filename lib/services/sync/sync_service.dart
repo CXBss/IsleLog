@@ -196,6 +196,56 @@ class SyncService {
     debugPrint('[Sync] pushSingleMemo 成功 memosName=${memo.memosName}');
   }
 
+  /// 直接推送单篇文章到远端，不经过 pull（用于冲突解决后的推送）
+  ///
+  /// 抛出异常由调用方处理，不静默失败。
+  static Future<void> pushSingleArticle(ArticleEntry article) async {
+    debugPrint('[Sync] pushSingleArticle 开始 id=${article.id} articleName=${article.articleName}');
+    final url = await SettingsService.serverUrl;
+    final token = await SettingsService.accessToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      throw Exception('未配置服务器');
+    }
+    final api = MemosApiService(baseUrl: url, token: token);
+
+    // 解析 folderName（如有本地关联文件夹）
+    if (article.folderName == null && article.localFolderId != null) {
+      final isar = await DatabaseService.db;
+      final folder = await isar.folderEntrys.get(article.localFolderId!);
+      if (folder?.folderName != null) {
+        article.folderName = folder!.folderName;
+      }
+    }
+
+    if (article.articleName == null) {
+      final data = await api.createArticle(
+        title: article.title,
+        content: article.content,
+        visibility: article.visibility,
+        parent: article.folderName,
+      );
+      article
+        ..articleName = data['name'] as String?
+        ..syncStatus = SyncStatus.synced
+        ..lastSyncAt = DateTime.now();
+    } else {
+      await api.updateArticle(
+        name: article.articleName!,
+        title: article.title,
+        content: article.content,
+        visibility: article.visibility,
+        pinned: article.isPinned,
+        parent: article.folderName,
+        updateParent: true,
+      );
+      article
+        ..syncStatus = SyncStatus.synced
+        ..lastSyncAt = DateTime.now();
+    }
+    await DatabaseService.saveArticle(article, skipTimestamp: true);
+    debugPrint('[Sync] pushSingleArticle 成功 articleName=${article.articleName}');
+  }
+
   /// 保存日记后的后台静默同步（先增量 pull 再 push）
   ///
   /// 先 pull 检测冲突，再 push 本地改动。

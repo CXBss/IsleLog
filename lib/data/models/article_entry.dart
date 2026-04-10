@@ -71,6 +71,12 @@ class ArticleEntry {
   /// 冲突时保存的远端 title
   String? conflictRemoteTitle;
 
+  /// 编辑前的 content 快照（用于单条冲突三方对比）
+  String? originalContent;
+
+  /// 编辑前的 title 快照（用于单条冲突三方对比）
+  String? originalTitle;
+
   /// 附件列表（JSON 字符串数组，每项为一个 AttachmentInfo 的 JSON）
   List<String> attachmentsJson = [];
 }
