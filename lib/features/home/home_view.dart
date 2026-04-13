@@ -8,6 +8,7 @@ import '../../data/models/memo_entry.dart';
 import '../../data/models/tag_stat.dart';
 import '../../features/archive/archive_view.dart';
 import '../../features/memo_detail/memo_detail_page.dart';
+import '../../features/on_this_day/on_this_day_page.dart';
 import '../../features/settings/settings_page.dart';
 import '../../services/api/memos_api_service.dart';
 import '../../services/settings/settings_service.dart';
@@ -430,6 +431,15 @@ class _HomeViewState extends State<HomeView> {
                 Navigator.pop(context);
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const ArchiveView()));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.history_edu_outlined),
+              title: const Text('往年今日'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const OnThisDayPage()));
               },
             ),
             ListTile(

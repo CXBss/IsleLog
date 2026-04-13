@@ -96,6 +96,12 @@ class MemoEntry {
 
   /// 未完成待办数量（待办页角标显示"剩余 N 项"）
   int pendingTodoCount = 0;
+
+  /// 天气信息（JSON 字符串，如 {"condition":"晴","tempMin":23,"tempMax":30,"windLevel":3,"windDir":"南风","city":"深圳"}）
+  String? weatherJson;
+
+  /// 心情（如 "happy" / "calm" / "sad" 等，null 表示未设置）
+  String? mood;
 }
 
 /// [MemoEntry] 附件读写扩展

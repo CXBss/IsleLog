@@ -86,6 +86,35 @@ class SettingsService {
     await (await _prefs).setString(_keyAmapKey, key.trim());
   }
 
+  // ── Favorite Cities ──────────────────────────────────────────
+
+  static const _keyFavCities = 'fav_cities';
+
+  /// 获取常用城市列表（未设置时返回空列表）
+  static Future<List<String>> get favoriteCities async {
+    final raw = (await _prefs).getString(_keyFavCities);
+    if (raw == null || raw.isEmpty) return [];
+    return raw.split(',').where((s) => s.isNotEmpty).toList();
+  }
+
+  /// 保存常用城市列表
+  static Future<void> setFavoriteCities(List<String> cities) async {
+    await (await _prefs).setString(_keyFavCities, cities.join(','));
+  }
+
+  // ── QWeather Key ─────────────────────────────────────────────
+
+  static const _keyQweatherKey = 'qweather_key';
+
+  /// 获取和风天气 API Key（未设置时返回 null）
+  static Future<String?> get qweatherKey async =>
+      (await _prefs).getString(_keyQweatherKey);
+
+  /// 保存和风天气 API Key
+  static Future<void> setQweatherKey(String key) async {
+    await (await _prefs).setString(_keyQweatherKey, key.trim());
+  }
+
   // ── Tianditu Key ──────────────────────────────────────────────
 
   static const _keyTiandituKey = 'tianditu_key';

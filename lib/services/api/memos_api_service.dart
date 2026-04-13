@@ -127,6 +127,9 @@ class MemosApiService {
     String? locationPlaceholder,
     double? latitude,
     double? longitude,
+    int? mood,
+    int? weather,
+    String? weatherDetail,
   }) async {
     unawaited(FileLogger.log('[API] createMemo contentLen=${content.length} lat=$latitude lng=$longitude placeholder=$locationPlaceholder'));
     try {
@@ -143,6 +146,9 @@ class MemosApiService {
             'latitude': latitude,
             'longitude': longitude,
           },
+        if (mood != null && mood != 0) 'mood': mood,
+        if (weather != null && weather != 0) 'weather': weather,
+        if (weatherDetail != null && weatherDetail.isNotEmpty) 'weatherDetail': weatherDetail,
       };
       unawaited(FileLogger.log('[API] createMemo body.location=${body['location']}'));
       final res = await _dio.post('/api/v1/memos', data: body);
@@ -169,6 +175,9 @@ class MemosApiService {
     String? locationPlaceholder,
     double? latitude,
     double? longitude,
+    int? mood,
+    int? weather,
+    String? weatherDetail,
   }) async {
     unawaited(FileLogger.log('[API] updateMemo name=$name lat=$latitude lng=$longitude placeholder=$locationPlaceholder'));
     try {
@@ -185,6 +194,9 @@ class MemosApiService {
             'latitude': latitude,
             'longitude': longitude,
           },
+        'mood': mood ?? 0,
+        'weather': weather ?? 0,
+        'weatherDetail': weatherDetail ?? '',
       };
       final res = await _dio.patch('/api/v1/$name', data: body);
       final result = Map<String, dynamic>.from(res.data);

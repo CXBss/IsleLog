@@ -16,11 +16,13 @@ import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
 import '../../data/models/tag_stat.dart';
+import '../../data/models/weather_info.dart';
 import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
+import '../../services/weather/weather_service.dart';
 import '../../shared/constants/app_constants.dart';
 import '../conflict/conflict_overview_page.dart';
 
@@ -69,6 +71,15 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   /// 当前位置信息（含经纬度，用于点击跳转地图）
   LocationInfo? _locationInfo;
+
+  /// 当前天气信息（null 表示未设置）
+  WeatherInfo? _weatherInfo;
+
+  /// 是否正在获取天气
+  bool _fetchingWeather = false;
+
+  /// 当前心情（null 表示未设置）
+  String? _mood;
 
   /// 本次编辑的附件列表（保存时写入 MemoEntry）
   final List<AttachmentInfo> _pendingAttachments = [];
@@ -142,6 +153,13 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       }
       // 记录编辑前内容快照，供单条冲突三方对比使用
       m.originalContent = m.content;
+      // 恢复天气和心情
+      if (m.weatherJson != null) {
+        try {
+          _weatherInfo = WeatherInfo.fromJsonString(m.weatherJson!);
+        } catch (_) {}
+      }
+      _mood = m.mood;
     }
 
     // 新建模式下恢复草稿；移动端自动获取位置（草稿无位置时）
@@ -269,6 +287,138 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       _locationInfo!.longitude,
       _locationInfo!.address,
     );
+  }
+
+  // ── 天气 ──────────────────────────────────────────────────────
+
+  /// 点击天气按钮：弹出选择方式对话框（自动/手动城市）
+  Future<void> _fetchWeather() async {
+    if (_fetchingWeather) return;
+    final amapKey = await SettingsService.amapKey;
+    if (amapKey == null || amapKey.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请先在设置中配置高德 API Key')),
+        );
+      }
+      return;
+    }
+
+    // 弹出选择方式：自动定位 / 手动输入城市 / 清除
+    final action = await showModalBottomSheet<_WeatherAction>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => _WeatherActionSheet(
+        hasWeather: _weatherInfo != null,
+        canAutoLocate: _isMobile,
+      ),
+    );
+    if (action == null || !mounted) return;
+
+    if (action == _WeatherAction.clear) {
+      setState(() => _weatherInfo = null);
+      return;
+    }
+
+    if (action == _WeatherAction.manual) {
+      await _fetchWeatherByCity();
+      return;
+    }
+
+    // auto
+    await _fetchWeatherAuto();
+  }
+
+  /// 自动定位获取天气（移动端）
+  Future<void> _fetchWeatherAuto() async {
+    setState(() => _fetchingWeather = true);
+    try {
+      WeatherInfo? info;
+      if (_locationInfo != null) {
+        info = await WeatherService.fetchWeatherByCoords(
+          latitude: _locationInfo!.latitude,
+          longitude: _locationInfo!.longitude,
+        );
+      }
+      if (info == null) {
+        try {
+          final loc = await LocationService.getLocation();
+          if (mounted) {
+            setState(() {
+              _locationInfo = loc;
+              _locationCtrl.text = loc.displayText;
+            });
+          }
+          info = await WeatherService.fetchWeatherByCoords(
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+          );
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(() { _weatherInfo = info; _fetchingWeather = false; });
+        if (info == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('获取天气失败，请检查网络或 API Key')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _fetchingWeather = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('获取天气失败：$e')),
+        );
+      }
+    }
+  }
+
+  /// 手动输入城市名获取天气
+  Future<void> _fetchWeatherByCity() async {
+    if (!mounted) return;
+    final city = await showDialog<String>(
+      context: context,
+      builder: (ctx) => const _CityInputDialog(),
+    );
+    if (city == null || city.isEmpty || !mounted) return;
+
+    setState(() => _fetchingWeather = true);
+    try {
+      final info = await WeatherService.fetchWeatherByCity(city);
+      if (mounted) {
+        setState(() { _weatherInfo = info; _fetchingWeather = false; });
+        if (info == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('未找到"$city"的天气，请检查城市名或 API Key')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _fetchingWeather = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('获取天气失败：$e')),
+        );
+      }
+    }
+  }
+
+  // ── 心情 ──────────────────────────────────────────────────────
+
+  Future<void> _pickMood() async {
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => _MoodPickerSheet(selectedKey: _mood),
+    );
+    if (result != null && mounted) {
+      // 空字符串表示清除；相同 key 表示取消选中；否则设置新心情
+      setState(() => _mood = (result.isEmpty || result == _mood) ? null : result);
+    }
   }
 
   // ── 草稿 ──────────────────────────────────────────────────────
@@ -751,6 +901,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       memo.longitude = _locationInfo?.longitude;
       memo.attachments = _pendingAttachments;
       memo.createdAt = _selectedDateTime;
+      memo.weatherJson = _weatherInfo?.toJsonString();
+      memo.mood = _mood;
       // 编辑模式必须重置为 pending，否则同步引擎查不到该条目
       // 用户编辑后冲突解除，清空远端冲突内容
       memo.syncStatus = SyncStatus.pending;
@@ -1075,6 +1227,40 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                               tooltip: '位置',
                               onPressed: _isMobile ? _manualGetLocation : null,
+                            ),
+                      // 天气按钮
+                      _fetchingWeather
+                          ? const SizedBox(width: 36, height: 36,
+                              child: Padding(padding: EdgeInsets.all(10), child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)))
+                          : _weatherInfo != null
+                              ? GestureDetector(
+                                  onTap: _fetchWeather,
+                                  child: Container(
+                                    height: 36,
+                                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                                    alignment: Alignment.center,
+                                    child: Text(_weatherInfo!.condition,
+                                        style: const TextStyle(fontSize: 11, color: AppColors.primary)),
+                                  ),
+                                )
+                              : IconButton(
+                                  icon: const Icon(Icons.wb_sunny_outlined),
+                                  color: Colors.grey[600],
+                                  iconSize: 22,
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                  tooltip: '获取天气',
+                                  onPressed: _fetchWeather,
+                                ),
+                      // 心情按钮
+                      IconButton(
+                              icon: Icon(moodByKey(_mood)?.icon ?? Icons.emoji_emotions_outlined),
+                              color: moodByKey(_mood)?.color ?? Colors.grey[600],
+                              iconSize: 22,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              tooltip: '选择心情',
+                              onPressed: _pickMood,
                             ),
                       // 位置文本
                       Expanded(
@@ -1415,6 +1601,204 @@ class _FmtButton extends StatelessWidget {
                     ),
                   ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── 天气操作选择底部弹窗 ────────────────────────────────────────────
+
+enum _WeatherAction { auto, manual, clear }
+
+class _WeatherActionSheet extends StatelessWidget {
+  final bool hasWeather;
+  final bool canAutoLocate;
+
+  const _WeatherActionSheet({required this.hasWeather, required this.canAutoLocate});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          Container(
+            width: 36, height: 4,
+            decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+          ),
+          const SizedBox(height: 12),
+          if (canAutoLocate)
+            ListTile(
+              leading: const Icon(Icons.my_location, color: AppColors.primary),
+              title: const Text('自动定位获取天气'),
+              onTap: () => Navigator.pop(context, _WeatherAction.auto),
+            ),
+          ListTile(
+            leading: const Icon(Icons.location_city, color: AppColors.primary),
+            title: const Text('手动输入城市'),
+            onTap: () => Navigator.pop(context, _WeatherAction.manual),
+          ),
+          if (hasWeather)
+            ListTile(
+              leading: Icon(Icons.clear, color: Colors.grey[600]),
+              title: Text('清除天气', style: TextStyle(color: Colors.grey[600])),
+              onTap: () => Navigator.pop(context, _WeatherAction.clear),
+            ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+// ── 城市输入对话框 ──────────────────────────────────────────────
+
+class _CityInputDialog extends StatefulWidget {
+  const _CityInputDialog();
+
+  @override
+  State<_CityInputDialog> createState() => _CityInputDialogState();
+}
+
+class _CityInputDialogState extends State<_CityInputDialog> {
+  final _ctrl = TextEditingController();
+  List<String> _favCities = [];
+
+  @override
+  void initState() {
+    super.initState();
+    SettingsService.favoriteCities.then((cities) {
+      if (mounted) setState(() => _favCities = cities);
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final city = _ctrl.text.trim();
+    if (city.isNotEmpty) Navigator.pop(context, city);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('选择城市'),
+      contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: '输入城市名，如：深圳',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+          if (_favCities.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text('常用城市', style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: _favCities.map((city) => GestureDetector(
+                onTap: () => Navigator.pop(context, city),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AppColors.primaryLight,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Text(city, style: const TextStyle(fontSize: 13, color: AppColors.primaryDark)),
+                ),
+              )).toList(),
+            ),
+          ],
+          const SizedBox(height: 8),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        TextButton(onPressed: _submit, child: const Text('确定')),
+      ],
+    );
+  }
+}
+
+// ── 心情选择底部弹窗 ────────────────────────────────────────────────
+
+class _MoodPickerSheet extends StatelessWidget {
+  final String? selectedKey;
+
+  const _MoodPickerSheet({this.selectedKey});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text('选择心情', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                const Spacer(),
+                if (selectedKey != null)
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, ''),
+                    child: const Text('清除', style: TextStyle(color: Colors.grey)),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: kMoodOptions.map((opt) {
+                final selected = opt.key == selectedKey;
+                return GestureDetector(
+                  onTap: () => Navigator.pop(context, opt.key),
+                  child: Container(
+                    height: 36,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: selected ? AppColors.primaryLight : Colors.grey[100],
+                      borderRadius: BorderRadius.circular(18),
+                      border: selected
+                          ? Border.all(color: AppColors.primary, width: 1.5)
+                          : null,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(opt.icon, size: 18, color: selected ? opt.color : opt.color.withAlpha(180)),
+                        const SizedBox(width: 5),
+                        Text(opt.label,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: selected ? AppColors.primaryDark : Colors.grey[700],
+                              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                            )),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 8),
+          ],
         ),
       ),
     );

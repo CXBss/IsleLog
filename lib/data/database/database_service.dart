@@ -307,6 +307,24 @@ class DatabaseService {
         .findFirst();
   }
 
+  /// 获取与指定日期相同月日（不限年份）的所有未删除、未归档日记，按创建时间倒序。
+  ///
+  /// 用于「往年今日」功能：返回历史上同月同日的全部日记。
+  static Future<List<MemoEntry>> getMemosOnThisDay(DateTime date) async {
+    final isar = await db;
+    final all = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .findAll();
+    final result = all
+        .where((m) => m.createdAt.month == date.month && m.createdAt.day == date.day)
+        .toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    debugPrint('[DB] getMemosOnThisDay(${date.month}-${date.day}) → ${result.length} 条');
+    return result;
+  }
+
   /// 获取指定标签的所有未删除、未归档日记，按创建时间倒序。
   static Future<List<MemoEntry>> getMemosByTag(String tag) async {
     final isar = await db;

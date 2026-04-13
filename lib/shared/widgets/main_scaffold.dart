@@ -106,6 +106,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       // 居中嵌入式 FAB（仅主页/日历显示）
       floatingActionButton: _showFab
           ? FloatingActionButton(
+              heroTag: 'fab_main_new_memo',
               onPressed: _openEditor,
               backgroundColor: AppColors.primary,
               elevation: 4,

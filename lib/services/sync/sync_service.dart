@@ -8,6 +8,7 @@ import '../../data/models/attachment_info.dart';
 import '../../data/models/comment_entry.dart';
 import '../../data/models/folder_entry.dart';
 import '../../data/models/memo_entry.dart';
+import '../../data/models/weather_info.dart';
 import '../../shared/constants/app_constants.dart';
 import '../api/memos_api_service.dart';
 import '../attachment/attachment_service.dart';
@@ -160,6 +161,10 @@ class SyncService {
         .map((a) => a.remoteResName!)
         .toList();
 
+    final moodInt = kMoodToInt[memo.mood];
+    final weatherInt = weatherConditionToInt(_weatherConditionFromJson(memo.weatherJson));
+    final weatherDetail = _weatherDetailFromJson(memo.weatherJson);
+
     if (memo.memosName == null) {
       final remoteData = await api.createMemo(
         content: memo.content,
@@ -168,6 +173,9 @@ class SyncService {
         locationPlaceholder: memo.location,
         latitude: memo.latitude,
         longitude: memo.longitude,
+        mood: moodInt,
+        weather: weatherInt,
+        weatherDetail: weatherDetail,
       );
       memo
         ..memosName = remoteData['name'] as String?
@@ -182,6 +190,9 @@ class SyncService {
         locationPlaceholder: memo.location,
         latitude: memo.latitude,
         longitude: memo.longitude,
+        mood: moodInt,
+        weather: weatherInt,
+        weatherDetail: weatherDetail,
       );
       if (memo.isPinned) {
         await api.pinMemo(memo.memosName!);
@@ -469,6 +480,10 @@ class SyncService {
               .map((a) => a.remoteResName!)
               .toList();
 
+          final moodInt = kMoodToInt[memo.mood];
+          final weatherInt = weatherConditionToInt(_weatherConditionFromJson(memo.weatherJson));
+          final weatherDetail = _weatherDetailFromJson(memo.weatherJson);
+
           if (memo.memosName == null) {
             // ── 处理新建 ──
             debugPrint('[Sync] 新建远端 memo id=${memo.id}，附件 ${attachmentNames.length} 个');
@@ -479,6 +494,9 @@ class SyncService {
               locationPlaceholder: memo.location,
               latitude: memo.latitude,
               longitude: memo.longitude,
+              mood: moodInt,
+              weather: weatherInt,
+              weatherDetail: weatherDetail,
             );
             memo
               ..memosName = remoteData['name'] as String?
@@ -501,6 +519,9 @@ class SyncService {
               locationPlaceholder: memo.location,
               latitude: memo.latitude,
               longitude: memo.longitude,
+              mood: moodInt,
+              weather: weatherInt,
+              weatherDetail: weatherDetail,
             );
             // 同步置顶状态
             if (memo.isPinned) {
@@ -989,6 +1010,7 @@ class SyncService {
     if (ut != null) memo.updatedAt = DateTime.parse(ut).toLocal();
 
     _applyLocation(memo, data);
+    _applyMoodWeather(memo, data);
     memo.attachments = _parseAttachments(data, baseUrl);
 
     return memo;
@@ -1006,6 +1028,7 @@ class SyncService {
     if (ut != null) memo.updatedAt = DateTime.parse(ut).toLocal();
 
     _applyLocation(memo, data);
+    _applyMoodWeather(memo, data);
 
     // 合并附件：保留本地已下载的 localPath
     final oldByResName = {
@@ -1021,6 +1044,55 @@ class SyncService {
       ..syncStatus = SyncStatus.synced
       ..lastSyncAt = DateTime.now()
       ..attachments = newAttachments;
+  }
+
+  /// 从远端数据中解析 mood / weather int 并写入 memo
+  ///
+  /// 远端为 0 或缺失时清空本地对应字段（服务端以 0 表示未设置）。
+  static void _applyMoodWeather(MemoEntry memo, Map<String, dynamic> data) {
+    final remoteMood = (data['mood'] as num?)?.toInt() ?? 0;
+    memo.mood = remoteMood == 0 ? null : kIntToMood[remoteMood];
+
+    final remoteWeather = (data['weather'] as num?)?.toInt() ?? 0;
+    final remoteDetail = data['weatherDetail'] as String? ?? '';
+
+    if (remoteWeather == 0) {
+      // 服务端无天气 → 保留本地已有数据，不覆盖
+      return;
+    }
+    // 服务端有 weatherDetail → 直接用它重建 weatherJson（最完整）
+    if (remoteDetail.isNotEmpty) {
+      final condition = kIntToWeatherCondition[remoteWeather] ?? '';
+      memo.weatherJson = WeatherInfo(condition: condition, detail: remoteDetail).toJsonString();
+      return;
+    }
+    // 服务端无 detail 且本地也没有 → 用枚举描述兜底
+    if (memo.weatherJson == null) {
+      final condition = kIntToWeatherCondition[remoteWeather] ?? '';
+      if (condition.isNotEmpty) {
+        memo.weatherJson = WeatherInfo(condition: condition, detail: condition).toJsonString();
+      }
+    }
+  }
+
+  /// 从本地 weatherJson 中提取 condition 字段
+  static String? _weatherConditionFromJson(String? weatherJson) {
+    if (weatherJson == null) return null;
+    try {
+      return WeatherInfo.fromJsonString(weatherJson).condition;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 从本地 weatherJson 中提取 detail 字段
+  static String? _weatherDetailFromJson(String? weatherJson) {
+    if (weatherJson == null) return null;
+    try {
+      return WeatherInfo.fromJsonString(weatherJson).detail;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 从远端数据中解析 location 字段并写入 memo

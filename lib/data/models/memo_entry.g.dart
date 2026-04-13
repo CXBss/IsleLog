@@ -77,37 +77,47 @@ const MemoEntrySchema = CollectionSchema(
       name: r'memosName',
       type: IsarType.string,
     ),
-    r'originalContent': PropertySchema(
+    r'mood': PropertySchema(
       id: 12,
+      name: r'mood',
+      type: IsarType.string,
+    ),
+    r'originalContent': PropertySchema(
+      id: 13,
       name: r'originalContent',
       type: IsarType.string,
     ),
     r'pendingTodoCount': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'pendingTodoCount',
       type: IsarType.long,
     ),
     r'syncStatus': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrysyncStatusEnumValueMap,
     ),
     r'tags': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'tags',
       type: IsarType.stringList,
     ),
     r'todoStatus': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'todoStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrytodoStatusEnumValueMap,
     ),
     r'updatedAt': PropertySchema(
-      id: 17,
+      id: 18,
       name: r'updatedAt',
       type: IsarType.dateTime,
+    ),
+    r'weatherJson': PropertySchema(
+      id: 19,
+      name: r'weatherJson',
+      type: IsarType.string,
     )
   },
   estimateSize: _memoEntryEstimateSize,
@@ -210,6 +220,12 @@ int _memoEntryEstimateSize(
     }
   }
   {
+    final value = object.mood;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
     final value = object.originalContent;
     if (value != null) {
       bytesCount += 3 + value.length * 3;
@@ -220,6 +236,12 @@ int _memoEntryEstimateSize(
     for (var i = 0; i < object.tags.length; i++) {
       final value = object.tags[i];
       bytesCount += value.length * 3;
+    }
+  }
+  {
+    final value = object.weatherJson;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
     }
   }
   return bytesCount;
@@ -243,12 +265,14 @@ void _memoEntrySerialize(
   writer.writeString(offsets[9], object.location);
   writer.writeDouble(offsets[10], object.longitude);
   writer.writeString(offsets[11], object.memosName);
-  writer.writeString(offsets[12], object.originalContent);
-  writer.writeLong(offsets[13], object.pendingTodoCount);
-  writer.writeByte(offsets[14], object.syncStatus.index);
-  writer.writeStringList(offsets[15], object.tags);
-  writer.writeByte(offsets[16], object.todoStatus.index);
-  writer.writeDateTime(offsets[17], object.updatedAt);
+  writer.writeString(offsets[12], object.mood);
+  writer.writeString(offsets[13], object.originalContent);
+  writer.writeLong(offsets[14], object.pendingTodoCount);
+  writer.writeByte(offsets[15], object.syncStatus.index);
+  writer.writeStringList(offsets[16], object.tags);
+  writer.writeByte(offsets[17], object.todoStatus.index);
+  writer.writeDateTime(offsets[18], object.updatedAt);
+  writer.writeString(offsets[19], object.weatherJson);
 }
 
 MemoEntry _memoEntryDeserialize(
@@ -271,16 +295,18 @@ MemoEntry _memoEntryDeserialize(
   object.location = reader.readStringOrNull(offsets[9]);
   object.longitude = reader.readDoubleOrNull(offsets[10]);
   object.memosName = reader.readStringOrNull(offsets[11]);
-  object.originalContent = reader.readStringOrNull(offsets[12]);
-  object.pendingTodoCount = reader.readLong(offsets[13]);
+  object.mood = reader.readStringOrNull(offsets[12]);
+  object.originalContent = reader.readStringOrNull(offsets[13]);
+  object.pendingTodoCount = reader.readLong(offsets[14]);
   object.syncStatus =
-      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[14])] ??
+      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[15])] ??
           SyncStatus.pending;
-  object.tags = reader.readStringList(offsets[15]) ?? [];
+  object.tags = reader.readStringList(offsets[16]) ?? [];
   object.todoStatus =
-      _MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offsets[16])] ??
+      _MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offsets[17])] ??
           TodoStatus.none;
-  object.updatedAt = reader.readDateTime(offsets[17]);
+  object.updatedAt = reader.readDateTime(offsets[18]);
+  object.weatherJson = reader.readStringOrNull(offsets[19]);
   return object;
 }
 
@@ -318,17 +344,21 @@ P _memoEntryDeserializeProp<P>(
     case 12:
       return (reader.readStringOrNull(offset)) as P;
     case 13:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 14:
+      return (reader.readLong(offset)) as P;
+    case 15:
       return (_MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           SyncStatus.pending) as P;
-    case 15:
-      return (reader.readStringList(offset) ?? []) as P;
     case 16:
+      return (reader.readStringList(offset) ?? []) as P;
+    case 17:
       return (_MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           TodoStatus.none) as P;
-    case 17:
+    case 18:
       return (reader.readDateTime(offset)) as P;
+    case 19:
+      return (reader.readStringOrNull(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
   }
@@ -2029,6 +2059,152 @@ extension MemoEntryQueryFilter
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'mood',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'mood',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'mood',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'mood',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'mood',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'mood',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'mood',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'mood',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodContains(
+      String value,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'mood',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodMatches(
+      String pattern,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'mood',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'mood',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> moodIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'mood',
+        value: '',
+      ));
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
       originalContentIsNull() {
     return QueryBuilder.apply(this, (query) {
@@ -2619,6 +2795,158 @@ extension MemoEntryQueryFilter
       ));
     });
   }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      weatherJsonIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'weatherJson',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      weatherJsonIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'weatherJson',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> weatherJsonEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'weatherJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      weatherJsonGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'weatherJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> weatherJsonLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'weatherJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> weatherJsonBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'weatherJson',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      weatherJsonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'weatherJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> weatherJsonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'weatherJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> weatherJsonContains(
+      String value,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'weatherJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition> weatherJsonMatches(
+      String pattern,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'weatherJson',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      weatherJsonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'weatherJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      weatherJsonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'weatherJson',
+        value: '',
+      ));
+    });
+  }
 }
 
 extension MemoEntryQueryObject
@@ -2762,6 +3090,18 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByMood() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'mood', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByMoodDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'mood', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByOriginalContent() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'originalContent', Sort.asc);
@@ -2820,6 +3160,18 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByUpdatedAtDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByWeatherJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'weatherJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByWeatherJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'weatherJson', Sort.desc);
     });
   }
 }
@@ -2972,6 +3324,18 @@ extension MemoEntryQuerySortThenBy
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByMood() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'mood', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByMoodDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'mood', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByOriginalContent() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'originalContent', Sort.asc);
@@ -3030,6 +3394,18 @@ extension MemoEntryQuerySortThenBy
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByUpdatedAtDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByWeatherJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'weatherJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByWeatherJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'weatherJson', Sort.desc);
     });
   }
 }
@@ -3113,6 +3489,13 @@ extension MemoEntryQueryWhereDistinct
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByMood(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'mood', caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByOriginalContent(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -3148,6 +3531,13 @@ extension MemoEntryQueryWhereDistinct
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByUpdatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'updatedAt');
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByWeatherJson(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'weatherJson', caseSensitive: caseSensitive);
     });
   }
 }
@@ -3234,6 +3624,12 @@ extension MemoEntryQueryProperty
     });
   }
 
+  QueryBuilder<MemoEntry, String?, QQueryOperations> moodProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'mood');
+    });
+  }
+
   QueryBuilder<MemoEntry, String?, QQueryOperations> originalContentProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'originalContent');
@@ -3267,6 +3663,12 @@ extension MemoEntryQueryProperty
   QueryBuilder<MemoEntry, DateTime, QQueryOperations> updatedAtProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'updatedAt');
+    });
+  }
+
+  QueryBuilder<MemoEntry, String?, QQueryOperations> weatherJsonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'weatherJson');
     });
   }
 }

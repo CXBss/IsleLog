@@ -11,6 +11,7 @@ import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/comment_entry.dart';
 import '../../data/models/memo_entry.dart';
+import '../../data/models/weather_info.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
@@ -418,6 +419,40 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                     ),
                   ],
                 ),
+              ),
+            ],
+
+            // ── 天气 + 心情 ───────────────────────────────────────
+            if (memo.weatherJson != null || memo.mood != null) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  if (memo.weatherJson != null) ...[
+                    const Icon(Icons.wb_sunny_outlined, size: 14, color: Colors.blueGrey),
+                    const SizedBox(width: 4),
+                    Text(
+                      () {
+                        try {
+                          return WeatherInfo.fromJsonString(memo.weatherJson!).detail;
+                        } catch (_) {
+                          return '';
+                        }
+                      }(),
+                      style: TextStyle(fontSize: 13, color: Colors.blueGrey[600]),
+                    ),
+                  ],
+                  if (memo.weatherJson != null && memo.mood != null)
+                    const SizedBox(width: 12),
+                  if (memo.mood != null) ...[
+                    Icon(moodByKey(memo.mood)?.icon ?? Icons.sentiment_neutral,
+                        size: 14, color: moodByKey(memo.mood)?.color ?? Colors.blueGrey),
+                    const SizedBox(width: 4),
+                    Text(
+                      moodByKey(memo.mood)?.label ?? '',
+                      style: TextStyle(fontSize: 13, color: Colors.blueGrey[600]),
+                    ),
+                  ],
+                ],
               ),
             ],
 

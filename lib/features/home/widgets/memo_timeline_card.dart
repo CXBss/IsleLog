@@ -11,6 +11,7 @@ import '../../../data/database/database_service.dart';
 import '../../../data/models/attachment_info.dart';
 import '../../../data/models/comment_entry.dart';
 import '../../../data/models/memo_entry.dart';
+import '../../../data/models/weather_info.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../../../data/database/database_service.dart' as db_svc;
@@ -558,6 +559,28 @@ class _MemoCardState extends State<_MemoCard> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  // 天气图标
+                  if (memo.weatherJson != null) ...[
+                    const Icon(Icons.wb_sunny_outlined, size: 14, color: Colors.blueGrey),
+                    const SizedBox(width: 2),
+                    Text(
+                      () {
+                        try {
+                          return WeatherInfo.fromJsonString(memo.weatherJson!).condition;
+                        } catch (_) {
+                          return '';
+                        }
+                      }(),
+                      style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  // 心情图标
+                  if (memo.mood != null) ...[
+                    Icon(moodByKey(memo.mood)?.icon ?? Icons.sentiment_neutral,
+                        size: 14, color: moodByKey(memo.mood)?.color ?? Colors.grey),
+                    const SizedBox(width: 6),
+                  ],
                   if (memo.isPinned) ...[
                     Icon(Icons.push_pin, size: 13, color: AppColors.primary),
                     const SizedBox(width: 2),

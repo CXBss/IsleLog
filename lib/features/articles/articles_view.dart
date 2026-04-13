@@ -262,6 +262,7 @@ class _ArticlesViewState extends State<ArticlesView> {
         ),
       ),
       floatingActionButton: FloatingActionButton(
+        heroTag: 'fab_articles_new',
         onPressed: () => _openEditor(),
         backgroundColor: AppColors.primary,
         tooltip: '新建文章',
