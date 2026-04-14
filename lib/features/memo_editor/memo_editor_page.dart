@@ -138,6 +138,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           address: m.location,
         );
       }
+      // 记录编辑前内容快照，供冲突三方对比使用
+      m.originalContent = m.content;
     }
 
     // 新建模式下恢复草稿；移动端自动获取位置（草稿无位置时）

@@ -213,6 +213,16 @@ Win32Window::MessageHandler(HWND hwnd,
       }
       return 0;
 
+    case WM_GETMINMAXINFO: {
+      auto info = reinterpret_cast<MINMAXINFO*>(lparam);
+      // Minimum window size: 400 x 600 logical pixels (before DPI scaling)
+      UINT dpi = GetDpiForWindow(hwnd);
+      double scale = dpi / 96.0;
+      info->ptMinTrackSize.x = static_cast<LONG>(400 * scale);
+      info->ptMinTrackSize.y = static_cast<LONG>(600 * scale);
+      return 0;
+    }
+
     case WM_DWMCOLORIZATIONCOLORCHANGED:
       UpdateTheme(hwnd);
       return 0;

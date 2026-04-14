@@ -23,12 +23,15 @@ class DatabaseService {
   }
 
   /// 打开数据库文件
+  ///
+  /// 使用 "isle_v2" 名称以避免与旧版 schema（无 TodoStatus 字段）的数据库冲突。
   static Future<Isar> _open() async {
     final dir = await getApplicationDocumentsDirectory();
     debugPrint('[DB] 打开数据库，路径：${dir.path}');
     final isar = await Isar.open(
       [MemoEntrySchema, TagStatSchema, CommentEntrySchema],
       directory: dir.path,
+      name: 'isle_v2',
       inspector: true,
     );
     debugPrint('[DB] 数据库已就绪');
@@ -49,6 +52,7 @@ class DatabaseService {
     final isar = await db;
     // 每次保存前重新解析正文中的标签
     memo.tags = extractTags(memo.content);
+    _updateTodoStatus(memo);
     if (!skipTimestamp) memo.updatedAt = DateTime.now();
     final id = await isar.writeTxn(() => isar.memoEntrys.put(memo));
     debugPrint(
@@ -674,6 +678,98 @@ class DatabaseService {
 
   // ────────────────────────────────────────────────────────────────
   // 工具方法
+  // ────────────────────────────────────────────────────────────────
+
+  // ────────────────────────────────────────────────────────────────
+  // 待办
+  // ────────────────────────────────────────────────────────────────
+
+  /// 解析 content 更新 [MemoEntry.todoStatus] 和 [MemoEntry.pendingTodoCount]。
+  static void _updateTodoStatus(MemoEntry memo) {
+    final pendingCount = RegExp(r'- \[ \]').allMatches(memo.content).length;
+    final doneCount = RegExp(r'- \[[xX]\]').allMatches(memo.content).length;
+    memo.pendingTodoCount = pendingCount;
+    if (pendingCount == 0 && doneCount == 0) {
+      memo.todoStatus = TodoStatus.none;
+    } else if (pendingCount > 0) {
+      memo.todoStatus = TodoStatus.hasPending;
+    } else {
+      memo.todoStatus = TodoStatus.allDone;
+    }
+  }
+
+  /// 全量重新扫描所有日记，修正 todoStatus / pendingTodoCount。
+  ///
+  /// 适用场景：同步完成后、手动触发修复状态不一致。
+  static Future<int> rebuildTodoStatus() async {
+    final isar = await db;
+    final all = await isar.memoEntrys.filter().isDeletedEqualTo(false).findAll();
+    final toUpdate = <MemoEntry>[];
+    for (final memo in all) {
+      final prevStatus = memo.todoStatus;
+      final prevCount = memo.pendingTodoCount;
+      _updateTodoStatus(memo);
+      if (memo.todoStatus != prevStatus || memo.pendingTodoCount != prevCount) {
+        toUpdate.add(memo);
+      }
+    }
+    if (toUpdate.isNotEmpty) {
+      await isar.writeTxn(() => isar.memoEntrys.putAll(toUpdate));
+    }
+    debugPrint('[DB] rebuildTodoStatus: 扫描 ${all.length} 条，更新 ${toUpdate.length} 条');
+    return toUpdate.length;
+  }
+
+  /// 获取含有待办项的日记，按创建时间倒序。
+  ///
+  /// [filter] 为 null 时返回全部（hasPending + allDone）；
+  /// 传 [TodoStatus.hasPending] 返回未完成；传 [TodoStatus.allDone] 返回已完成。
+  static Future<List<MemoEntry>> getMemosWithTodo({TodoStatus? filter}) async {
+    final isar = await db;
+    late List<MemoEntry> result;
+    if (filter != null) {
+      result = await isar.memoEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .todoStatusEqualTo(filter)
+          .sortByCreatedAtDesc()
+          .findAll();
+    } else {
+      result = await isar.memoEntrys
+          .filter()
+          .isDeletedEqualTo(false)
+          .todoStatusEqualTo(TodoStatus.hasPending)
+          .or()
+          .todoStatusEqualTo(TodoStatus.allDone)
+          .sortByCreatedAtDesc()
+          .findAll();
+    }
+    debugPrint('[DB] getMemosWithTodo filter=$filter → ${result.length} 条');
+    return result;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 往年今日
+  // ────────────────────────────────────────────────────────────────
+
+  /// 获取历史上与 [date] 月日相同的全部日记（不含已删除、已归档），按创建时间正序。
+  static Future<List<MemoEntry>> getMemosOnThisDay(DateTime date) async {
+    final isar = await db;
+    final all = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .findAll();
+    final result = all
+        .where((m) => m.createdAt.month == date.month && m.createdAt.day == date.day)
+        .toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    debugPrint('[DB] getMemosOnThisDay(${date.month}-${date.day}) → ${result.length} 条');
+    return result;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 标签工具
   // ────────────────────────────────────────────────────────────────
 
   /// 从正文中提取 Memos 风格的标签（兼容 ASCII 和中文，支持 tag/subtag 嵌套格式）。

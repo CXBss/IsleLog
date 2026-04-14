@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 import '../../features/calendar/calendar_view.dart';
 import '../../features/home/home_view.dart';
 import '../../features/memo_editor/memo_editor_page.dart';
+import '../../features/on_this_day/on_this_day_page.dart';
+import '../../features/todo/todo_view.dart';
 import '../constants/app_constants.dart';
 
 /// 带底部导航栏和居中 FAB 的主骨架
 ///
-/// 包含两个 Tab 页：主页（时间线）和日历。
+/// 4 个 Tab：待办 | 主页 | [FAB] | 日历 | 往年今日
 /// 底部使用 [BottomAppBar] + [FloatingActionButton] 组合，FAB 居中嵌入导航栏缺口。
 class MainScaffold extends StatefulWidget {
   const MainScaffold({super.key});
@@ -18,8 +20,10 @@ class MainScaffold extends StatefulWidget {
 }
 
 class _MainScaffoldState extends State<MainScaffold> {
-  /// 当前选中 Tab 索引（0=主页，1=日历）
-  int _currentIndex = 0;
+  /// 当前选中 Tab 索引
+  /// 0=待办  1=主页  2=日历  3=往年今日
+  /// FAB 仅在主页(1)和日历(2)时显示
+  int _currentIndex = 1; // 默认打开主页
 
   /// 日历视图当前选中的日期（FAB 新建时使用）
   DateTime _calendarSelectedDay = DateTime.now();
@@ -29,9 +33,12 @@ class _MainScaffoldState extends State<MainScaffold> {
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
 
+  /// FAB 仅在主页（1）和日历（2）时显示
+  bool get _showFab => _currentIndex == 1 || _currentIndex == 2;
+
   /// 打开新建日记编辑器
   void _openEditor() {
-    final initialDate = _currentIndex == 1 ? _calendarSelectedDay : null;
+    final initialDate = _currentIndex == 2 ? _calendarSelectedDay : null;
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -45,26 +52,34 @@ class _MainScaffoldState extends State<MainScaffold> {
       mainAxisAlignment: MainAxisAlignment.spaceAround,
       children: [
         _NavItem(
+          icon: Icons.check_box_outline_blank,
+          activeIcon: Icons.check_box,
+          label: AppStrings.navTodo,
+          selected: _currentIndex == 0,
+          onTap: () => setState(() => _currentIndex = 0),
+        ),
+        _NavItem(
           icon: Icons.home_outlined,
           activeIcon: Icons.home,
           label: AppStrings.navHome,
-          selected: _currentIndex == 0,
-          onTap: () {
-            debugPrint('[MainScaffold] 切换到主页 Tab');
-            setState(() => _currentIndex = 0);
-          },
+          selected: _currentIndex == 1,
+          onTap: () => setState(() => _currentIndex = 1),
         ),
-        // FAB 占位：避免两侧 NavItem 被压缩
+        // FAB 占位
         const SizedBox(width: AppDimens.fabPlaceholder),
         _NavItem(
           icon: Icons.calendar_month_outlined,
           activeIcon: Icons.calendar_month,
           label: AppStrings.navCalendar,
-          selected: _currentIndex == 1,
-          onTap: () {
-            debugPrint('[MainScaffold] 切换到日历 Tab');
-            setState(() => _currentIndex = 1);
-          },
+          selected: _currentIndex == 2,
+          onTap: () => setState(() => _currentIndex = 2),
+        ),
+        _NavItem(
+          icon: Icons.history_edu_outlined,
+          activeIcon: Icons.history_edu,
+          label: AppStrings.navOnThisDay,
+          selected: _currentIndex == 3,
+          onTap: () => setState(() => _currentIndex = 3),
         ),
       ],
     );
@@ -77,28 +92,32 @@ class _MainScaffoldState extends State<MainScaffold> {
       body: IndexedStack(
         index: _currentIndex,
         children: [
+          const TodoView(),
           const HomeView(),
           CalendarView(
             onSelectedDayChanged: (day) {
               _calendarSelectedDay = day;
             },
           ),
+          const OnThisDayPage(),
         ],
       ),
 
-      // 居中嵌入式 FAB（绿色加号）
-      floatingActionButton: FloatingActionButton(
-        onPressed: _openEditor,
-        backgroundColor: AppColors.primary,
-        elevation: 4,
-        shape: const CircleBorder(),
-        tooltip: '新建日记',
-        child: const Icon(Icons.add, size: 28, color: Colors.white),
-      ),
+      // 居中嵌入式 FAB（仅主页/日历显示）
+      floatingActionButton: _showFab
+          ? FloatingActionButton(
+              heroTag: 'fab_main_new_memo',
+              onPressed: _openEditor,
+              backgroundColor: AppColors.primary,
+              elevation: 4,
+              shape: const CircleBorder(),
+              tooltip: '新建日记',
+              child: const Icon(Icons.add, size: 28, color: Colors.white),
+            )
+          : null,
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
 
       // 底部导航栏（带缺口容纳 FAB）
-      // 移动端：padding:0 + SafeArea 处理系统导航条；桌面端：默认 padding
       bottomNavigationBar: BottomAppBar(
         shape: const CircularNotchedRectangle(),
         notchMargin: 8,
@@ -123,8 +142,6 @@ class _MainScaffoldState extends State<MainScaffold> {
 }
 
 /// 底部导航栏单个条目
-///
-/// 选中时显示 [activeIcon] 和品牌绿色，未选中时显示 [icon] 和灰色。
 class _NavItem extends StatelessWidget {
   final IconData icon;
   final IconData activeIcon;
@@ -142,7 +159,6 @@ class _NavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 选中时使用品牌色，未选中时使用灰色
     final color = selected ? AppColors.primary : Colors.grey[500]!;
 
     return Expanded(

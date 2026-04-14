@@ -121,8 +121,10 @@ abstract final class AppStrings {
   static const String settingsUnknownUser = '未知用户';
 
   // ── 底部导航（MainScaffold）──────────────────────────────────────────────
+  static const String navTodo = '待办';
   static const String navHome = '主页';
   static const String navCalendar = '日历';
+  static const String navOnThisDay = '往年今日';
 
   // ── 同步结果（SyncService）───────────────────────────────────────────────
   static const String syncNoConfig = '未配置服务器，请先在设置页填写服务器地址和 Token';
