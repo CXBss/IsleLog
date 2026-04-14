@@ -9,6 +9,7 @@ import '../../data/models/tag_stat.dart';
 import '../../features/archive/archive_view.dart';
 import '../../features/memo_detail/memo_detail_page.dart';
 import '../../features/settings/settings_page.dart';
+import '../../features/stats/stats_view.dart';
 import '../../services/api/memos_api_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
@@ -416,6 +417,15 @@ class _HomeViewState extends State<HomeView> {
                 Navigator.pop(context);
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const ArchiveView()));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.bar_chart_outlined),
+              title: const Text('字数统计'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const StatsView()));
               },
             ),
             ListTile(

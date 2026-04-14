@@ -479,6 +479,56 @@ class DatabaseService {
   }
 
   // ────────────────────────────────────────────────────────────────
+  // 统计查询（字数统计页专用）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 字数统计：返回所有未删除日记的聚合数据。
+  ///
+  /// 返回结构：
+  /// - `dailyWords`：`Map<DateTime, int>` 日期（截断到天）→ 当天总字数
+  /// - `totalWords`：全部字数总和
+  /// - `maxDayWords`：单日最高字数
+  /// - `recordDays`：有日记的天数
+  static Future<StatsData> getStatsData() async {
+    final isar = await db;
+    final memos = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .findAll();
+
+    final dailyWords = <DateTime, int>{};
+    int totalWords = 0;
+
+    for (final memo in memos) {
+      final wordCount = _countWords(memo.content);
+      totalWords += wordCount;
+      final day = DateTime(
+          memo.createdAt.year, memo.createdAt.month, memo.createdAt.day);
+      dailyWords[day] = (dailyWords[day] ?? 0) + wordCount;
+    }
+
+    int maxDayWords = 0;
+    for (final v in dailyWords.values) {
+      if (v > maxDayWords) maxDayWords = v;
+    }
+
+    debugPrint(
+        '[DB] getStatsData → ${memos.length} 条，总字数=$totalWords，记录天数=${dailyWords.length}');
+    return StatsData(
+      dailyWords: dailyWords,
+      totalWords: totalWords,
+      maxDayWords: maxDayWords,
+      recordDays: dailyWords.length,
+    );
+  }
+
+  /// 统计字数：去除空白后的字符数（兼容中文）。
+  static int _countWords(String content) {
+    // 去掉 Markdown 语法符号和空白，保留实质字符
+    return content.replaceAll(RegExp(r'\s+'), '').length;
+  }
+
+  // ────────────────────────────────────────────────────────────────
   // 响应式 Stream
   // ────────────────────────────────────────────────────────────────
 
@@ -787,5 +837,54 @@ class DatabaseService {
         .toList();
     if (tags.isNotEmpty) debugPrint('[DB] extractTags: $tags');
     return tags;
+  }
+}
+
+/// 字数统计聚合结果
+class StatsData {
+  /// 日期（截断到天）→ 当天总字数
+  final Map<DateTime, int> dailyWords;
+
+  /// 全部字数总和
+  final int totalWords;
+
+  /// 单日最高字数
+  final int maxDayWords;
+
+  /// 有日记的天数
+  final int recordDays;
+
+  const StatsData({
+    required this.dailyWords,
+    required this.totalWords,
+    required this.maxDayWords,
+    required this.recordDays,
+  });
+
+  /// 日均字数（记录天数 > 0 时才有意义）
+  int get avgDayWords =>
+      recordDays == 0 ? 0 : (totalWords / recordDays).round();
+
+  /// 指定年份各月总字数，返回长度为 12 的列表（index 0 = 1月）
+  List<int> monthlyWords(int year) {
+    final result = List<int>.filled(12, 0);
+    for (final entry in dailyWords.entries) {
+      if (entry.key.year == year) {
+        result[entry.key.month - 1] += entry.value;
+      }
+    }
+    return result;
+  }
+
+  /// 历年总字数，返回 Map<year, totalWords>，按年升序
+  Map<int, int> yearlyWords() {
+    final result = <int, int>{};
+    for (final entry in dailyWords.entries) {
+      final y = entry.key.year;
+      result[y] = (result[y] ?? 0) + entry.value;
+    }
+    return Map.fromEntries(
+      result.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
+    );
   }
 }
