@@ -20,7 +20,7 @@ class TodoView extends StatefulWidget {
 
 class _TodoViewState extends State<TodoView> {
   /// 当前筛选：null=全部，hasPending=未完成，allDone=已完成
-  TodoStatus? _filter;
+  TodoStatus? _filter = TodoStatus.hasPending;
 
   List<MemoEntry> _memos = [];
   bool _loading = true;
@@ -185,14 +185,14 @@ class _FilterBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Row(
         children: [
-          _Chip(label: '全部', selected: current == null,
-              onTap: () => onChanged(null)),
-          const SizedBox(width: 8),
           _Chip(label: '未完成', selected: current == TodoStatus.hasPending,
               onTap: () => onChanged(TodoStatus.hasPending)),
           const SizedBox(width: 8),
           _Chip(label: '已完成', selected: current == TodoStatus.allDone,
               onTap: () => onChanged(TodoStatus.allDone)),
+          const SizedBox(width: 8),
+          _Chip(label: '全部', selected: current == null,
+              onTap: () => onChanged(null)),
         ],
       ),
     );

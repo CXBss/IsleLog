@@ -7,6 +7,7 @@ import '../../services/attachment/attachment_service.dart';
 import '../../services/debug/file_logger.dart';
 import '../../services/settings/settings_service.dart';
 import '../../shared/constants/app_constants.dart';
+import '../stats/stats_view.dart';
 import 'api_settings_page.dart';
 import 'server_settings_page.dart';
 
@@ -92,6 +93,16 @@ class SettingsPage extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         children: [
           _ThemeModeItem(),
+          const SizedBox(height: 8),
+          _SettingsItem(
+            icon: Icons.bar_chart_outlined,
+            title: '字数统计',
+            subtitle: '日记字数、热力图、文章统计',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const StatsView()),
+            ),
+          ),
           const SizedBox(height: 8),
           _SettingsItem(
             icon: Icons.cloud_outlined,
