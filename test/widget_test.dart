@@ -15,6 +15,24 @@ void main() {
   const pathProviderChannel = MethodChannel('plugins.flutter.io/path_provider');
   late Directory temporaryDirectory;
 
+  Future<void> pumpUntilNoVisibleProgress(
+    WidgetTester tester,
+    String pageName,
+  ) async {
+    const maxAttempts = 30;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      if (find.byType(CircularProgressIndicator).evaluate().isEmpty) {
+        return;
+      }
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    }
+    fail('$pageName 初始加载超时');
+  }
+
   setUpAll(() async {
     final packageConfigFile = File('.dart_tool/package_config.json').absolute;
     final packageConfig =
@@ -56,32 +74,45 @@ void main() {
         });
   });
 
-  tearDown(() {
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(pathProviderChannel, null);
+  tearDownAll(() async {
+    try {
+      await (await DatabaseService.db).close(deleteFromDisk: true);
+      if (await temporaryDirectory.exists()) {
+        await temporaryDirectory.delete(recursive: true);
+      }
+    } finally {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, null);
+    }
   });
 
   testWidgets('应用启动后展示主界面', (WidgetTester tester) async {
     await tester.pumpWidget(const MyApp());
     expect(tester.takeException(), isNull);
+    await pumpUntilNoVisibleProgress(tester, '主页');
 
-    await tester.runAsync(() async {
-      await DatabaseService.db;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    });
-    expect(tester.takeException(), isNull);
-
+    await tester.tap(find.text('待办'));
     await tester.pump();
     expect(tester.takeException(), isNull);
+    await pumpUntilNoVisibleProgress(tester, '待办页');
 
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 50)),
-    );
+    await tester.tap(find.text('日历'));
     await tester.pump();
     expect(tester.takeException(), isNull);
+    await pumpUntilNoVisibleProgress(tester, '日历页');
+
+    await tester.tap(find.text('文章'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await pumpUntilNoVisibleProgress(tester, '文章页');
+
+    await tester.tap(find.text('主页'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await pumpUntilNoVisibleProgress(tester, '主页');
 
     expect(find.byType(MaterialApp), findsOneWidget);
     expect(find.text('时间线'), findsOneWidget);
-    expect(find.byTooltip('新建日记'), findsOneWidget);
+    expect(find.byTooltip('新建日记').hitTestable(), findsOneWidget);
   });
 }
