@@ -578,6 +578,137 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 
 ---
 
+## AI 编辑辅助
+
+> **仅适用于 IsleLog 自建服务**，不属于标准 Memos v0.25 API；标准 Memos 服务端返回 404。
+>
+> 需要认证。AI 能力依赖外部模型服务，通过服务端环境变量配置：`AI_LOCAL_*`（私有本地模型，如 llama.cpp 部署的 Qwen）和 `AI_DEEPSEEK_*`（云端 DeepSeek）。未配置时对应 Provider 为未启用状态。
+>
+> **隐私规则：**
+> - `LOCAL` 调用失败不会自动转发 `DEEPSEEK`，任何错误都不会切换模型。
+> - `cloudConsent` 仅对当前请求有效，服务端不持久化该授权。
+> - AI 接口不会直接修改 memo 或 article，仅返回建议内容供客户端确认。
+
+### Provider 状态
+`GET /api/v1/ai/providers` **[IsleLog 扩展]**
+
+固定返回 `LOCAL`、`DEEPSEEK` 两项。结果有 10 秒缓存。
+
+**响应**
+```json
+[
+  {
+    "name": "LOCAL",
+    "enabled": true,
+    "available": true,
+    "model": "qwen-local",
+    "contextLength": 32768,
+    "checkedAt": "2026-07-31T10:00:00Z"
+  },
+  {
+    "name": "DEEPSEEK",
+    "enabled": false,
+    "available": false,
+    "model": "",
+    "contextLength": 0,
+    "checkedAt": "2026-07-31T10:00:00Z"
+  }
+]
+```
+
+> `enabled=false` 表示服务端未配置该 Provider；`enabled=true, available=false` 表示已配置但健康检查失败（暂时离线）。`message` 仅在异常时输出。
+
+---
+
+### 标签建议
+`POST /api/v1/ai/tag-suggestions` **[IsleLog 扩展]**
+
+**请求体**
+```json
+{
+  "content": "今天修复了同步冲突的问题",
+  "existingTags": [{ "name": "工作", "count": 12 }],
+  "provider": "LOCAL",
+  "cloudConsent": false
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `content` | 正文，必填非空 |
+| `existingTags` | 已有标签及使用次数（最多 1000 个，单个名称最长 100 字符），模型优先复用 |
+| `provider` | `LOCAL` / `DEEPSEEK` |
+| `cloudConsent` | `provider=DEEPSEEK` 时必须为 `true`，否则返回 403 |
+
+**响应**
+```json
+{
+  "suggestions": [
+    { "name": "工作", "isNew": false, "confidence": 0.9, "reason": "开发记录" }
+  ],
+  "usage": { "promptTokens": 120, "completionTokens": 30 }
+}
+```
+
+> 最多 5 个候选，`isNew` 由服务端根据 `existingTags` 重新计算。
+
+---
+
+### 润色
+`POST /api/v1/ai/polish` **[IsleLog 扩展]**
+
+**请求体**
+```json
+{
+  "content": "第一段。\n\n第二段。",
+  "mode": "LIGHT",
+  "provider": "LOCAL",
+  "cloudConsent": false
+}
+```
+
+| `mode` | 说明 |
+|--------|------|
+| `LIGHT` | 只修正病句和错别字 |
+| `MEDIUM` | 保留原意，改善表达 |
+| `DEEP` | 允许较大结构和措辞调整 |
+| `FORMAT_ONLY` | 只调整空白与 Markdown 格式，不改文字 |
+
+**响应**
+```json
+{
+  "segments": [
+    {
+      "sourceIndexes": [0],
+      "originalText": "第一段。",
+      "revisedText": "第一段已润色。",
+      "reason": "语句通顺"
+    }
+  ],
+  "usage": { "promptTokens": 200, "completionTokens": 80 }
+}
+```
+
+> `sourceIndexes` 为以空行切分的原文段落索引，`originalText` 由服务端按索引回填。标签、Markdown 链接、待办标记、日期数值和代码块等受保护元素发生变化时，整个请求返回 422，客户端应丢弃结果。
+
+---
+
+### AI 错误码
+
+错误统一为 `{ "code": 状态码, "message": "中文信息" }`，不回显请求正文或上游错误详情。
+
+| 状态码 | 场景 |
+|--------|------|
+| 400 | 正文为空、Provider/润色模式无效、请求格式错误 |
+| 403 | `DEEPSEEK` 缺少本次 `cloudConsent` |
+| 413 | 请求体过大（>2MB）或已有标签数量过多 |
+| 422 | 标签名称过长，或润色结果改变了受保护内容 |
+| 429 | 并发超限（`LOCAL` 为 1，`DEEPSEEK` 为 2），稍后再试 |
+| 502 | 模型返回格式无效或上游不可用 |
+| 503 | 请求的 Provider 未启用 |
+
+---
+
 ## 健康检查
 
 `GET /healthz` **[IsleLog 扩展]**
