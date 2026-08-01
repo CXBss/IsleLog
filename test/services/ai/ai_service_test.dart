@@ -147,5 +147,15 @@ void main() {
         isNull,
       );
     });
+
+    test('旧版本无时间戳的缓存视为过期并清除', () async {
+      SharedPreferences.setMockInitialValues({
+        'ai_capability_https://islelog.local': false,
+      });
+      expect(
+        await SettingsService.aiCapabilityFor('https://islelog.local'),
+        isNull,
+      );
+    });
   });
 }

@@ -187,6 +187,20 @@ void main() {
     expect(find.byKey(const Key('memo-editor-ai-action')), findsOneWidget);
   });
 
+  testWidgets('状态为空时打开面板会重新探测，网络恢复后无需重开编辑器', (tester) async {
+    gateway.failListProviders = true;
+    await SettingsService.setServerUrl('https://islelog.local');
+    await SettingsService.setAiCapability('https://islelog.local', true);
+    await pumpEditor(tester, capabilityOverride: null);
+    expect(find.byKey(const Key('memo-editor-ai-action')), findsOneWidget);
+
+    // 网络恢复：打开面板时应重新探测并正常弹出
+    gateway.failListProviders = false;
+    await openAiActionSheet(tester);
+    expect(find.text('AI 助手'), findsOneWidget);
+    expect(find.text('标签建议'), findsOneWidget);
+  });
+
   testWidgets('能力为 true 时显示右上角 AI 入口并弹出操作面板', (tester) async {
     await pumpEditor(tester);
     expect(find.byKey(const Key('memo-editor-ai-action')), findsOneWidget);

@@ -231,6 +231,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   @override
   void dispose() {
     debugPrint('[MemoEditor] 释放资源');
+    // 页面关闭时取消仍在进行的 AI 请求，避免云端请求继续产生费用
+    _aiCancelToken?.cancel();
     _contentCtrl.removeListener(_onContentChanged);
     _contentCtrl.dispose();
     _locationCtrl.dispose();
@@ -948,6 +950,16 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   Future<void> _showAiActions() async {
     if (_aiRequesting) return;
+    // 状态为空（探测失败或离线）时重新探测一次，网络恢复后无需重开编辑器
+    if (widget.aiCapabilityOverride == null && _aiStatuses.isEmpty) {
+      await _loadAiStatuses();
+      if (!mounted) return;
+    }
+    if (widget.aiCapabilityOverride != true &&
+        !_aiStatuses.any((s) => s.enabled)) {
+      _showAiSnack('AI 模型服务暂时不可用，请稍后再试');
+      return;
+    }
     final selection = await showAiActionSheet(context, providers: _aiStatuses);
     if (selection == null || !mounted) return;
     await _runAiAction(selection);

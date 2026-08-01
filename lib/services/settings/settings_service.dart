@@ -205,18 +205,25 @@ class SettingsService {
   /// IsleLog 后入口永久不出现。
   static const _aiCapabilityTtl = Duration(hours: 24);
 
-  /// 获取指定服务器地址的 AI 能力缓存（未探测过或已过期时返回 null）
+  /// 获取指定服务器地址的 AI 能力缓存（未探测过、已过期或无时间戳的
+  /// 旧版本缓存均返回 null）
   static Future<bool?> aiCapabilityFor(String serverUrl) async {
     final prefs = await _prefs;
+    final value = prefs.getBool('$_aiCapabilityKeyPrefix$serverUrl');
+    if (value == null) return null;
     final at = prefs.getInt('$_aiCapabilityAtPrefix$serverUrl');
-    if (at != null &&
-        DateTime.now().millisecondsSinceEpoch - at >
-            _aiCapabilityTtl.inMilliseconds) {
+    if (at == null) {
+      // 旧版本缓存的布尔值没有时间戳，视为过期并清除
+      await prefs.remove('$_aiCapabilityKeyPrefix$serverUrl');
+      return null;
+    }
+    if (DateTime.now().millisecondsSinceEpoch - at >
+        _aiCapabilityTtl.inMilliseconds) {
       await prefs.remove('$_aiCapabilityKeyPrefix$serverUrl');
       await prefs.remove('$_aiCapabilityAtPrefix$serverUrl');
       return null;
     }
-    return prefs.getBool('$_aiCapabilityKeyPrefix$serverUrl');
+    return value;
   }
 
   /// 缓存指定服务器地址的 AI 能力探测结果
