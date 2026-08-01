@@ -33,8 +33,14 @@ class SettingsService {
   /// 保证拼接 API 路径时不出现双斜杠。
   static Future<void> setServerUrl(String url) async {
     final normalized = url.trim().replaceAll(RegExp(r'/+$'), '');
+    final prefs = await _prefs;
+    final old = prefs.getString(_keyServerUrl);
+    if (old != null && old != normalized) {
+      await removeAiCapability(old);
+      debugPrint('[Settings] setServerUrl: 清除旧地址 AI 能力缓存 $old');
+    }
     debugPrint('[Settings] setServerUrl: $normalized');
-    await (await _prefs).setString(_keyServerUrl, normalized);
+    await prefs.setString(_keyServerUrl, normalized);
   }
 
   // ── Access Token ──────────────────────────────────────────────
@@ -188,6 +194,28 @@ class SettingsService {
   static Future<void> clearLastChangelogId() async {
     debugPrint('[Settings] clearLastChangelogId');
     await (await _prefs).remove(_keyLastChangelogId);
+  }
+
+  // ── AI Capability Cache ───────────────────────────────────────
+
+  static const _aiCapabilityKeyPrefix = 'ai_capability_';
+
+  /// 获取指定服务器地址的 AI 能力缓存（未探测过时返回 null）
+  static Future<bool?> aiCapabilityFor(String serverUrl) async {
+    final raw = (await _prefs).getBool('$_aiCapabilityKeyPrefix$serverUrl');
+    return raw;
+  }
+
+  /// 缓存指定服务器地址的 AI 能力探测结果
+  static Future<void> setAiCapability(String serverUrl, bool value) async {
+    debugPrint('[Settings] setAiCapability: $serverUrl → $value');
+    await (await _prefs).setBool('$_aiCapabilityKeyPrefix$serverUrl', value);
+  }
+
+  /// 移除指定服务器地址的 AI 能力缓存
+  static Future<void> removeAiCapability(String serverUrl) async {
+    debugPrint('[Settings] removeAiCapability: $serverUrl');
+    await (await _prefs).remove('$_aiCapabilityKeyPrefix$serverUrl');
   }
 
   // ── Helpers ───────────────────────────────────────────────────
