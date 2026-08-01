@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +18,9 @@ import '../../data/models/attachment_info.dart';
 import '../../data/models/memo_entry.dart';
 import '../../data/models/tag_stat.dart';
 import '../../data/models/weather_info.dart';
+import '../../services/ai/ai_api_client.dart';
+import '../../services/ai/ai_models.dart';
+import '../../services/ai/ai_service.dart';
 import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/location/location_service.dart';
@@ -25,6 +29,11 @@ import '../../services/sync/sync_service.dart';
 import '../../services/weather/weather_service.dart';
 import '../../shared/constants/app_constants.dart';
 import '../conflict/conflict_overview_page.dart';
+import 'ai/ai_action_sheet.dart';
+import 'ai/cloud_ai_consent_dialog.dart';
+import 'ai/polish_preview_page.dart';
+import 'ai/tag_insertion.dart';
+import 'ai/tag_suggestions_sheet.dart';
 
 /// 新建 / 编辑日记页面
 ///
@@ -39,7 +48,19 @@ class MemoEditorPage extends StatefulWidget {
   /// 新建模式时指定初始日期（日历视图选中某天后新建使用）
   final DateTime? initialDate;
 
-  const MemoEditorPage({super.key, this.editingMemo, this.initialDate});
+  /// 测试注入的 AI 网关；为 null 时由 [AiService] 从设置解析
+  final AiGateway? aiGateway;
+
+  /// 测试注入的 AI 能力开关；为 null 时按服务端状态判断
+  final bool? aiCapabilityOverride;
+
+  const MemoEditorPage({
+    super.key,
+    this.editingMemo,
+    this.initialDate,
+    this.aiGateway,
+    this.aiCapabilityOverride,
+  });
 
   @override
   State<MemoEditorPage> createState() => _MemoEditorPageState();
@@ -114,6 +135,24 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 内容输入框的 GlobalKey，用于定位浮层位置
   final GlobalKey _contentFieldKey = GlobalKey();
 
+  // ── AI 编辑辅助 ───────────────────────────────────────────────
+
+  /// 服务端 Provider 状态（为空表示尚未加载或加载失败）
+  List<AiProviderStatus> _aiStatuses = [];
+
+  /// 是否显示 AI 入口：服务端至少有一个 `enabled=true` 的 Provider，
+  /// 不等同于当前健康检查的 `available`（暂时离线仍保留入口和重试能力）
+  bool _aiAvailable = false;
+
+  /// 是否正在 AI 请求（期间禁用入口，避免并发）
+  bool _aiRequesting = false;
+
+  /// 当前请求的取消令牌
+  CancelToken? _aiCancelToken;
+
+  /// 进度浮层是否仍在显示（避免请求结束与取消按钮重复 pop）
+  bool _aiProgressVisible = false;
+
   @override
   void initState() {
     super.initState();
@@ -176,6 +215,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     DatabaseService.getCachedTagStats().then((tags) {
       if (mounted) setState(() => _allTags = tags);
     });
+
+    _loadAiStatuses();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final delay = defaultTargetPlatform == TargetPlatform.macOS
@@ -874,6 +915,290 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 在当前行行首插入 `- [ ] `
   void _insertTodo() => _insertLinePrefix('- [ ] ');
 
+  // ── AI 编辑辅助 ───────────────────────────────────────────────
+
+  Future<AiGateway> _resolveAiGateway() async {
+    final injected = widget.aiGateway;
+    if (injected != null) return injected;
+    return AiService().createGateway();
+  }
+
+  /// 加载服务端 Provider 状态，决定是否显示 AI 入口。
+  Future<void> _loadAiStatuses() async {
+    final override = widget.aiCapabilityOverride;
+    if (override != null) {
+      setState(() => _aiAvailable = override);
+      return;
+    }
+    try {
+      final gateway = await _resolveAiGateway();
+      final statuses = await gateway.listProviders();
+      if (mounted) {
+        setState(() {
+          _aiStatuses = statuses;
+          _aiAvailable = statuses.any((s) => s.enabled);
+        });
+      }
+    } catch (e) {
+      debugPrint('[MemoEditor] AI 能力探测失败（隐藏入口）：$e');
+    }
+  }
+
+  Future<void> _showAiActions() async {
+    if (_aiRequesting) return;
+    final selection = await showAiActionSheet(context, providers: _aiStatuses);
+    if (selection == null || !mounted) return;
+    await _runAiAction(selection);
+  }
+
+  Future<void> _runAiAction(AiActionSelection selection) async {
+    final AiGateway gateway;
+    try {
+      gateway = await _resolveAiGateway();
+    } on AiApiException catch (e) {
+      _showAiSnack(e.message);
+      return;
+    }
+
+    final isDeepSeek = selection.provider == AiProvider.deepSeek;
+    final content = _contentCtrl.text;
+    final selectionRange = _contentCtrl.selection;
+    final hasSelection = selectionRange.isValid &&
+        selectionRange.isNormalized &&
+        selectionRange.start != selectionRange.end;
+    final targetStart = hasSelection ? selectionRange.start : 0;
+    final targetEnd = hasSelection ? selectionRange.end : content.length;
+    final target = content.substring(targetStart, targetEnd);
+
+    // DeepSeek 每次操作单独确认，不持久化
+    if (isDeepSeek) {
+      if (!mounted) return;
+      var model = 'DeepSeek';
+      for (final s in _aiStatuses) {
+        if (s.name == AiProvider.deepSeek && s.model.isNotEmpty) {
+          model = s.model;
+          break;
+        }
+      }
+      final consent = await showCloudAiConsentDialog(
+        context: context,
+        model: model,
+        recordCount: 1,
+        characterCount: target.length,
+        contentModeLabel: '原文',
+        includedMetadata: const ['标签', '正文'],
+      );
+      if (!consent || !mounted) return;
+    }
+
+    final cancelToken = CancelToken();
+    _aiCancelToken = cancelToken;
+    setState(() => _aiRequesting = true);
+    _showAiProgress();
+
+    try {
+      if (selection.type == AiActionType.suggestTags) {
+        final existingTags = _allTags
+            .map((t) => AiExistingTag(name: t.name, count: t.count))
+            .toList();
+        final suggestions = await _requestSuggestTags(
+          gateway: gateway,
+          target: target,
+          existingTags: existingTags,
+          isDeepSeek: isDeepSeek,
+          cancelToken: cancelToken,
+        );
+        if (suggestions == null || !mounted) return;
+        // 请求已结束：先关闭进度浮层，再进行用户交互
+        _closeProgress();
+        if (_targetChanged(target, targetStart, targetEnd)) {
+          _showAiSnack('正文已变化，请重新请求');
+          return;
+        }
+        final selected = await showTagSuggestionsSheet(
+          context: context,
+          existingTags: existingTags.map((t) => t.name).toList(),
+          suggestions: suggestions,
+        );
+        if (selected == null || !mounted) return;
+        final updated = insertSelectedTags(target, selected);
+        _replaceTarget(updated, targetStart, targetEnd, target);
+      } else {
+        final segments = await _requestPolish(
+          gateway: gateway,
+          selection: selection,
+          target: target,
+          isDeepSeek: isDeepSeek,
+          cancelToken: cancelToken,
+        );
+        if (segments == null || !mounted) return;
+        // 请求已结束：先关闭进度浮层，再进行用户交互
+        _closeProgress();
+        // 深度润色的结构变化确认与 DeepSeek 隐私确认分别执行
+        if (selection.type == AiActionType.polishDeep) {
+          final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('深度润色'),
+              content: const Text(
+                  '深度润色可能调整段落结构和措辞，请在预览中逐段核对后再应用。'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('继续'),
+                ),
+              ],
+            ),
+          );
+          if (confirmed != true || !mounted) return;
+        }
+        if (_targetChanged(target, targetStart, targetEnd)) {
+          _showAiSnack('正文已变化，请重新请求');
+          return;
+        }
+        final result = await Navigator.push<String>(
+          context,
+          MaterialPageRoute(
+            builder: (_) =>
+                PolishPreviewPage(original: target, segments: segments),
+          ),
+        );
+        if (result == null || !mounted) return;
+        _replaceTarget(result, targetStart, targetEnd, target);
+      }
+    } finally {
+      _aiCancelToken = null;
+      if (mounted) setState(() => _aiRequesting = false);
+      _closeProgress();
+    }
+  }
+
+  /// 请求标签建议；取消或失败返回 null。
+  Future<List<AiTagSuggestion>?> _requestSuggestTags({
+    required AiGateway gateway,
+    required String target,
+    required List<AiExistingTag> existingTags,
+    required bool isDeepSeek,
+    required CancelToken cancelToken,
+  }) async {
+    try {
+      return await gateway.suggestTags(
+        content: target,
+        existingTags: existingTags,
+        provider: isDeepSeek ? AiProvider.deepSeek : AiProvider.local,
+        cloudConsent: isDeepSeek,
+        cancelToken: cancelToken,
+      );
+    } on AiRequestCancelled {
+      return null;
+    } on AiApiException catch (e) {
+      if (mounted) _showAiSnack(e.message);
+      return null;
+    }
+  }
+
+  /// 请求润色片段；取消或失败返回 null。
+  Future<List<AiPolishSegment>?> _requestPolish({
+    required AiGateway gateway,
+    required AiActionSelection selection,
+    required String target,
+    required bool isDeepSeek,
+    required CancelToken cancelToken,
+  }) async {
+    final mode = switch (selection.type) {
+      AiActionType.polishLight => PolishMode.light,
+      AiActionType.polishMedium => PolishMode.medium,
+      AiActionType.polishDeep => PolishMode.deep,
+      AiActionType.polishFormatOnly => PolishMode.formatOnly,
+      AiActionType.suggestTags => PolishMode.light,
+    };
+    try {
+      return await gateway.polish(
+        content: target,
+        mode: mode,
+        provider: isDeepSeek ? AiProvider.deepSeek : AiProvider.local,
+        cloudConsent: isDeepSeek,
+        cancelToken: cancelToken,
+      );
+    } on AiRequestCancelled {
+      return null;
+    } on AiApiException catch (e) {
+      if (mounted) _showAiSnack(e.message);
+      return null;
+    }
+  }
+
+  /// 校验当前正文的目标区域是否仍等于请求时的快照。
+  bool _targetChanged(String snapshot, int start, int end) {
+    final current = _contentCtrl.text;
+    if (current.length < end) return true;
+    return current.substring(start, end) != snapshot;
+  }
+
+  /// 用 [replacement] 替换目标区域（不保存、不同步）。
+  void _replaceTarget(String replacement, int start, int end, String expected) {
+    final current = _contentCtrl.text;
+    if (current.length < end || current.substring(start, end) != expected) {
+      _showAiSnack('正文已变化，请重新请求');
+      return;
+    }
+    final updated = current.replaceRange(start, end, replacement);
+    _contentCtrl.value = TextEditingValue(
+      text: updated,
+      selection: TextSelection.collapsed(offset: start + replacement.length),
+    );
+  }
+
+  /// 请求期间显示的进度浮层（含取消按钮）。
+  void _showAiProgress() {
+    _aiProgressVisible = true;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+              const SizedBox(width: 16),
+              const Expanded(child: Text('AI 处理中...')),
+              TextButton(
+                onPressed: () {
+                  _aiCancelToken?.cancel();
+                  navigator.pop();
+                  _aiProgressVisible = false;
+                },
+                child: const Text('取消'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 关闭进度浮层（幂等；取消按钮已关闭时跳过）。
+  void _closeProgress() {
+    if (!_aiProgressVisible) return;
+    _aiProgressVisible = false;
+    Navigator.of(context, rootNavigator: true).pop();
+  }
+
+  void _showAiSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   /// 1. 校验正文不为空
   /// 2. 写入本地 DB（新建或更新）
   /// 3. 如已配置服务器，在后台推送到远端
@@ -1032,7 +1357,15 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           _isEditing ? AppStrings.editorEditTitle : AppStrings.editorNewTitle,
           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
-        actions: const [],
+        actions: [
+          if (_aiAvailable)
+            IconButton(
+              key: const Key('memo-editor-ai-action'),
+              icon: const Icon(Icons.auto_awesome_outlined),
+              tooltip: 'AI 助手',
+              onPressed: _aiRequesting ? null : _showAiActions,
+            ),
+        ],
       ),
       body: CallbackShortcuts(
         bindings: {

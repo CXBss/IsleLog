@@ -57,10 +57,11 @@ class _AiActionSheetState extends State<_AiActionSheet> {
   Widget build(BuildContext context) {
     final enabled = _enabledProviders;
     return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
             child: Text(
@@ -116,8 +117,9 @@ class _AiActionSheetState extends State<_AiActionSheet> {
             subtitle: '只调整空白和 Markdown 格式',
             onTap: () => _choose(AiActionType.polishFormatOnly),
           ),
-          const SizedBox(height: 8),
-        ],
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }
