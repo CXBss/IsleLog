@@ -43,11 +43,26 @@ class _AiActionSheet extends StatefulWidget {
 }
 
 class _AiActionSheetState extends State<_AiActionSheet> {
-  AiProvider _provider = AiProvider.local;
+  late AiProvider _provider;
 
   /// 本次可选的已启用 Provider（至少一个；测试或无启用时退化为默认）。
   List<AiProvider> get _enabledProviders =>
       widget.providers.where((p) => p.enabled).map((p) => p.name).toList();
+
+  /// 默认选择已启用的 Provider；LOCAL 启用时优先 LOCAL。
+  /// 保证 DeepSeek-only 部署不会误请求 LOCAL 而得到 503。
+  AiProvider get _initialProvider {
+    final enabled = _enabledProviders;
+    if (enabled.contains(AiProvider.local)) return AiProvider.local;
+    if (enabled.isNotEmpty) return enabled.first;
+    return AiProvider.local;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _provider = _initialProvider;
+  }
 
   void _choose(AiActionType type) {
     Navigator.pop(context, AiActionSelection(type, _provider));
@@ -62,61 +77,61 @@ class _AiActionSheetState extends State<_AiActionSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
-            child: Text(
-              'AI 助手',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-            ),
-          ),
-          if (enabled.length > 1)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-              child: SegmentedButton<AiProvider>(
-                segments: [
-                  for (final p in enabled)
-                    ButtonSegment(
-                      value: p,
-                      label: Text(
-                        p == AiProvider.local ? '私有 Qwen' : 'DeepSeek',
-                      ),
-                    ),
-                ],
-                selected: {_provider},
-                onSelectionChanged: (selection) =>
-                    setState(() => _provider = selection.first),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
+              child: Text(
+                'AI 助手',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
               ),
             ),
-          _ActionTile(
-            icon: Icons.local_offer_outlined,
-            title: '标签建议',
-            subtitle: '根据正文生成候选标签',
-            onTap: () => _choose(AiActionType.suggestTags),
-          ),
-          _ActionTile(
-            icon: Icons.spellcheck_outlined,
-            title: '轻度润色',
-            subtitle: '只修正病句和错别字',
-            onTap: () => _choose(AiActionType.polishLight),
-          ),
-          _ActionTile(
-            icon: Icons.format_quote_outlined,
-            title: '中度润色',
-            subtitle: '保留原意，改善表达',
-            onTap: () => _choose(AiActionType.polishMedium),
-          ),
-          _ActionTile(
-            icon: Icons.auto_fix_high_outlined,
-            title: '深度润色',
-            subtitle: '允许较大结构和措辞调整',
-            onTap: () => _choose(AiActionType.polishDeep),
-          ),
-          _ActionTile(
-            icon: Icons.format_align_left_outlined,
-            title: '整理格式',
-            subtitle: '只调整空白和 Markdown 格式',
-            onTap: () => _choose(AiActionType.polishFormatOnly),
-          ),
+            if (enabled.length > 1)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                child: SegmentedButton<AiProvider>(
+                  segments: [
+                    for (final p in enabled)
+                      ButtonSegment(
+                        value: p,
+                        label: Text(
+                          p == AiProvider.local ? '私有 Qwen' : 'DeepSeek',
+                        ),
+                      ),
+                  ],
+                  selected: {_provider},
+                  onSelectionChanged: (selection) =>
+                      setState(() => _provider = selection.first),
+                ),
+              ),
+            _ActionTile(
+              icon: Icons.local_offer_outlined,
+              title: '标签建议',
+              subtitle: '根据正文生成候选标签',
+              onTap: () => _choose(AiActionType.suggestTags),
+            ),
+            _ActionTile(
+              icon: Icons.spellcheck_outlined,
+              title: '轻度润色',
+              subtitle: '只修正病句和错别字',
+              onTap: () => _choose(AiActionType.polishLight),
+            ),
+            _ActionTile(
+              icon: Icons.format_quote_outlined,
+              title: '中度润色',
+              subtitle: '保留原意，改善表达',
+              onTap: () => _choose(AiActionType.polishMedium),
+            ),
+            _ActionTile(
+              icon: Icons.auto_fix_high_outlined,
+              title: '深度润色',
+              subtitle: '允许较大结构和措辞调整',
+              onTap: () => _choose(AiActionType.polishDeep),
+            ),
+            _ActionTile(
+              icon: Icons.format_align_left_outlined,
+              title: '整理格式',
+              subtitle: '只调整空白和 Markdown 格式',
+              onTap: () => _choose(AiActionType.polishFormatOnly),
+            ),
             const SizedBox(height: 8),
           ],
         ),

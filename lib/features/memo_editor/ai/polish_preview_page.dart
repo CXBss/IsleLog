@@ -42,12 +42,30 @@ class _PolishPreviewPageState extends State<PolishPreviewPage> {
     }
   }
 
+  /// 每次勾选变化后重新校验保护，失败原因可随取消勾选恢复。
+  void _setAccepted(int index, bool accepted) {
+    setState(() => _controller.setAccepted(index, accepted));
+    _validateProtection();
+  }
+
   void _setAll(bool accepted) {
     setState(() {
       for (var i = 0; i < widget.segments.length; i++) {
         _controller.setAccepted(i, accepted);
       }
     });
+    _validateProtection();
+  }
+
+  void _validateProtection() {
+    try {
+      _controller.buildText();
+      if (_protectionError != null) {
+        setState(() => _protectionError = null);
+      }
+    } on StateError catch (e) {
+      setState(() => _protectionError = e.message);
+    }
   }
 
   @override
@@ -72,8 +90,7 @@ class _PolishPreviewPageState extends State<PolishPreviewPage> {
                   child: _SegmentCard(
                     segment: segment,
                     accepted: _controller.isAccepted(index),
-                    onChanged: (checked) =>
-                        setState(() => _controller.setAccepted(index, checked)),
+                    onChanged: (checked) => _setAccepted(index, checked),
                   ),
                 );
               },
@@ -218,10 +235,10 @@ class _DiffText extends StatelessWidget {
     }
     return RichText(
       text: TextSpan(
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 14,
           height: 1.6,
-          color: Colors.black87,
+          color: Theme.of(context).colorScheme.onSurface,
         ),
         children: spans,
       ),

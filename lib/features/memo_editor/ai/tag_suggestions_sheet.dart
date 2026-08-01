@@ -97,7 +97,10 @@ class _TagSuggestionsSheetState extends State<_TagSuggestionsSheet> {
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
-                    onPressed: () => Navigator.pop(context, _result),
+                    // 未勾选任何标签时不可应用
+                    onPressed: _selected.isEmpty
+                        ? null
+                        : () => Navigator.pop(context, _result),
                     child: const Text('确认'),
                   ),
                 ],

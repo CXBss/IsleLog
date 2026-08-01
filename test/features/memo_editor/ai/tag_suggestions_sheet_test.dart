@@ -6,7 +6,7 @@ import 'package:isle_log/services/ai/ai_models.dart';
 
 void main() {
   testWidgets('区分已有标签和新建候选，未勾选时不能应用', (tester) async {
-    List<String>? applied;
+    List<String>? applied = ['初始'];
     await tester.pumpWidget(
       MaterialApp(
         home: Builder(
@@ -45,9 +45,14 @@ void main() {
     expect(find.textContaining('90%'), findsOneWidget);
     expect(find.textContaining('70%'), findsOneWidget);
 
-    await tester.tap(find.text('确认'));
+    // 未勾选时确认按钮禁用，点击不会关闭面板
+    final button = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '确认'),
+    );
+    expect(button.onPressed, isNull);
+    await tester.tap(find.text('确认'), warnIfMissed: false);
     await tester.pumpAndSettle();
-    expect(applied, isEmpty);
+    expect(applied, ['初始']);
   });
 
   testWidgets('勾选后返回所选标签', (tester) async {

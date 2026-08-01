@@ -15,6 +15,7 @@ import 'package:isle_log/data/database/database_service.dart';
 import 'package:isle_log/features/memo_editor/memo_editor_page.dart';
 import 'package:isle_log/services/ai/ai_api_client.dart';
 import 'package:isle_log/services/ai/ai_models.dart';
+import 'package:isle_log/services/settings/settings_service.dart';
 
 class FakeAiGateway implements AiGateway {
   List<AiProviderStatus> statuses = const [
@@ -38,13 +39,19 @@ class FakeAiGateway implements AiGateway {
   Completer<void>? tagGate;
   Completer<void>? polishGate;
   bool failSuggest = false;
+  bool failListProviders = false;
   int suggestCalls = 0;
   int polishCalls = 0;
   CancelToken? lastTagToken;
   CancelToken? lastPolishToken;
 
   @override
-  Future<List<AiProviderStatus>> listProviders() async => statuses;
+  Future<List<AiProviderStatus>> listProviders() async {
+    if (failListProviders) {
+      throw const AiApiException('无法连接到模型服务');
+    }
+    return statuses;
+  }
 
   @override
   Future<List<AiTagSuggestion>> suggestTags({
@@ -115,11 +122,11 @@ void main() {
     );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(pathProviderChannel, (call) async {
-      if (call.method == 'getApplicationDocumentsDirectory') {
-        return temporaryDirectory.path;
-      }
-      return null;
-    });
+          if (call.method == 'getApplicationDocumentsDirectory') {
+            return temporaryDirectory.path;
+          }
+          return null;
+        });
     gateway = FakeAiGateway();
   });
 
@@ -131,11 +138,11 @@ void main() {
   tearDownAll(() async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(pathProviderChannel, (call) async {
-      if (call.method == 'getApplicationDocumentsDirectory') {
-        return temporaryDirectory.path;
-      }
-      return null;
-    });
+          if (call.method == 'getApplicationDocumentsDirectory') {
+            return temporaryDirectory.path;
+          }
+          return null;
+        });
     try {
       await (await DatabaseService.db).close(deleteFromDisk: true);
       if (await temporaryDirectory.exists()) {
@@ -170,6 +177,14 @@ void main() {
   testWidgets('能力覆盖为 false 时隐藏右上角 AI 入口', (tester) async {
     await pumpEditor(tester, capabilityOverride: false);
     expect(find.byKey(const Key('memo-editor-ai-action')), findsNothing);
+  });
+
+  testWidgets('探测失败但缓存成功时仍显示入口', (tester) async {
+    gateway.failListProviders = true;
+    await SettingsService.setServerUrl('https://islelog.local');
+    await SettingsService.setAiCapability('https://islelog.local', true);
+    await pumpEditor(tester, capabilityOverride: null);
+    expect(find.byKey(const Key('memo-editor-ai-action')), findsOneWidget);
   });
 
   testWidgets('能力为 true 时显示右上角 AI 入口并弹出操作面板', (tester) async {

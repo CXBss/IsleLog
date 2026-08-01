@@ -135,5 +135,17 @@ void main() {
       final offline = AiService(gateway: _FakeGateway(_ProbeMode.networkError));
       expect(await offline.isCapabilityAvailable(), isFalse);
     });
+
+    test('超过 TTL 的缓存视为无缓存并清除', () async {
+      final past = DateTime.now().millisecondsSinceEpoch - 25 * 3600 * 1000;
+      SharedPreferences.setMockInitialValues({
+        'ai_capability_https://islelog.local': true,
+        'ai_capability_at_https://islelog.local': past,
+      });
+      expect(
+        await SettingsService.aiCapabilityFor('https://islelog.local'),
+        isNull,
+      );
+    });
   });
 }

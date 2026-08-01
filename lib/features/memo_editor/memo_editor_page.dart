@@ -150,9 +150,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 当前请求的取消令牌
   CancelToken? _aiCancelToken;
 
-  /// 进度浮层是否仍在显示（避免请求结束与取消按钮重复 pop）
-  bool _aiProgressVisible = false;
-
   @override
   void initState() {
     super.initState();
@@ -940,7 +937,12 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         });
       }
     } catch (e) {
-      debugPrint('[MemoEditor] AI 能力探测失败（隐藏入口）：$e');
+      // NAS 不可达：回退到已成功的能力缓存，避免隐藏入口
+      final url = await SettingsService.serverUrl;
+      final cached =
+          url == null ? null : await SettingsService.aiCapabilityFor(url);
+      if (mounted) setState(() => _aiAvailable = cached ?? false);
+      debugPrint('[MemoEditor] AI 能力探测失败，回退缓存=$cached：$e');
     }
   }
 
@@ -994,7 +996,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     final cancelToken = CancelToken();
     _aiCancelToken = cancelToken;
     setState(() => _aiRequesting = true);
-    _showAiProgress();
 
     try {
       if (selection.type == AiActionType.suggestTags) {
@@ -1009,8 +1010,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           cancelToken: cancelToken,
         );
         if (suggestions == null || !mounted) return;
-        // 请求已结束：先关闭进度浮层，再进行用户交互
-        _closeProgress();
+        // 请求已结束：先收起进度条，再进行用户交互
+        setState(() => _aiRequesting = false);
         if (_targetChanged(target, targetStart, targetEnd)) {
           _showAiSnack('正文已变化，请重新请求');
           return;
@@ -1032,8 +1033,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           cancelToken: cancelToken,
         );
         if (segments == null || !mounted) return;
-        // 请求已结束：先关闭进度浮层，再进行用户交互
-        _closeProgress();
+        // 请求已结束：先收起进度条，再进行用户交互
+        setState(() => _aiRequesting = false);
         // 深度润色的结构变化确认与 DeepSeek 隐私确认分别执行
         if (selection.type == AiActionType.polishDeep) {
           final confirmed = await showDialog<bool>(
@@ -1073,7 +1074,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     } finally {
       _aiCancelToken = null;
       if (mounted) setState(() => _aiRequesting = false);
-      _closeProgress();
     }
   }
 
@@ -1151,47 +1151,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       text: updated,
       selection: TextSelection.collapsed(offset: start + replacement.length),
     );
-  }
-
-  /// 请求期间显示的进度浮层（含取消按钮）。
-  void _showAiProgress() {
-    _aiProgressVisible = true;
-    final navigator = Navigator.of(context, rootNavigator: true);
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => PopScope(
-        canPop: false,
-        child: AlertDialog(
-          content: Row(
-            children: [
-              const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2.5),
-              ),
-              const SizedBox(width: 16),
-              const Expanded(child: Text('AI 处理中...')),
-              TextButton(
-                onPressed: () {
-                  _aiCancelToken?.cancel();
-                  navigator.pop();
-                  _aiProgressVisible = false;
-                },
-                child: const Text('取消'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 关闭进度浮层（幂等；取消按钮已关闭时跳过）。
-  void _closeProgress() {
-    if (!_aiProgressVisible) return;
-    _aiProgressVisible = false;
-    Navigator.of(context, rootNavigator: true).pop();
   }
 
   void _showAiSnack(String message) {
@@ -1337,6 +1296,15 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      bottomNavigationBar: _aiRequesting
+          ? _AiRequestProgressBar(
+              onCancel: () {
+                _aiCancelToken?.cancel();
+                // 请求可能在后台继续挂起，立即收起进度条
+                if (mounted) setState(() => _aiRequesting = false);
+              },
+            )
+          : null,
       appBar: AppBar(
         elevation: 0,
         scrolledUnderElevation: 1,
@@ -2131,6 +2099,53 @@ class _MoodPickerSheet extends StatelessWidget {
               }).toList(),
             ),
             const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// AI 请求期间页面底部的非模态进度条。
+///
+/// 不拦截编辑器交互，请求期间正文仍可编辑；提供取消按钮。
+class _AiRequestProgressBar extends StatelessWidget {
+  final VoidCallback onCancel;
+
+  const _AiRequestProgressBar({required this.onCancel});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surface(context),
+      elevation: 4,
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const LinearProgressIndicator(minHeight: 2.5),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text('AI 处理中...',
+                        style: TextStyle(fontSize: 13)),
+                  ),
+                  TextButton(
+                    onPressed: onCancel,
+                    child: const Text('取消'),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),

@@ -199,23 +199,43 @@ class SettingsService {
   // ── AI Capability Cache ───────────────────────────────────────
 
   static const _aiCapabilityKeyPrefix = 'ai_capability_';
+  static const _aiCapabilityAtPrefix = 'ai_capability_at_';
 
-  /// 获取指定服务器地址的 AI 能力缓存（未探测过时返回 null）
+  /// AI 能力缓存有效期；过期后重新探测，避免同一 URL 从 Memos 换成
+  /// IsleLog 后入口永久不出现。
+  static const _aiCapabilityTtl = Duration(hours: 24);
+
+  /// 获取指定服务器地址的 AI 能力缓存（未探测过或已过期时返回 null）
   static Future<bool?> aiCapabilityFor(String serverUrl) async {
-    final raw = (await _prefs).getBool('$_aiCapabilityKeyPrefix$serverUrl');
-    return raw;
+    final prefs = await _prefs;
+    final at = prefs.getInt('$_aiCapabilityAtPrefix$serverUrl');
+    if (at != null &&
+        DateTime.now().millisecondsSinceEpoch - at >
+            _aiCapabilityTtl.inMilliseconds) {
+      await prefs.remove('$_aiCapabilityKeyPrefix$serverUrl');
+      await prefs.remove('$_aiCapabilityAtPrefix$serverUrl');
+      return null;
+    }
+    return prefs.getBool('$_aiCapabilityKeyPrefix$serverUrl');
   }
 
   /// 缓存指定服务器地址的 AI 能力探测结果
   static Future<void> setAiCapability(String serverUrl, bool value) async {
     debugPrint('[Settings] setAiCapability: $serverUrl → $value');
-    await (await _prefs).setBool('$_aiCapabilityKeyPrefix$serverUrl', value);
+    final prefs = await _prefs;
+    await prefs.setBool('$_aiCapabilityKeyPrefix$serverUrl', value);
+    await prefs.setInt(
+      '$_aiCapabilityAtPrefix$serverUrl',
+      DateTime.now().millisecondsSinceEpoch,
+    );
   }
 
   /// 移除指定服务器地址的 AI 能力缓存
   static Future<void> removeAiCapability(String serverUrl) async {
     debugPrint('[Settings] removeAiCapability: $serverUrl');
-    await (await _prefs).remove('$_aiCapabilityKeyPrefix$serverUrl');
+    final prefs = await _prefs;
+    await prefs.remove('$_aiCapabilityKeyPrefix$serverUrl');
+    await prefs.remove('$_aiCapabilityAtPrefix$serverUrl');
   }
 
   // ── Helpers ───────────────────────────────────────────────────

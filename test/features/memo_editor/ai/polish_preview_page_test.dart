@@ -6,15 +6,17 @@ import 'package:isle_log/services/ai/ai_models.dart';
 
 const _segments = [
   AiPolishSegment(
-      sourceIndexes: [0],
-      originalText: '第一段。',
-      revisedText: '第一段已润色。',
-      reason: '语句通顺'),
+    sourceIndexes: [0],
+    originalText: '第一段。',
+    revisedText: '第一段已润色。',
+    reason: '语句通顺',
+  ),
   AiPolishSegment(
-      sourceIndexes: [1],
-      originalText: '第二段。',
-      revisedText: '第二段已润色。',
-      reason: '表达简洁'),
+    sourceIndexes: [1],
+    originalText: '第二段。',
+    revisedText: '第二段已润色。',
+    reason: '表达简洁',
+  ),
 ];
 
 late String? result;
@@ -107,10 +109,11 @@ void main() {
                     original: '记录 #工作',
                     segments: [
                       AiPolishSegment(
-                          sourceIndexes: [0],
-                          originalText: '记录 #工作',
-                          revisedText: '记录 #生活',
-                          reason: 'x'),
+                        sourceIndexes: [0],
+                        originalText: '记录 #工作',
+                        revisedText: '记录 #生活',
+                        reason: 'x',
+                      ),
                     ],
                   ),
                 ),
@@ -135,5 +138,14 @@ void main() {
     );
     expect(button.onPressed, isNull);
     expect(result, isNull);
+
+    // 取消勾选坏片段后错误清除、按钮恢复
+    await tester.tap(find.byType(Checkbox).first);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('受保护'), findsNothing);
+    final recovered = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '应用所选'),
+    );
+    expect(recovered.onPressed, isNotNull);
   });
 }
