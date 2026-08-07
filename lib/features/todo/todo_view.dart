@@ -66,6 +66,7 @@ class _TodoViewState extends State<TodoView> {
       return;
     }
     memo.content = lines.join('\n');
+    memo.syncStatus = SyncStatus.pending;
     await DatabaseService.saveMemo(memo);
   }
 

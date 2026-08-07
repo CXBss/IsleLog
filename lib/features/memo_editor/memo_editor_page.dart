@@ -21,6 +21,7 @@ import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
+import '../../services/sync/pending_memo_conflict_policy.dart';
 import '../../services/sync/sync_service.dart';
 import '../../services/weather/weather_service.dart';
 import '../../shared/constants/app_constants.dart';
@@ -152,7 +153,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         );
       }
       // 记录编辑前内容快照，供单条冲突三方对比使用
-      m.originalContent = m.content;
+      captureEditBaseline(m);
       // 恢复天气和心情
       if (m.weatherJson != null) {
         try {

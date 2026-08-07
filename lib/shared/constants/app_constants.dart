@@ -49,6 +49,58 @@ abstract final class AppColors {
   /// 卡片正文颜色（比 textPrimary 略浅）
   static Color textBody(BuildContext context) =>
       Theme.of(context).colorScheme.onSurface;
+
+  /// 次级文字颜色
+  static Color textSecondary(BuildContext context) =>
+      Theme.of(context).colorScheme.onSurfaceVariant;
+
+  /// 轻微抬升的表面背景，用于底栏、卡片等区域
+  static Color elevatedSurface(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.brightness == Brightness.dark
+        ? theme.colorScheme.surfaceContainerHigh
+        : Colors.white;
+  }
+
+  /// 弱表面背景，用于附件栏等辅助区域
+  static Color subtleSurface(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.brightness == Brightness.dark
+        ? theme.colorScheme.surfaceContainer
+        : Colors.grey[50]!;
+  }
+
+  /// 代码块、缩略图等需要与页面区分的背景
+  static Color codeSurface(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.brightness == Brightness.dark
+        ? theme.colorScheme.surfaceContainerHighest
+        : Colors.grey[100]!;
+  }
+
+  /// 低强调边框颜色
+  static Color subtleBorder(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.brightness == Brightness.dark
+        ? theme.colorScheme.outlineVariant
+        : Colors.grey[200]!;
+  }
+
+  /// 标签、日期等绿色弱强调背景
+  static Color primarySoft(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.brightness == Brightness.dark
+        ? theme.colorScheme.primaryContainer
+        : primaryLight;
+  }
+
+  /// 比 [primarySoft] 更弱的绿色背景
+  static Color primarySofter(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.brightness == Brightness.dark
+        ? theme.colorScheme.primaryContainer.withValues(alpha: 0.62)
+        : primaryLighter;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

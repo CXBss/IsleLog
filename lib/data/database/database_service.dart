@@ -8,6 +8,7 @@ import '../models/comment_entry.dart';
 import '../models/folder_entry.dart';
 import '../models/memo_entry.dart';
 import '../models/tag_stat.dart';
+import 'memo_write_policy.dart';
 
 /// 本地数据库服务（单例）
 ///
@@ -54,10 +55,55 @@ class DatabaseService {
     memo.tags = extractTags(memo.content);
     _updateTodoStatus(memo);
     if (!skipTimestamp) memo.updatedAt = DateTime.now();
-    final id = await isar.writeTxn(() => isar.memoEntrys.put(memo));
+    final id = await isar.writeTxn(() async {
+      final stored = memo.id == Isar.autoIncrement
+          ? null
+          : await isar.memoEntrys.get(memo.id);
+      preserveRemoteIdentity(memo, stored);
+      return isar.memoEntrys.put(memo);
+    });
     debugPrint(
         '[DB] saveMemo → id=$id, tags=${memo.tags}, skipTimestamp=$skipTimestamp');
     return id;
+  }
+
+  /// 安全保存附件上传后的请求数据，不覆盖上传期间产生的新编辑。
+  static Future<bool> savePreparedMemoForPush(MemoEntry prepared) async {
+    final isar = await db;
+    final merged = await isar.writeTxn(() async {
+      final latest = await isar.memoEntrys.get(prepared.id);
+      if (latest == null || !mergePreparedMemoForPush(latest, prepared)) {
+        return false;
+      }
+      await isar.memoEntrys.put(latest);
+      return true;
+    });
+    debugPrint(
+        '[DB] savePreparedMemoForPush id=${prepared.id}, merged=$merged');
+    return merged;
+  }
+
+  /// 将成功 Push 的远端身份和同步状态合并到最新本地记录。
+  static Future<MemoEntry?> completeMemoPush(
+    MemoEntry submitted, {
+    String? remoteName,
+  }) async {
+    final isar = await db;
+    final latest = await isar.writeTxn(() async {
+      final current = await isar.memoEntrys.get(submitted.id);
+      if (current == null) return null;
+      reconcileMemoPushSuccess(
+        latest: current,
+        submitted: submitted,
+        remoteName: remoteName,
+      );
+      await isar.memoEntrys.put(current);
+      return current;
+    });
+    debugPrint(
+        '[DB] completeMemoPush id=${submitted.id}, '
+        'memosName=${latest?.memosName}, status=${latest?.syncStatus.name}');
+    return latest;
   }
 
   /// 软删除（将 isDeleted 置为 true，syncStatus 置为 pending）。

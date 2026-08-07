@@ -14,6 +14,7 @@ import '../../services/api/memos_api_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
+import 'memo_list_equality.dart';
 import 'widgets/memo_search_card.dart';
 import 'widgets/memo_timeline_card.dart';
 
@@ -159,7 +160,7 @@ class _HomeViewState extends State<HomeView> {
       );
       if (!mounted) return;
       // 内容没变就不 setState，避免触发不必要的重建和滚动抖动
-      if (_listEquals(page, _tagFilteredMemos)) return;
+      if (memoListsMatchForDisplay(page, _tagFilteredMemos)) return;
       setState(() {
         _tagFilteredMemos
           ..clear()
@@ -172,7 +173,7 @@ class _HomeViewState extends State<HomeView> {
     final limit = _memos.length.clamp(_pageSize, 10 * _pageSize);
     final page = await DatabaseService.getMemosPaged(offset: 0, limit: limit);
     if (!mounted) return;
-    if (_listEquals(page, _memos)) return;
+    if (memoListsMatchForDisplay(page, _memos)) return;
     setState(() {
       _memos
         ..clear()
@@ -180,15 +181,6 @@ class _HomeViewState extends State<HomeView> {
       _offset = page.length;
       _hasMore = page.length == limit;
     });
-  }
-
-  /// 比较两个 MemoEntry 列表是否内容相同（按 id + updatedAt 快速比较）
-  bool _listEquals(List<MemoEntry> a, List<MemoEntry> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i].id != b[i].id || a[i].updatedAt != b[i].updatedAt) return false;
-    }
-    return true;
   }
 
   Future<void> _loadNextPage() async {

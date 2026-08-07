@@ -136,7 +136,7 @@ class _CalendarViewState extends State<CalendarView> {
     final picked = await showDatePicker(
       context: context,
       initialDate: _focusedDay,
-      firstDate: DateTime(2020, 1, 1),
+      firstDate: DateTime(2000, 1, 1),
       lastDate: DateTime(2030, 12, 31),
       helpText: '选择年月',
     );
@@ -261,7 +261,7 @@ class _CalendarViewState extends State<CalendarView> {
       opacity: _monthLoading ? 0.5 : 1.0,
       duration: const Duration(milliseconds: 150),
       child: TableCalendar<void>(
-        firstDay: DateTime.utc(2020, 1, 1),
+        firstDay: DateTime.utc(2000, 1, 1),
         lastDay: DateTime.utc(2030, 12, 31),
         focusedDay: _focusedDay,
         selectedDayPredicate: (day) => isSameDay(_selectedDay, day),

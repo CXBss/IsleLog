@@ -13,6 +13,8 @@ import '../../shared/constants/app_constants.dart';
 import '../api/memos_api_service.dart';
 import '../attachment/attachment_service.dart';
 import '../settings/settings_service.dart';
+import 'pending_memo_conflict_policy.dart';
+import 'sync_task_queue.dart';
 
 /// 同步操作结果
 ///
@@ -64,6 +66,8 @@ class SyncResult {
 class SyncService {
   SyncService._();
 
+  static final SyncTaskQueue _taskQueue = SyncTaskQueue();
+
   // ── 公开接口 ──────────────────────────────────────────────────
 
   /// 增量双向同步（先 Push 再增量 Pull）
@@ -71,9 +75,9 @@ class SyncService {
   /// Pull 阶段仅拉取自上次同步以来有变化的条目，不做远端删除检测。
   /// 如未配置服务器，直接返回错误结果而不发起任何网络请求。
   /// 同步成功后自动更新 [SettingsService.lastSyncTime]。
-  static Future<SyncResult> syncAll() async {
+  static Future<SyncResult> syncAll() {
     debugPrint('[Sync] syncAll（增量）开始');
-    return _sync(full: false);
+    return _taskQueue.run(() => _sync(full: false));
   }
 
   /// 全量双向同步（先 Push 再全量 Pull + 远端删除检测）
@@ -81,9 +85,9 @@ class SyncService {
   /// Pull 阶段忽略 lastSyncTime，拉取所有条目，
   /// 并将本地存在但远端已不存在的已同步条目物理删除。
   /// 适合服务器迁移、手动清理后恢复一致性等场景。
-  static Future<SyncResult> syncFull() async {
+  static Future<SyncResult> syncFull() {
     debugPrint('[Sync] syncFull（全量）开始');
-    return _sync(full: true);
+    return _taskQueue.run(() => _sync(full: true));
   }
 
   /// 内部同步实现
@@ -177,10 +181,18 @@ class SyncService {
         weather: weatherInt,
         weatherDetail: weatherDetail,
       );
-      memo
-        ..memosName = remoteData['name'] as String?
-        ..syncStatus = SyncStatus.synced
-        ..lastSyncAt = DateTime.now();
+      final remoteName = remoteData['name'] as String?;
+      if (remoteName == null || remoteName.isEmpty) {
+        throw StateError('创建 memo 成功但响应缺少 name');
+      }
+      final latest = await DatabaseService.completeMemoPush(
+        memo,
+        remoteName: remoteName,
+      );
+      if (memo.isPinned) {
+        await api.pinMemo(remoteName);
+      }
+      debugPrint('[Sync] pushSingleMemo 新建成功，memosName=${latest?.memosName}');
     } else {
       await api.updateMemo(
         name: memo.memosName!,
@@ -199,12 +211,12 @@ class SyncService {
       } else {
         await api.unpinMemo(memo.memosName!);
       }
-      memo
-        ..syncStatus = SyncStatus.synced
-        ..lastSyncAt = DateTime.now();
+      final latest = await DatabaseService.completeMemoPush(memo);
+      if (latest?.syncStatus == SyncStatus.pending) {
+        debugPrint('[Sync] pushSingleMemo 更新期间检测到新编辑，保留 pending id=${memo.id}');
+      }
+      debugPrint('[Sync] pushSingleMemo 更新成功，memosName=${memo.memosName}');
     }
-    await DatabaseService.saveMemo(memo, skipTimestamp: true);
-    debugPrint('[Sync] pushSingleMemo 成功 memosName=${memo.memosName}');
   }
 
   /// 直接推送单篇文章到远端，不经过 pull（用于冲突解决后的推送）
@@ -262,7 +274,11 @@ class SyncService {
   /// 先 pull 检测冲突，再 push 本地改动。
   /// 静默失败：遇到任何错误只打印日志，不抛出异常，
   /// 保持 pending 状态等待下次手动同步。
-  static Future<void> pushPendingBackground() async {
+  static Future<void> pushPendingBackground() {
+    return _taskQueue.run(_pushPendingBackground);
+  }
+
+  static Future<void> _pushPendingBackground() async {
     debugPrint('[Sync] pushPendingBackground 开始');
     final url = await SettingsService.serverUrl;
     final token = await SettingsService.accessToken;
@@ -300,7 +316,11 @@ class SyncService {
   ///    c. changelog 请求失败 → 降级为完整 pull+push
   ///
   /// 静默失败：遇到任何错误只打印日志，不抛出异常。
-  static Future<void> checkConflictAndPush(MemoEntry memo) async {
+  static Future<void> checkConflictAndPush(MemoEntry memo) {
+    return _taskQueue.run(() => _checkConflictAndPush(memo));
+  }
+
+  static Future<void> _checkConflictAndPush(MemoEntry memo) async {
     debugPrint('[Sync] checkConflictAndPush 开始 id=${memo.id} memosName=${memo.memosName}');
     final url = await SettingsService.serverUrl;
     final token = await SettingsService.accessToken;
@@ -353,18 +373,34 @@ class SyncService {
       });
 
       if (hasRemoteChange) {
-        // 当前 memo 有远端变更 → 精准拉取并标记 conflict
-        debugPrint('[Sync] 发现远端变更，拉取内容并标记 conflict: ${memo.memosName}');
+        // changelog 命中当前 memo → 疑似冲突，拉远端内容做最终判定
+        // （changelog 也包含自己上次 push 的记录，必须对比编辑基线过滤）
+        debugPrint('[Sync] changelog 命中当前 memo，拉取远端内容判定: ${memo.memosName}');
         try {
           final remoteData = await api.getMemo(memoIdPart);
-          final remoteContent = remoteData['content'] as String? ?? '';
+          final state = remoteData['state'] as String? ?? 'NORMAL';
           final latestMemo = await DatabaseService.getMemoById(memo.id);
           if (latestMemo != null) {
-            latestMemo
-              ..syncStatus = SyncStatus.conflict
-              ..conflictRemoteContent = remoteContent;
-            await DatabaseService.saveMemo(latestMemo, skipTimestamp: true);
-            debugPrint('[Sync] 已标记 conflict id=${memo.id}');
+            final decision = decidePendingMemo(
+              latestMemo,
+              remoteData,
+              archived: state == 'ARCHIVED',
+            );
+            switch (decision) {
+              case PendingMemoDecision.alreadySynced:
+                debugPrint('[Sync] 命中但远端与本地一致，标记 synced id=${memo.id}');
+                markMemoSynced(latestMemo);
+                await DatabaseService.saveMemo(latestMemo, skipTimestamp: true);
+              case PendingMemoDecision.pushLocal:
+                debugPrint('[Sync] 命中但远端仍为编辑基线，保留 pending 等待推送 id=${memo.id}');
+              case PendingMemoDecision.conflict:
+                final remoteContent = remoteData['content'] as String? ?? '';
+                debugPrint('[Sync] 远端内容与基线不同，标记 conflict: ${memo.memosName}');
+                latestMemo
+                  ..syncStatus = SyncStatus.conflict
+                  ..conflictRemoteContent = remoteContent;
+                await DatabaseService.saveMemo(latestMemo, skipTimestamp: true);
+            }
           }
         } catch (e) {
           debugPrint('[Sync] 拉取远端内容失败，保持 pending：$e');
@@ -465,9 +501,7 @@ class SyncService {
             debugPrint('[Sync] 归档远端 memo: ${memo.memosName}');
             await api.archiveMemo(memo.memosName!);
           }
-          memo
-            ..syncStatus = SyncStatus.synced
-            ..lastSyncAt = DateTime.now();
+          markMemoSynced(memo);
           await DatabaseService.saveMemo(memo, skipTimestamp: true);
           debugPrint('[Sync] 归档成功 id=${memo.id}');
         } else {
@@ -498,16 +532,19 @@ class SyncService {
               weather: weatherInt,
               weatherDetail: weatherDetail,
             );
-            memo
-              ..memosName = remoteData['name'] as String?
-              ..syncStatus = SyncStatus.synced
-              ..lastSyncAt = DateTime.now();
-            await DatabaseService.saveMemo(memo, skipTimestamp: true);
-            // 同步置顶状态
-            if (memo.isPinned && memo.memosName != null) {
-              await api.pinMemo(memo.memosName!);
+            final remoteName = remoteData['name'] as String?;
+            if (remoteName == null || remoteName.isEmpty) {
+              throw StateError('创建 memo 成功但响应缺少 name');
             }
-            debugPrint('[Sync] 新建成功，memosName=${memo.memosName}');
+            final latest = await DatabaseService.completeMemoPush(
+              memo,
+              remoteName: remoteName,
+            );
+            // 同步置顶状态
+            if (memo.isPinned) {
+              await api.pinMemo(remoteName);
+            }
+            debugPrint('[Sync] 新建成功，memosName=${latest?.memosName}');
           } else {
             // ── 处理更新 ──
             debugPrint('[Sync] 更新远端 memo: ${memo.memosName}，附件 ${attachmentNames.length} 个');
@@ -529,11 +566,11 @@ class SyncService {
             } else {
               await api.unpinMemo(memo.memosName!);
             }
-            memo
-              ..syncStatus = SyncStatus.synced
-              ..lastSyncAt = DateTime.now();
-            await DatabaseService.saveMemo(memo, skipTimestamp: true);
+            final latest = await DatabaseService.completeMemoPush(memo);
             debugPrint('[Sync] 更新成功，memosName=${memo.memosName}');
+            if (latest?.syncStatus == SyncStatus.pending) {
+              debugPrint('[Sync] 更新期间检测到新编辑，保留 pending id=${memo.id}');
+            }
           }
         }
         count++;
@@ -794,20 +831,30 @@ class SyncService {
       unawaited(_downloadAttachments(localMemo, baseUrl));
       return 1;
     } else if (localMemo.syncStatus == SyncStatus.pending) {
-      // 本地有未推送修改，远端也有新版本 → 冲突
-      // 保留本地 content 不变，将远端内容存入 conflictRemoteContent
-      final remoteContent = data['content'] as String? ?? '';
-      debugPrint('[Sync] 检测到冲突，标记 conflict: $remoteName');
-      localMemo
-        ..syncStatus = SyncStatus.conflict
-        ..conflictRemoteContent = remoteContent;
-      await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+      final decision = decidePendingMemo(localMemo, data, archived: archived);
+      switch (decision) {
+        case PendingMemoDecision.alreadySynced:
+          debugPrint('[Sync] pending 内容已存在于远端，标记 synced: $remoteName');
+          markMemoSynced(localMemo);
+          await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+        case PendingMemoDecision.pushLocal:
+          debugPrint('[Sync] 远端仍为编辑基线，保留 pending 等待推送: $remoteName');
+        case PendingMemoDecision.conflict:
+          final remoteContent = data['content'] as String? ?? '';
+          debugPrint('[Sync] 检测到冲突，标记 conflict: $remoteName');
+          localMemo
+            ..syncStatus = SyncStatus.conflict
+            ..conflictRemoteContent = remoteContent;
+          await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+      }
     } else if (localMemo.syncStatus == SyncStatus.conflict) {
       // 已是冲突状态，远端又有新版本 → 只更新远端版本内容，不覆盖本地
       final remoteContent = data['content'] as String? ?? '';
-      debugPrint('[Sync] 冲突状态下远端再次更新，更新 conflictRemoteContent: $remoteName');
-      localMemo.conflictRemoteContent = remoteContent;
-      await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+      if (remoteContent != localMemo.conflictRemoteContent) {
+        debugPrint('[Sync] 冲突状态下远端再次更新，更新 conflictRemoteContent: $remoteName');
+        localMemo.conflictRemoteContent = remoteContent;
+        await DatabaseService.saveMemo(localMemo, skipTimestamp: true);
+      }
     }
     return 0;
   }
@@ -986,7 +1033,7 @@ class SyncService {
 
     if (changed || updated.any((a) => a != attachments[updated.indexOf(a)])) {
       memo.attachments = updated;
-      await DatabaseService.saveMemo(memo, skipTimestamp: true);
+      await DatabaseService.savePreparedMemoForPush(memo);
     }
   }
 
