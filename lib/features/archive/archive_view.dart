@@ -34,7 +34,11 @@ class _ArchiveViewState extends State<ArchiveView> {
 
   Future<void> _load() async {
     final memos = await DatabaseService.getArchivedMemos();
-    if (mounted) setState(() { _memos = memos; _loading = false; });
+    if (mounted)
+      setState(() {
+        _memos = memos;
+        _loading = false;
+      });
   }
 
   @override
@@ -64,18 +68,18 @@ class _ArchiveViewState extends State<ArchiveView> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _memos.isEmpty
-              ? const Center(
-                  child: Text('暂无归档日记', style: TextStyle(color: Colors.grey)),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                  itemCount: _memos.length,
-                  itemBuilder: (ctx, i) => _ArchiveItem(
-                    key: ValueKey(_memos[i].id),
-                    memo: _memos[i],
-                    isLast: i == _memos.length - 1,
-                  ),
-                ),
+          ? const Center(
+              child: Text('暂无归档日记', style: TextStyle(color: Colors.grey)),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+              itemCount: _memos.length,
+              itemBuilder: (ctx, i) => _ArchiveItem(
+                key: ValueKey(_memos[i].id),
+                memo: _memos[i],
+                isLast: i == _memos.length - 1,
+              ),
+            ),
     );
   }
 }
@@ -121,18 +125,15 @@ class _ArchiveSearchDelegate extends SearchDelegate<void> {
 
   @override
   List<Widget> buildActions(BuildContext context) => [
-        if (query.isNotEmpty)
-          IconButton(
-            icon: const Icon(Icons.clear),
-            onPressed: () => query = '',
-          ),
-      ];
+    if (query.isNotEmpty)
+      IconButton(icon: const Icon(Icons.clear), onPressed: () => query = ''),
+  ];
 
   @override
   Widget buildLeading(BuildContext context) => IconButton(
-        icon: const Icon(Icons.arrow_back),
-        onPressed: () => close(context, null),
-      );
+    icon: const Icon(Icons.arrow_back),
+    onPressed: () => close(context, null),
+  );
 
   @override
   Widget buildResults(BuildContext context) =>
@@ -155,6 +156,13 @@ class _ArchiveSearchResultsState extends State<_ArchiveSearchResults> {
   List<MemoEntry> _results = [];
   bool _loading = false;
   String _lastQuery = '';
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   void didChangeDependencies() {
@@ -171,10 +179,16 @@ class _ArchiveSearchResultsState extends State<_ArchiveSearchResults> {
   Future<void> _doSearch(String q) async {
     if (q == _lastQuery) return;
     _lastQuery = q;
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
     setState(() => _loading = true);
     final results = await DatabaseService.searchArchivedMemos(q);
     if (mounted && _lastQuery == q) {
-      setState(() { _results = results; _loading = false; });
+      setState(() {
+        _results = results;
+        _loading = false;
+      });
     }
   }
 
@@ -183,11 +197,15 @@ class _ArchiveSearchResultsState extends State<_ArchiveSearchResults> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_results.isEmpty) {
       return Center(
-        child: Text('没有找到"${widget.query}"',
-            style: const TextStyle(color: Colors.grey)),
+        child: Text(
+          '没有找到"${widget.query}"',
+          style: const TextStyle(color: Colors.grey),
+        ),
       );
     }
     return ListView.builder(
+      key: PageStorageKey<String>('archive_search_results_${widget.query}'),
+      controller: _scrollController,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       itemCount: _results.length,
       itemBuilder: (ctx, i) => MemoSearchCard(

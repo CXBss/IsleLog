@@ -128,7 +128,8 @@ class _HomeViewState extends State<HomeView> {
       final rawTagCount = stats['tagCount'];
       if (rawTagCount is Map) {
         final tagCounts = rawTagCount.map(
-            (k, v) => MapEntry(k as String, (v as num).toInt()));
+          (k, v) => MapEntry(k as String, (v as num).toInt()),
+        );
         await DatabaseService.saveTagStats(tagCounts);
         final updated = await DatabaseService.getCachedTagStats();
         if (mounted) setState(() => _tagStats = updated);
@@ -190,7 +191,9 @@ class _HomeViewState extends State<HomeView> {
     final pixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
     debugPrint('[HomeView] _loadNextPage triggered, pixels=$pixels');
     final page = await DatabaseService.getMemosPaged(
-        offset: queryOffset, limit: _pageSize);
+      offset: queryOffset,
+      limit: _pageSize,
+    );
     if (mounted) {
       setState(() {
         // 若 _resetAndReload 在此期间重置了 _offset，丢弃结果避免重复
@@ -300,10 +303,12 @@ class _HomeViewState extends State<HomeView> {
     final result = await SyncService.syncAll();
     if (mounted) {
       setState(() => _syncing = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(result.toString()),
-        backgroundColor: result.success ? null : AppColors.error,
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.toString()),
+          backgroundColor: result.success ? null : AppColors.error,
+        ),
+      );
     }
   }
 
@@ -314,10 +319,12 @@ class _HomeViewState extends State<HomeView> {
     final result = await SyncService.syncFull();
     if (mounted) {
       setState(() => _syncing = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(result.toString()),
-        backgroundColor: result.success ? null : AppColors.error,
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.toString()),
+          backgroundColor: result.success ? null : AppColors.error,
+        ),
+      );
     }
   }
 
@@ -358,8 +365,10 @@ class _HomeViewState extends State<HomeView> {
           tooltip: '菜单',
           onPressed: () => _scaffoldKey.currentState?.openDrawer(),
         ),
-        title: const Text(AppStrings.homeTitle,
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        title: const Text(
+          AppStrings.homeTitle,
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+        ),
         actions: [
           _syncing
               ? const Padding(
@@ -368,7 +377,9 @@ class _HomeViewState extends State<HomeView> {
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2, color: AppColors.primary),
+                      strokeWidth: 2,
+                      color: AppColors.primary,
+                    ),
                   ),
                 )
               : IconButton(
@@ -412,8 +423,10 @@ class _HomeViewState extends State<HomeView> {
               title: const Text('设置'),
               onTap: () {
                 Navigator.pop(context);
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const SettingsPage()));
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SettingsPage()),
+                );
               },
             ),
             ListTile(
@@ -421,8 +434,10 @@ class _HomeViewState extends State<HomeView> {
               title: const Text('归档日记'),
               onTap: () {
                 Navigator.pop(context);
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const ArchiveView()));
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ArchiveView()),
+                );
               },
             ),
             ListTile(
@@ -430,15 +445,19 @@ class _HomeViewState extends State<HomeView> {
               title: const Text('往年今日'),
               onTap: () {
                 Navigator.pop(context);
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const OnThisDayPage()));
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const OnThisDayPage()),
+                );
               },
             ),
             ListTile(
               leading: const Icon(Icons.cloud_sync_outlined),
               title: const Text('全量同步'),
-              subtitle: const Text('拉取全部数据并检测远端删除',
-                  style: TextStyle(fontSize: 12)),
+              subtitle: const Text(
+                '拉取全部数据并检测远端删除',
+                style: TextStyle(fontSize: 12),
+              ),
               onTap: _syncing ? null : _syncFull,
             ),
             const Divider(height: 1),
@@ -477,9 +496,10 @@ class _HomeViewState extends State<HomeView> {
             Expanded(
               child: _tagStats.isEmpty
                   ? Center(
-                      child: Text('还没有标签',
-                          style: TextStyle(
-                              color: Colors.grey[400], fontSize: 13)),
+                      child: Text(
+                        '还没有标签',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                      ),
                     )
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -510,7 +530,9 @@ class _HomeViewState extends State<HomeView> {
                           ),
                           trailing: Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2),
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
                             decoration: BoxDecoration(
                               color: isSelected
                                   ? AppColors.primaryLight
@@ -530,7 +552,8 @@ class _HomeViewState extends State<HomeView> {
                           selected: isSelected,
                           selectedTileColor: AppColors.primaryLighter,
                           shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8)),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                           onTap: () {
                             Navigator.pop(context);
                             _toggleTag(stat.name);
@@ -600,7 +623,8 @@ class _HomeViewState extends State<HomeView> {
   Widget _buildList() {
     if (_initialLoading) {
       return const Center(
-          child: CircularProgressIndicator(color: AppColors.primary));
+        child: CircularProgressIndicator(color: AppColors.primary),
+      );
     }
 
     final isFiltering = _selectedTags.isNotEmpty;
@@ -620,8 +644,10 @@ class _HomeViewState extends State<HomeView> {
             ),
             if (!isFiltering) ...[
               const SizedBox(height: 8),
-              Text(AppStrings.homeEmptyHint,
-                  style: TextStyle(fontSize: 13, color: Colors.grey[350])),
+              Text(
+                AppStrings.homeEmptyHint,
+                style: TextStyle(fontSize: 13, color: Colors.grey[350]),
+              ),
             ],
           ],
         ),
@@ -644,8 +670,9 @@ class _HomeViewState extends State<HomeView> {
         return Align(
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
-            constraints:
-                const BoxConstraints(maxWidth: AppDimens.timelineMaxWidth),
+            constraints: const BoxConstraints(
+              maxWidth: AppDimens.timelineMaxWidth,
+            ),
             child: ListView.builder(
               key: const PageStorageKey('home_timeline'),
               controller: _scrollCtrl,
@@ -682,7 +709,9 @@ class _HomeViewState extends State<HomeView> {
                     padding: EdgeInsets.symmetric(vertical: 16),
                     child: Center(
                       child: CircularProgressIndicator(
-                          strokeWidth: 2, color: AppColors.primary),
+                        strokeWidth: 2,
+                        color: AppColors.primary,
+                      ),
                     ),
                   );
                 }
@@ -733,7 +762,11 @@ class _SelectedTagChip extends StatelessWidget {
           const SizedBox(width: 4),
           GestureDetector(
             onTap: onRemove,
-            child: const Icon(Icons.close, size: 14, color: AppColors.primaryDark),
+            child: const Icon(
+              Icons.close,
+              size: 14,
+              color: AppColors.primaryDark,
+            ),
           ),
         ],
       ),
@@ -763,7 +796,10 @@ class _ConflictSection extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.surface(context),
         borderRadius: BorderRadius.circular(AppDimens.cardRadius),
-        border: Border.all(color: Colors.orange.withValues(alpha: 0.5), width: 1),
+        border: Border.all(
+          color: Colors.orange.withValues(alpha: 0.5),
+          width: 1,
+        ),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.05),
@@ -788,7 +824,11 @@ class _ConflictSection extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
               child: Row(
                 children: [
-                  const Icon(Icons.warning_amber_rounded, size: 15, color: Colors.orange),
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    size: 15,
+                    color: Colors.orange,
+                  ),
                   const SizedBox(width: 6),
                   const Text(
                     '同步冲突',
@@ -800,7 +840,10 @@ class _ConflictSection extends StatelessWidget {
                   ),
                   const SizedBox(width: 6),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 1,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.orange.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(8),
@@ -808,7 +851,9 @@ class _ConflictSection extends StatelessWidget {
                     child: Text(
                       '${memos.length}',
                       style: const TextStyle(
-                          fontSize: 11, color: Colors.orange),
+                        fontSize: 11,
+                        color: Colors.orange,
+                      ),
                     ),
                   ),
                   const Spacer(),
@@ -828,13 +873,15 @@ class _ConflictSection extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
               child: Column(
                 children: memos
-                    .map((m) => MemoTimelineCard(
-                          key: ValueKey(m.id),
-                          memo: m,
-                          isLast: true,
-                          showTimeline: false,
-                          onTagTap: onTagTap,
-                        ))
+                    .map(
+                      (m) => MemoTimelineCard(
+                        key: ValueKey(m.id),
+                        memo: m,
+                        isLast: true,
+                        showTimeline: false,
+                        onTagTap: onTagTap,
+                      ),
+                    )
                     .toList(),
               ),
             ),
@@ -891,7 +938,11 @@ class _PinnedSection extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
               child: Row(
                 children: [
-                  const Icon(Icons.push_pin, size: 15, color: AppColors.primary),
+                  const Icon(
+                    Icons.push_pin,
+                    size: 15,
+                    color: AppColors.primary,
+                  ),
                   const SizedBox(width: 6),
                   const Text(
                     '置顶',
@@ -903,8 +954,10 @@ class _PinnedSection extends StatelessWidget {
                   ),
                   const SizedBox(width: 6),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 1,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.primaryLight,
                       borderRadius: BorderRadius.circular(8),
@@ -912,7 +965,9 @@ class _PinnedSection extends StatelessWidget {
                     child: Text(
                       '${memos.length}',
                       style: const TextStyle(
-                          fontSize: 11, color: AppColors.primaryDark),
+                        fontSize: 11,
+                        color: AppColors.primaryDark,
+                      ),
                     ),
                   ),
                   const Spacer(),
@@ -932,13 +987,15 @@ class _PinnedSection extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
               child: Column(
                 children: memos
-                    .map((m) => MemoTimelineCard(
-                          key: ValueKey(m.id),
-                          memo: m,
-                          isLast: true,
-                          showTimeline: false,
-                          onTagTap: onTagTap,
-                        ))
+                    .map(
+                      (m) => MemoTimelineCard(
+                        key: ValueKey(m.id),
+                        memo: m,
+                        isLast: true,
+                        showTimeline: false,
+                        onTagTap: onTagTap,
+                      ),
+                    )
                     .toList(),
               ),
             ),
@@ -1007,15 +1064,21 @@ class _DaySection extends StatelessWidget {
                           color: AppColors.textPrimary(context),
                         ),
                       ),
-                      Text('${date.month}月',
-                          style: TextStyle(
-                              fontSize: monthFontSize,
-                              color: Colors.grey[600])),
+                      Text(
+                        '${date.month}月',
+                        style: TextStyle(
+                          fontSize: monthFontSize,
+                          color: Colors.grey[600],
+                        ),
+                      ),
                       const SizedBox(height: 2),
-                      Text('星期$weekday',
-                          style: TextStyle(
-                              fontSize: weekFontSize,
-                              color: Colors.grey[400])),
+                      Text(
+                        '星期$weekday',
+                        style: TextStyle(
+                          fontSize: weekFontSize,
+                          color: Colors.grey[400],
+                        ),
+                      ),
                       const SizedBox(height: 4),
                     ] else
                       const SizedBox(height: 12),
@@ -1056,18 +1119,15 @@ class _MemoSearchDelegate extends SearchDelegate<void> {
 
   @override
   List<Widget> buildActions(BuildContext context) => [
-        if (query.isNotEmpty)
-          IconButton(
-            icon: const Icon(Icons.clear),
-            onPressed: () => query = '',
-          ),
-      ];
+    if (query.isNotEmpty)
+      IconButton(icon: const Icon(Icons.clear), onPressed: () => query = ''),
+  ];
 
   @override
   Widget buildLeading(BuildContext context) => IconButton(
-        icon: const Icon(Icons.arrow_back),
-        onPressed: () => close(context, null),
-      );
+    icon: const Icon(Icons.arrow_back),
+    onPressed: () => close(context, null),
+  );
 
   @override
   Widget buildResults(BuildContext context) => _SearchResults(query: query);
@@ -1103,6 +1163,13 @@ class _SearchResultsState extends State<_SearchResults> {
   List<_SearchItem> _items = [];
   bool _loading = false;
   String _lastQuery = '';
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   void didChangeDependencies() {
@@ -1119,28 +1186,30 @@ class _SearchResultsState extends State<_SearchResults> {
   Future<void> _doSearch(String q) async {
     if (q == _lastQuery) return;
     _lastQuery = q;
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
     setState(() => _loading = true);
 
     final memos = await DatabaseService.searchMemos(q);
     final comments = await DatabaseService.searchComments(q);
 
     // 为每条评论查找父日记
-    final commentItems = await Future.wait(comments.map((c) async {
-      MemoEntry? parent;
-      if (c.parentMemosName != null) {
-        parent = await DatabaseService.getMemoByMemosName(c.parentMemosName!);
-      }
-      if (parent == null && c.memoId != null) {
-        parent = await DatabaseService.getMemoById(c.memoId!);
-      }
-      return _CommentItem(c, parent);
-    }));
+    final commentItems = await Future.wait(
+      comments.map((c) async {
+        MemoEntry? parent;
+        if (c.parentMemosName != null) {
+          parent = await DatabaseService.getMemoByMemosName(c.parentMemosName!);
+        }
+        if (parent == null && c.memoId != null) {
+          parent = await DatabaseService.getMemoById(c.memoId!);
+        }
+        return _CommentItem(c, parent);
+      }),
+    );
 
     // 合并：先 memo 结果，再 comment 结果，按时间倒序
-    final items = <_SearchItem>[
-      ...memos.map(_MemoItem.new),
-      ...commentItems,
-    ];
+    final items = <_SearchItem>[...memos.map(_MemoItem.new), ...commentItems];
 
     if (mounted && _lastQuery == q) {
       setState(() {
@@ -1155,28 +1224,31 @@ class _SearchResultsState extends State<_SearchResults> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_items.isEmpty) {
       return Center(
-        child: Text('没有找到"${widget.query}"',
-            style: const TextStyle(color: Colors.grey)),
+        child: Text(
+          '没有找到"${widget.query}"',
+          style: const TextStyle(color: Colors.grey),
+        ),
       );
     }
     return ListView.builder(
+      key: PageStorageKey<String>('memo_search_results_${widget.query}'),
+      controller: _scrollController,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       itemCount: _items.length,
       itemBuilder: (ctx, i) {
         final item = _items[i];
         return switch (item) {
           _MemoItem(:final memo) => MemoSearchCard(
-              key: ValueKey('memo_${memo.id}'),
-              memo: memo,
-              query: widget.query,
-            ),
-          _CommentItem(:final comment, :final parentMemo) =>
-            _CommentSearchCard(
-              key: ValueKey('comment_${comment.id}'),
-              comment: comment,
-              parentMemo: parentMemo,
-              query: widget.query,
-            ),
+            key: ValueKey('memo_${memo.id}'),
+            memo: memo,
+            query: widget.query,
+          ),
+          _CommentItem(:final comment, :final parentMemo) => _CommentSearchCard(
+            key: ValueKey('comment_${comment.id}'),
+            comment: comment,
+            parentMemo: parentMemo,
+            query: widget.query,
+          ),
         };
       },
     );
@@ -1212,9 +1284,7 @@ class _CommentSearchCard extends StatelessWidget {
         if (parentMemo == null) return;
         Navigator.push(
           context,
-          MaterialPageRoute(
-            builder: (_) => MemoDetailPage(memo: parentMemo!),
-          ),
+          MaterialPageRoute(builder: (_) => MemoDetailPage(memo: parentMemo!)),
         );
       },
       child: Container(
@@ -1240,8 +1310,10 @@ class _CommentSearchCard extends StatelessWidget {
               Row(
                 children: [
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 1,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.primaryLight,
                       borderRadius: BorderRadius.circular(4),
@@ -1279,8 +1351,11 @@ class _CommentSearchCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    const Icon(Icons.article_outlined,
-                        size: 12, color: Colors.grey),
+                    const Icon(
+                      Icons.article_outlined,
+                      size: 12,
+                      color: Colors.grey,
+                    ),
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
@@ -1290,8 +1365,7 @@ class _CommentSearchCard extends StatelessWidget {
                               .trim();
                           return t.length > 50 ? '${t.substring(0, 50)}…' : t;
                         }(),
-                        style:
-                            TextStyle(fontSize: 11, color: Colors.grey[500]),
+                        style: TextStyle(fontSize: 11, color: Colors.grey[500]),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1319,21 +1393,28 @@ class _HighlightText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final displayText = buildSearchExcerpt(text, query);
     if (query.trim().isEmpty) {
       return Text(
-        text,
+        displayText,
         style: TextStyle(
-            fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
+          fontSize: 14,
+          height: 1.6,
+          color: AppColors.textBody(context),
+        ),
         maxLines: 8,
         overflow: TextOverflow.ellipsis,
       );
     }
 
-    final spans = _buildSpans(text, query.trim().toLowerCase());
+    final spans = _buildSpans(displayText, query.trim().toLowerCase());
     return Text.rich(
       TextSpan(children: spans),
       style: TextStyle(
-          fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
+        fontSize: 14,
+        height: 1.6,
+        color: AppColors.textBody(context),
+      ),
       maxLines: 8,
       overflow: TextOverflow.ellipsis,
     );
@@ -1355,14 +1436,16 @@ class _HighlightText extends StatelessWidget {
       if (idx > start) {
         spans.add(TextSpan(text: text.substring(start, idx)));
       }
-      spans.add(TextSpan(
-        text: text.substring(idx, idx + lowerQuery.length),
-        style: const TextStyle(
-          backgroundColor: Color(0xFFFFE082),
-          color: Color(0xFF4E3500),
-          fontWeight: FontWeight.bold,
+      spans.add(
+        TextSpan(
+          text: text.substring(idx, idx + lowerQuery.length),
+          style: const TextStyle(
+            backgroundColor: Color(0xFFFFE082),
+            color: Color(0xFF4E3500),
+            fontWeight: FontWeight.bold,
+          ),
         ),
-      ));
+      );
       start = idx + lowerQuery.length;
     }
 

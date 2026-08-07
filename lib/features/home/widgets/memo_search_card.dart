@@ -5,6 +5,41 @@ import '../../../features/memo_detail/memo_detail_page.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
 import '../../../shared/constants/app_constants.dart';
 
+/// 构建搜索结果的正文片段。
+///
+/// 长文本优先展示首次命中的上下文，避免命中词位于正文靠后位置时，
+/// 被卡片首段的省略显示隐藏。
+String buildSearchExcerpt(
+  String text,
+  String query, {
+  int maxLength = 220,
+  int leadingContextLength = 72,
+}) {
+  final normalizedQuery = query.trim();
+  if (text.length <= maxLength) return text;
+
+  var start = 0;
+  if (normalizedQuery.isNotEmpty) {
+    final matchIndex = text.toLowerCase().indexOf(
+      normalizedQuery.toLowerCase(),
+    );
+    if (matchIndex >= 0) {
+      start = matchIndex - leadingContextLength;
+      if (start < 0) start = 0;
+    }
+  }
+
+  var end = start + maxLength;
+  if (end > text.length) {
+    end = text.length;
+    start = end - maxLength;
+  }
+
+  final prefix = start > 0 ? '…' : '';
+  final suffix = end < text.length ? '…' : '';
+  return '$prefix${text.substring(start, end).trim()}$suffix';
+}
+
 /// 搜索结果卡片
 ///
 /// 显示日期+时间、关键词高亮正文、标签列表。
@@ -37,57 +72,61 @@ class MemoSearchCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => Navigator.push(context,
-          MaterialPageRoute(builder: (_) => MemoDetailPage(memo: memo))),
-      onDoubleTap: () => Navigator.push(context,
-          MaterialPageRoute(builder: (_) => MemoEditorPage(editingMemo: memo))),
-      child: Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: AppColors.surface(context),
-        borderRadius: BorderRadius.circular(AppDimens.cardRadius),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => MemoDetailPage(memo: memo)),
       ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── 日期时间 ──────────────────────────────────────
-            Text(
-              _dateTimeLabel,
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[500],
-                fontWeight: FontWeight.w500,
-              ),
+      onDoubleTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => MemoEditorPage(editingMemo: memo)),
+      ),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        decoration: BoxDecoration(
+          color: AppColors.surface(context),
+          borderRadius: BorderRadius.circular(AppDimens.cardRadius),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.06),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
             ),
-            const SizedBox(height: 6),
-
-            // ── 正文（高亮关键词）────────────────────────────
-            if (_displayContent.isNotEmpty)
-              _HighlightText(text: _displayContent, query: query),
-
-            // ── 标签 ──────────────────────────────────────────
-            if (memo.tags.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: memo.tags
-                    .map((tag) => _TagLabel(tag: tag))
-                    .toList(),
-              ),
-            ],
           ],
         ),
-      ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── 日期时间 ──────────────────────────────────────
+              Text(
+                _dateTimeLabel,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[500],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 6),
+
+              // ── 正文（高亮关键词）────────────────────────────
+              if (_displayContent.isNotEmpty)
+                _HighlightText(text: _displayContent, query: query),
+
+              // ── 标签 ──────────────────────────────────────────
+              if (memo.tags.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: memo.tags
+                      .map((tag) => _TagLabel(tag: tag))
+                      .toList(),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -95,7 +134,7 @@ class MemoSearchCard extends StatelessWidget {
 
 /// 带关键词高亮的文本组件
 ///
-/// 将 [query] 在 [text] 中的所有匹配片段用黄色背景 + 加粗标注，
+/// 将 [query] 在 [text] 的命中上下文中用黄色背景 + 加粗标注，
 /// 大小写不敏感匹配，原始大小写保留显示。
 class _HighlightText extends StatelessWidget {
   final String text;
@@ -105,21 +144,28 @@ class _HighlightText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final displayText = buildSearchExcerpt(text, query);
     if (query.trim().isEmpty) {
       return Text(
-        text,
+        displayText,
         style: TextStyle(
-            fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
+          fontSize: 14,
+          height: 1.6,
+          color: AppColors.textBody(context),
+        ),
         maxLines: 8,
         overflow: TextOverflow.ellipsis,
       );
     }
 
-    final spans = _buildSpans(text, query.trim().toLowerCase());
+    final spans = _buildSpans(displayText, query.trim().toLowerCase());
     return Text.rich(
       TextSpan(children: spans),
       style: TextStyle(
-          fontSize: 14, height: 1.6, color: AppColors.textBody(context)),
+        fontSize: 14,
+        height: 1.6,
+        color: AppColors.textBody(context),
+      ),
       maxLines: 8,
       overflow: TextOverflow.ellipsis,
     );
@@ -144,14 +190,16 @@ class _HighlightText extends StatelessWidget {
         spans.add(TextSpan(text: text.substring(start, idx)));
       }
       // 高亮片段
-      spans.add(TextSpan(
-        text: text.substring(idx, idx + lowerQuery.length),
-        style: const TextStyle(
-          backgroundColor: Color(0xFFFFE082),
-          color: Color(0xFF4E3500),
-          fontWeight: FontWeight.bold,
+      spans.add(
+        TextSpan(
+          text: text.substring(idx, idx + lowerQuery.length),
+          style: const TextStyle(
+            backgroundColor: Color(0xFFFFE082),
+            color: Color(0xFF4E3500),
+            fontWeight: FontWeight.bold,
+          ),
         ),
-      ));
+      );
       start = idx + lowerQuery.length;
     }
 
