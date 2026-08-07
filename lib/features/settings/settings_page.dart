@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 
 import '../../data/database/database_service.dart';
 import '../../main.dart' show themeModeNotifier;
+import '../../services/ai/ai_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/debug/file_logger.dart';
 import '../../services/settings/settings_service.dart';
 import '../../shared/constants/app_constants.dart';
 import '../stats/stats_view.dart';
+import 'ai_settings_page.dart';
 import 'api_settings_page.dart';
 import 'server_settings_page.dart';
 
@@ -115,6 +117,8 @@ class SettingsPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
+          _AiSettingsEntry(),
+          const SizedBox(height: 8),
           _SettingsItem(
             icon: Icons.api_outlined,
             title: '第三方 API',
@@ -154,6 +158,48 @@ class SettingsPage extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// AI 编辑辅助条件入口。
+///
+/// 能力为 `false` 时隐藏；已有成功缓存但当前 NAS 不可达时仍显示入口，
+/// 由详情页展示离线状态。
+class _AiSettingsEntry extends StatefulWidget {
+  const _AiSettingsEntry();
+
+  @override
+  State<_AiSettingsEntry> createState() => _AiSettingsEntryState();
+}
+
+class _AiSettingsEntryState extends State<_AiSettingsEntry> {
+  late final Future<bool> _available = _check();
+
+  static Future<bool> _check() async {
+    final url = await SettingsService.serverUrl;
+    if (url == null || url.isEmpty) return false;
+    final cached = await SettingsService.aiCapabilityFor(url);
+    if (cached != null) return cached;
+    return AiService().isCapabilityAvailable();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: _available,
+      builder: (context, snapshot) {
+        if (snapshot.data != true) return const SizedBox.shrink();
+        return _SettingsItem(
+          icon: Icons.auto_awesome_outlined,
+          title: 'AI 编辑辅助',
+          subtitle: '标签建议、润色、格式整理',
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const AiSettingsPage()),
+          ),
+        );
+      },
     );
   }
 }
@@ -228,7 +274,7 @@ class _ThemeModeItem extends StatelessWidget {
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: themeModeNotifier,
-      builder: (_, mode, __) {
+      builder: (_, mode, _) {
         final isDark = mode == ThemeMode.dark ||
             (mode == ThemeMode.system &&
                 MediaQuery.platformBrightnessOf(context) == Brightness.dark);

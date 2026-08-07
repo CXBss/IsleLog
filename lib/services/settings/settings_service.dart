@@ -33,8 +33,14 @@ class SettingsService {
   /// 保证拼接 API 路径时不出现双斜杠。
   static Future<void> setServerUrl(String url) async {
     final normalized = url.trim().replaceAll(RegExp(r'/+$'), '');
+    final prefs = await _prefs;
+    final old = prefs.getString(_keyServerUrl);
+    if (old != null && old != normalized) {
+      await removeAiCapability(old);
+      debugPrint('[Settings] setServerUrl: 清除旧地址 AI 能力缓存 $old');
+    }
     debugPrint('[Settings] setServerUrl: $normalized');
-    await (await _prefs).setString(_keyServerUrl, normalized);
+    await prefs.setString(_keyServerUrl, normalized);
   }
 
   // ── Access Token ──────────────────────────────────────────────
@@ -188,6 +194,55 @@ class SettingsService {
   static Future<void> clearLastChangelogId() async {
     debugPrint('[Settings] clearLastChangelogId');
     await (await _prefs).remove(_keyLastChangelogId);
+  }
+
+  // ── AI Capability Cache ───────────────────────────────────────
+
+  static const _aiCapabilityKeyPrefix = 'ai_capability_';
+  static const _aiCapabilityAtPrefix = 'ai_capability_at_';
+
+  /// AI 能力缓存有效期；过期后重新探测，避免同一 URL 从 Memos 换成
+  /// IsleLog 后入口永久不出现。
+  static const _aiCapabilityTtl = Duration(hours: 24);
+
+  /// 获取指定服务器地址的 AI 能力缓存（未探测过、已过期或无时间戳的
+  /// 旧版本缓存均返回 null）
+  static Future<bool?> aiCapabilityFor(String serverUrl) async {
+    final prefs = await _prefs;
+    final value = prefs.getBool('$_aiCapabilityKeyPrefix$serverUrl');
+    if (value == null) return null;
+    final at = prefs.getInt('$_aiCapabilityAtPrefix$serverUrl');
+    if (at == null) {
+      // 旧版本缓存的布尔值没有时间戳，视为过期并清除
+      await prefs.remove('$_aiCapabilityKeyPrefix$serverUrl');
+      return null;
+    }
+    if (DateTime.now().millisecondsSinceEpoch - at >
+        _aiCapabilityTtl.inMilliseconds) {
+      await prefs.remove('$_aiCapabilityKeyPrefix$serverUrl');
+      await prefs.remove('$_aiCapabilityAtPrefix$serverUrl');
+      return null;
+    }
+    return value;
+  }
+
+  /// 缓存指定服务器地址的 AI 能力探测结果
+  static Future<void> setAiCapability(String serverUrl, bool value) async {
+    debugPrint('[Settings] setAiCapability: $serverUrl → $value');
+    final prefs = await _prefs;
+    await prefs.setBool('$_aiCapabilityKeyPrefix$serverUrl', value);
+    await prefs.setInt(
+      '$_aiCapabilityAtPrefix$serverUrl',
+      DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  /// 移除指定服务器地址的 AI 能力缓存
+  static Future<void> removeAiCapability(String serverUrl) async {
+    debugPrint('[Settings] removeAiCapability: $serverUrl');
+    final prefs = await _prefs;
+    await prefs.remove('$_aiCapabilityKeyPrefix$serverUrl');
+    await prefs.remove('$_aiCapabilityAtPrefix$serverUrl');
   }
 
   // ── Helpers ───────────────────────────────────────────────────
