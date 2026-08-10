@@ -12,6 +12,8 @@ import 'package:isar/isar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:isle_log/data/database/database_service.dart';
+import 'package:isle_log/data/models/memo_entry.dart';
+import 'package:isle_log/data/models/weather_info.dart';
 import 'package:isle_log/features/memo_editor/memo_editor_page.dart';
 import 'package:isle_log/services/ai/ai_api_client.dart';
 import 'package:isle_log/services/ai/ai_models.dart';
@@ -157,10 +159,12 @@ void main() {
   Future<void> pumpEditor(
     WidgetTester tester, {
     bool? capabilityOverride = true,
+    MemoEntry? editingMemo,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
         home: MemoEditorPage(
+          editingMemo: editingMemo,
           aiGateway: gateway,
           aiCapabilityOverride: capabilityOverride,
         ),
@@ -326,5 +330,116 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('第一段已润色。'), findsOneWidget);
+  });
+
+  testWidgets('仅有位置名称的旧数据会回显且直接确定不会清除', (tester) async {
+    final memo = MemoEntry()
+      ..content = '旧内容'
+      ..location = '旧位置名称';
+
+    await pumpEditor(tester, editingMemo: memo);
+    await tester.tap(find.byKey(const Key('memo-editor-location-action')));
+    await tester.pumpAndSettle();
+
+    final nameField = tester.widget<TextField>(
+      find.byKey(const Key('location-name-field')),
+    );
+    expect(nameField.controller!.text, '旧位置名称');
+
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+    expect(find.text('旧位置名称'), findsOneWidget);
+  });
+
+  testWidgets('经纬度和位置名称分别修改时保留另一个字段', (tester) async {
+    final memo = MemoEntry()
+      ..content = '旧内容'
+      ..location = '旧位置名称'
+      ..latitude = 22.54
+      ..longitude = 113.93;
+
+    await pumpEditor(tester, editingMemo: memo);
+    await tester.tap(find.byKey(const Key('memo-editor-location-action')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('location-coordinates-field')),
+      '120.12345, 30.54321',
+    );
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('memo-editor-location-action')));
+    await tester.pumpAndSettle();
+    var coordinatesField = tester.widget<TextField>(
+      find.byKey(const Key('location-coordinates-field')),
+    );
+    var nameField = tester.widget<TextField>(
+      find.byKey(const Key('location-name-field')),
+    );
+    expect(coordinatesField.controller!.text, '120.12345, 30.54321');
+    expect(nameField.controller!.text, '旧位置名称');
+
+    await tester.enterText(
+      find.byKey(const Key('location-name-field')),
+      '新位置名称',
+    );
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('memo-editor-location-action')));
+    await tester.pumpAndSettle();
+    coordinatesField = tester.widget<TextField>(
+      find.byKey(const Key('location-coordinates-field')),
+    );
+    nameField = tester.widget<TextField>(
+      find.byKey(const Key('location-name-field')),
+    );
+    expect(coordinatesField.controller!.text, '120.12345, 30.54321');
+    expect(nameField.controller!.text, '新位置名称');
+  });
+
+  testWidgets('天气状况和描述分别修改时保留另一个字段', (tester) async {
+    final memo = MemoEntry()
+      ..content = '旧内容'
+      ..weatherJson = const WeatherInfo(
+        condition: '雷阵雨',
+        detail: '旧天气描述',
+      ).toJsonString();
+
+    await pumpEditor(tester, editingMemo: memo);
+    await tester.tap(find.byKey(const Key('memo-editor-weather-action')));
+    await tester.pumpAndSettle();
+    var detailField = tester.widget<TextField>(
+      find.byKey(const Key('weather-detail-field')),
+    );
+    expect(detailField.controller!.text, '旧天气描述');
+
+    await tester.enterText(
+      find.byKey(const Key('weather-detail-field')),
+      '新天气描述',
+    );
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('memo-editor-weather-action')),
+        matching: find.text('雷阵雨'),
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('memo-editor-weather-action')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('多云'));
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('memo-editor-weather-action')));
+    await tester.pumpAndSettle();
+    detailField = tester.widget<TextField>(
+      find.byKey(const Key('weather-detail-field')),
+    );
+    expect(detailField.controller!.text, '新天气描述');
+    expect(find.text('多云'), findsWidgets);
   });
 }

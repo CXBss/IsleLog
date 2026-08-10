@@ -104,11 +104,10 @@ double _transformLng(double x, double y) {
 /// - [getLocation]：请求权限并获取当前位置（含逆地理编码）
 class LocationService {
 
-  /// 获取当前位置（含逆地理编码）
+  /// GPS 定位，仅获取经纬度（纯本地，无需网络）
   ///
-  /// 返回 [LocationInfo]，address 字段可能为 null（逆地理编码全部失败时）。
-  /// 抛出 [LocationException] 表示无法获取位置坐标。
-  static Future<LocationInfo> getLocation() async {
+  /// 返回 (纬度, 经度)，抛出 [LocationException] 表示无法获取位置坐标。
+  static Future<(double latitude, double longitude)> getCoordinates() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       throw const LocationException('设备位置服务未开启，请在系统设置中开启');
@@ -146,18 +145,28 @@ class LocationService {
       unawaited(FileLogger.log('[Location] 定位失败：$e'));
       throw LocationException('定位失败：$e');
     }
+    return (pos.latitude, pos.longitude);
+  }
 
-    // 逆地理编码：高德优先，失败则天地图，都失败则 address 为 null
-    final gcj = _wgs84ToGcj02(pos.latitude, pos.longitude);
+  /// 用经纬度反查地理位置名称（需网络，离线时返回 null）
+  ///
+  /// 高德优先，失败则天地图，都失败返回 null。
+  static Future<String?> reverseGeocode(double latitude, double longitude) async {
+    final gcj = _wgs84ToGcj02(latitude, longitude);
     unawaited(FileLogger.log('[Location] 开始逆地理编码 gcj=${gcj.lat},${gcj.lng}'));
-    final address = await _reverseGeocodeWithFallback(gcj.lat, gcj.lng, pos.latitude, pos.longitude);
+    final address = await _reverseGeocodeWithFallback(gcj.lat, gcj.lng, latitude, longitude);
     unawaited(FileLogger.log('[Location] 逆地理编码结果：$address'));
+    return address;
+  }
 
-    return LocationInfo(
-      latitude: pos.latitude,
-      longitude: pos.longitude,
-      address: address,
-    );
+  /// 获取当前位置（GPS 定位 + 逆地理编码）
+  ///
+  /// 返回 [LocationInfo]，address 字段可能为 null（逆地理编码全部失败时）。
+  /// 抛出 [LocationException] 表示无法获取位置坐标。
+  static Future<LocationInfo> getLocation() async {
+    final (lat, lng) = await getCoordinates();
+    final address = await reverseGeocode(lat, lng);
+    return LocationInfo(latitude: lat, longitude: lng, address: address);
   }
 
   /// 逆地理编码：高德优先，失败则天地图，都失败返回 null

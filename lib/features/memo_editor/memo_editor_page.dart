@@ -77,9 +77,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 是否正在上传附件
   bool _uploading = false;
 
-  /// 是否正在获取位置
-  bool _locating = false;
-
   /// 录音器
   final AudioRecorder _recorder = AudioRecorder();
 
@@ -96,8 +93,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 当前天气信息（null 表示未设置）
   WeatherInfo? _weatherInfo;
 
-  /// 是否正在获取天气
-  bool _fetchingWeather = false;
+  /// 位置数据版本号，用于丢弃自动获取过程中已经过期的结果
+  int _locationRevision = 0;
+
+  /// 天气数据版本号，用于丢弃自动获取过程中已经过期的结果
+  int _weatherRevision = 0;
 
   /// 当前心情（null 表示未设置）
   String? _mood;
@@ -110,6 +110,15 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   /// 是否为编辑模式（影响标题文字）
   bool get _isEditing => widget.editingMemo != null;
+
+  bool get _hasLocation =>
+      _locationInfo != null || _locationCtrl.text.trim().isNotEmpty;
+
+  String get _locationDisplayText {
+    final name = _locationCtrl.text.trim();
+    if (name.isNotEmpty) return name;
+    return _locationInfo?.displayText ?? '';
+  }
 
   /// 当前选定的日记时间（新建时默认为 initialDate 日期+当前时间，编辑时为原始时间）
   late DateTime _selectedDateTime;
@@ -153,18 +162,21 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   @override
   void initState() {
     super.initState();
-    debugPrint('[MemoEditor] 初始化，模式=${_isEditing ? "编辑" : "新建"}，'
-        'id=${widget.editingMemo?.id}');
+    debugPrint(
+      '[MemoEditor] 初始化，模式=${_isEditing ? "编辑" : "新建"}，'
+      'id=${widget.editingMemo?.id}',
+    );
 
-    _contentCtrl = TextEditingController(text: widget.editingMemo?.content ?? '');
+    _contentCtrl = TextEditingController(
+      text: widget.editingMemo?.content ?? '',
+    );
     if (widget.editingMemo != null) {
       _contentCtrl.selection = const TextSelection.collapsed(offset: 0);
     }
-    _locationCtrl =
-        TextEditingController(text: widget.editingMemo?.location ?? '');
-    _contentFocus = FocusNode(
-      onKeyEvent: _isDesktop ? _onKeyEvent : null,
+    _locationCtrl = TextEditingController(
+      text: widget.editingMemo?.location ?? '',
     );
+    _contentFocus = FocusNode(onKeyEvent: _isDesktop ? _onKeyEvent : null);
 
     // 编辑模式用原始时间，新建模式用 initialDate 日期+当前时间
     if (widget.editingMemo != null) {
@@ -172,8 +184,14 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     } else {
       final now = DateTime.now();
       final base = widget.initialDate ?? now;
-      _selectedDateTime = DateTime(base.year, base.month, base.day,
-          now.hour, now.minute, now.second);
+      _selectedDateTime = DateTime(
+        base.year,
+        base.month,
+        base.day,
+        now.hour,
+        now.minute,
+        now.second,
+      );
     }
 
     if (widget.editingMemo != null) {
@@ -198,13 +216,14 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       _mood = m.mood;
     }
 
-    // 新建模式下恢复草稿；移动端自动获取位置（草稿无位置时）
+    // 新建模式下恢复草稿；移动端进入编辑页后自动获取位置（经纬度）和天气
     if (!_isEditing) {
+      // 先等草稿加载完再自动获取，避免草稿中的位置被 GPS 覆盖
       _loadDraft().then((_) {
-        if (_isMobile && _locationCtrl.text.trim().isEmpty) {
-          _autoGetLocation();
-        }
+        if (_isMobile) _autoFetchOnEntry();
       });
+    } else if (_isMobile) {
+      _autoFetchOnEntry();
     }
 
     _contentCtrl.addListener(_onContentChanged);
@@ -265,58 +284,139 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     if (time == null || !mounted) return;
     setState(() {
       _selectedDateTime = DateTime(
-          date.year, date.month, date.day, time.hour, time.minute);
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
+      );
     });
   }
 
   // ── 位置 ──────────────────────────────────────────────────────
 
-  /// 静默自动获取位置（新建时后台调用，失败不提示）
-  Future<void> _autoGetLocation() async {
-    if (!_isMobile) return;
-    try {
-      final info = await LocationService.getLocation();
-      if (mounted && _locationCtrl.text.trim().isEmpty) {
+  /// 进入编辑页后自动获取：经纬度 → 位置名称 → 天气（均静默，失败不打扰）
+  Future<void> _autoFetchOnEntry() async {
+    // 1. 自动获取经纬度（纯 GPS，离线可用）
+    if (_locationInfo == null && _locationCtrl.text.trim().isEmpty) {
+      final revision = _locationRevision;
+      try {
+        final (lat, lng) = await LocationService.getCoordinates();
+        if (mounted &&
+            revision == _locationRevision &&
+            _locationInfo == null &&
+            _locationCtrl.text.trim().isEmpty) {
+          setState(() {
+            _locationInfo = LocationInfo(latitude: lat, longitude: lng);
+          });
+        }
+      } catch (e) {
+        debugPrint('[MemoEditor] 自动获取经纬度失败（静默忽略）：$e');
+      }
+    }
+
+    final located = _locationInfo;
+
+    // 2. 有经纬度但没名称 → 尝试反查名称（需要网络，失败静默）
+    if (located != null && _locationCtrl.text.trim().isEmpty) {
+      final revision = _locationRevision;
+      final address = await LocationService.reverseGeocode(
+        located.latitude,
+        located.longitude,
+      );
+      final current = _locationInfo;
+      if (mounted &&
+          revision == _locationRevision &&
+          address != null &&
+          address.isNotEmpty &&
+          current != null &&
+          current.latitude == located.latitude &&
+          current.longitude == located.longitude &&
+          _locationCtrl.text.trim().isEmpty) {
         setState(() {
-          _locationInfo = info;
-          _locationCtrl.text = info.displayText;
+          _locationInfo = LocationInfo(
+            latitude: located.latitude,
+            longitude: located.longitude,
+            address: address,
+          );
+          _locationCtrl.text = address;
         });
       }
-    } catch (e) {
-      debugPrint('[MemoEditor] 自动获取位置失败（静默忽略）：$e');
+    }
+
+    // 3. 天气为空 → 按坐标自动获取（有坐标即可，不依赖名称）
+    if (_weatherInfo == null && _locationInfo != null) {
+      final weatherRevision = _weatherRevision;
+      final locationRevision = _locationRevision;
+      final locatedForWeather = _locationInfo!;
+      try {
+        final info = await WeatherService.fetchWeatherByCoords(
+          latitude: locatedForWeather.latitude,
+          longitude: locatedForWeather.longitude,
+        );
+        final current = _locationInfo;
+        if (mounted &&
+            info != null &&
+            weatherRevision == _weatherRevision &&
+            locationRevision == _locationRevision &&
+            _weatherInfo == null &&
+            current != null &&
+            current.latitude == locatedForWeather.latitude &&
+            current.longitude == locatedForWeather.longitude) {
+          setState(() => _weatherInfo = info);
+        }
+      } catch (e) {
+        debugPrint('[MemoEditor] 自动获取天气失败（静默忽略）：$e');
+      }
     }
   }
 
-  /// 手动点击位置图标获取位置（失败时提示用户）
-  Future<void> _manualGetLocation() async {
-    if (_locating) return;
-    setState(() => _locating = true);
-    try {
-      final info = await LocationService.getLocation();
-      if (mounted) {
-        setState(() {
-          _locationInfo = info;
-          _locationCtrl.text = info.displayText;
-          _locating = false;
-        });
+  /// 点击位置图标：弹出位置设置窗口（自动获取经纬度 / 反查名称）
+  Future<void> _openLocationSheet() async {
+    final result = await showModalBottomSheet<_LocationSheetResult>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => _LocationSheet(
+        latitude: _locationInfo?.latitude,
+        longitude: _locationInfo?.longitude,
+        name: _locationCtrl.text,
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    setState(() {
+      _locationRevision++;
+      if (result.clearAll) {
+        _locationInfo = null;
+        _locationCtrl.clear();
+        return;
       }
-    } on LocationException catch (e) {
-      debugPrint('[MemoEditor] 获取位置失败：$e');
-      if (mounted) {
-        setState(() => _locating = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message)),
+
+      if (result.coordinatesChanged) {
+        final currentName = _locationCtrl.text.trim();
+        _locationInfo = LocationInfo(
+          latitude: result.latitude!,
+          longitude: result.longitude!,
+          address: currentName.isEmpty ? null : currentName,
         );
       }
-    } catch (e) {
-      debugPrint('[MemoEditor] 获取位置未知错误：$e');
-      if (mounted) {
-        setState(() => _locating = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('获取位置失败：$e')),
-        );
+
+      if (result.nameChanged) {
+        final name = result.name!.trim();
+        _locationCtrl.text = name;
+        final current = _locationInfo;
+        if (current != null) {
+          _locationInfo = LocationInfo(
+            latitude: current.latitude,
+            longitude: current.longitude,
+            address: name,
+          );
+        }
       }
-    }
+    });
   }
 
   /// 点击地址文本跳转系统地图
@@ -331,118 +431,41 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   // ── 天气 ──────────────────────────────────────────────────────
 
-  /// 点击天气按钮：弹出选择方式对话框（自动/手动城市）
-  Future<void> _fetchWeather() async {
-    if (_fetchingWeather) return;
-    final amapKey = await SettingsService.amapKey;
-    if (amapKey == null || amapKey.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请先在设置中配置高德 API Key')),
-        );
-      }
-      return;
-    }
-
-    // 弹出选择方式：自动定位 / 手动输入城市 / 清除
-    final action = await showModalBottomSheet<_WeatherAction>(
+  /// 点击天气按钮：弹出天气设置窗口（自动/城市/手动选择/描述）
+  Future<void> _openWeatherSheet() async {
+    final result = await showModalBottomSheet<_WeatherSheetResult>(
       context: context,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (ctx) => _WeatherActionSheet(
-        hasWeather: _weatherInfo != null,
+      builder: (ctx) => _WeatherSheet(
+        current: _weatherInfo,
+        location: _locationInfo,
         canAutoLocate: _isMobile,
       ),
     );
-    if (action == null || !mounted) return;
+    if (result == null || !mounted) return;
 
-    if (action == _WeatherAction.clear) {
-      setState(() => _weatherInfo = null);
-      return;
-    }
+    setState(() {
+      _weatherRevision++;
+      if (result.clearAll) {
+        _weatherInfo = null;
+        return;
+      }
 
-    if (action == _WeatherAction.manual) {
-      await _fetchWeatherByCity();
-      return;
-    }
-
-    // auto
-    await _fetchWeatherAuto();
-  }
-
-  /// 自动定位获取天气（移动端）
-  Future<void> _fetchWeatherAuto() async {
-    setState(() => _fetchingWeather = true);
-    try {
-      WeatherInfo? info;
-      if (_locationInfo != null) {
-        info = await WeatherService.fetchWeatherByCoords(
-          latitude: _locationInfo!.latitude,
-          longitude: _locationInfo!.longitude,
-        );
+      final currentCondition = _weatherInfo?.condition ?? '';
+      final currentDetail = _weatherInfo?.detail ?? '';
+      final condition = result.conditionChanged
+          ? result.condition ?? ''
+          : currentCondition;
+      final detail = result.detailChanged ? result.detail ?? '' : currentDetail;
+      if (condition.isEmpty && detail.isEmpty) {
+        _weatherInfo = null;
+      } else if (result.conditionChanged || result.detailChanged) {
+        _weatherInfo = WeatherInfo(condition: condition, detail: detail);
       }
-      if (info == null) {
-        try {
-          final loc = await LocationService.getLocation();
-          if (mounted) {
-            setState(() {
-              _locationInfo = loc;
-              _locationCtrl.text = loc.displayText;
-            });
-          }
-          info = await WeatherService.fetchWeatherByCoords(
-            latitude: loc.latitude,
-            longitude: loc.longitude,
-          );
-        } catch (_) {}
-      }
-      if (mounted) {
-        setState(() { _weatherInfo = info; _fetchingWeather = false; });
-        if (info == null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('获取天气失败，请检查网络或 API Key')),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _fetchingWeather = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('获取天气失败：$e')),
-        );
-      }
-    }
-  }
-
-  /// 手动输入城市名获取天气
-  Future<void> _fetchWeatherByCity() async {
-    if (!mounted) return;
-    final city = await showDialog<String>(
-      context: context,
-      builder: (ctx) => const _CityInputDialog(),
-    );
-    if (city == null || city.isEmpty || !mounted) return;
-
-    setState(() => _fetchingWeather = true);
-    try {
-      final info = await WeatherService.fetchWeatherByCity(city);
-      if (mounted) {
-        setState(() { _weatherInfo = info; _fetchingWeather = false; });
-        if (info == null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('未找到"$city"的天气，请检查城市名或 API Key')),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _fetchingWeather = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('获取天气失败：$e')),
-        );
-      }
-    }
+    });
   }
 
   // ── 心情 ──────────────────────────────────────────────────────
@@ -457,7 +480,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     );
     if (result != null && mounted) {
       // 空字符串表示清除；相同 key 表示取消选中；否则设置新心情
-      setState(() => _mood = (result.isEmpty || result == _mood) ? null : result);
+      setState(
+        () => _mood = (result.isEmpty || result == _mood) ? null : result,
+      );
     }
   }
 
@@ -638,9 +663,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     } catch (e) {
       debugPrint('[MemoEditor] 拍照失败：$e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('无法访问相机：$e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('无法访问相机：$e')));
       }
       return;
     }
@@ -658,7 +683,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   ///
   /// 优先尝试在线上传；若服务器未配置或网络不通，自动降级到本地存储，
   /// 待下次联网同步时由 [SyncService] 补传。
-  Future<void> _processFile(File file, String filename, {bool compress = true}) async {
+  Future<void> _processFile(
+    File file,
+    String filename, {
+    bool compress = true,
+  }) async {
     setState(() => _uploading = true);
     try {
       final configured = await SettingsService.isConfigured;
@@ -666,12 +695,20 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
       if (configured) {
         try {
-          info = await AttachmentService.uploadToServer(file, filename: filename, compress: compress);
+          info = await AttachmentService.uploadToServer(
+            file,
+            filename: filename,
+            compress: compress,
+          );
           debugPrint('[MemoEditor] 在线上传成功：${info.filename}');
         } catch (e) {
           // 网络不通时降级到本地存储，等待联网后同步
           debugPrint('[MemoEditor] 在线上传失败，降级本地存储：$e');
-          info = await AttachmentService.saveLocally(file, filename: filename, compress: compress);
+          info = await AttachmentService.saveLocally(
+            file,
+            filename: filename,
+            compress: compress,
+          );
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('网络不可用，附件已本地保存，联网后自动上传')),
@@ -679,7 +716,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           }
         }
       } else {
-        info = await AttachmentService.saveLocally(file, filename: filename, compress: compress);
+        info = await AttachmentService.saveLocally(
+          file,
+          filename: filename,
+          compress: compress,
+        );
       }
 
       setState(() => _pendingAttachments.add(info));
@@ -687,9 +728,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     } catch (e) {
       debugPrint('[MemoEditor] 附件处理失败：$e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('附件处理失败：$e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('附件处理失败：$e')));
       }
     } finally {
       if (mounted) setState(() => _uploading = false);
@@ -700,7 +741,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   bool _pasteBusy = false;
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    final isCtrlOrCmd = HardwareKeyboard.instance.isMetaPressed ||
+    final isCtrlOrCmd =
+        HardwareKeyboard.instance.isMetaPressed ||
         HardwareKeyboard.instance.isControlPressed;
     if (!isCtrlOrCmd || event.logicalKey != LogicalKeyboardKey.keyV) {
       return KeyEventResult.ignored;
@@ -798,16 +840,25 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     final hasPermission = await _recorder.hasPermission();
     if (!hasPermission) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('无麦克风权限')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('无麦克风权限')));
       }
       return;
     }
     final dir = await getApplicationDocumentsDirectory();
-    final path = p.join(dir.path, 'rec_${DateTime.now().millisecondsSinceEpoch}.m4a');
-    await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
-    setState(() { _recording = true; _recordSeconds = 0; });
+    final path = p.join(
+      dir.path,
+      'rec_${DateTime.now().millisecondsSinceEpoch}.m4a',
+    );
+    await _recorder.start(
+      const RecordConfig(encoder: AudioEncoder.aacLc),
+      path: path,
+    );
+    setState(() {
+      _recording = true;
+      _recordSeconds = 0;
+    });
     _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _recordSeconds++);
     });
@@ -816,7 +867,10 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   Future<void> _stopRecording() async {
     _recordTimer?.cancel();
     final path = await _recorder.stop();
-    setState(() { _recording = false; _recordSeconds = 0; });
+    setState(() {
+      _recording = false;
+      _recordSeconds = 0;
+    });
     if (path == null) return;
     final file = File(path);
     if (!file.existsSync()) return;
@@ -828,10 +882,18 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       AttachmentInfo att;
       if (configured) {
         try {
-          att = await AttachmentService.uploadToServer(file, filename: filename, compress: false);
+          att = await AttachmentService.uploadToServer(
+            file,
+            filename: filename,
+            compress: false,
+          );
         } catch (e) {
           debugPrint('[MemoEditor] 录音上传失败，降级本地存储：$e');
-          att = await AttachmentService.saveLocally(file, filename: filename, compress: false);
+          att = await AttachmentService.saveLocally(
+            file,
+            filename: filename,
+            compress: false,
+          );
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('网络不可用，录音已本地保存，联网后自动上传')),
@@ -839,12 +901,18 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           }
         }
       } else {
-        att = await AttachmentService.saveLocally(file, filename: filename, compress: false);
+        att = await AttachmentService.saveLocally(
+          file,
+          filename: filename,
+          compress: false,
+        );
       }
       if (mounted) setState(() => _pendingAttachments.add(att));
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('录音保存失败：$e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('录音保存失败：$e')));
       }
     } finally {
       if (mounted) setState(() => _uploading = false);
@@ -867,13 +935,13 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       final insert = '$prefix$suffix';
       ctrl.value = TextEditingValue(
         text: text + insert,
-        selection: TextSelection.collapsed(
-            offset: text.length + prefix.length),
+        selection: TextSelection.collapsed(offset: text.length + prefix.length),
       );
     } else if (sel.isCollapsed) {
       // 无选中，插入占位符并将光标置于中间
       final pos = sel.baseOffset;
-      final newText = text.substring(0, pos) + prefix + suffix + text.substring(pos);
+      final newText =
+          text.substring(0, pos) + prefix + suffix + text.substring(pos);
       ctrl.value = TextEditingValue(
         text: newText,
         selection: TextSelection.collapsed(offset: pos + prefix.length),
@@ -881,10 +949,16 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     } else {
       // 有选中，包裹选中文字
       final selected = sel.textInside(text);
-      final newText = text.replaceRange(sel.start, sel.end, '$prefix$selected$suffix');
+      final newText = text.replaceRange(
+        sel.start,
+        sel.end,
+        '$prefix$selected$suffix',
+      );
       ctrl.value = TextEditingValue(
         text: newText,
-        selection: TextSelection.collapsed(offset: sel.start + prefix.length + selected.length + suffix.length),
+        selection: TextSelection.collapsed(
+          offset: sel.start + prefix.length + selected.length + suffix.length,
+        ),
       );
     }
     _contentFocus.requestFocus();
@@ -903,7 +977,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     final sel = ctrl.selection;
     final pos = sel.isValid ? sel.baseOffset : text.length;
     final lineStart = text.lastIndexOf('\n', pos - 1) + 1;
-    final newText = text.substring(0, lineStart) + prefix + text.substring(lineStart);
+    final newText =
+        text.substring(0, lineStart) + prefix + text.substring(lineStart);
     ctrl.value = TextEditingValue(
       text: newText,
       selection: TextSelection.collapsed(offset: pos + prefix.length),
@@ -941,8 +1016,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     } catch (e) {
       // NAS 不可达：回退到已成功的能力缓存，避免隐藏入口
       final url = await SettingsService.serverUrl;
-      final cached =
-          url == null ? null : await SettingsService.aiCapabilityFor(url);
+      final cached = url == null
+          ? null
+          : await SettingsService.aiCapabilityFor(url);
       if (mounted) setState(() => _aiAvailable = cached ?? false);
       debugPrint('[MemoEditor] AI 能力探测失败，回退缓存=$cached：$e');
     }
@@ -977,7 +1053,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     final isDeepSeek = selection.provider == AiProvider.deepSeek;
     final content = _contentCtrl.text;
     final selectionRange = _contentCtrl.selection;
-    final hasSelection = selectionRange.isValid &&
+    final hasSelection =
+        selectionRange.isValid &&
         selectionRange.isNormalized &&
         selectionRange.start != selectionRange.end;
     final targetStart = hasSelection ? selectionRange.start : 0;
@@ -1053,8 +1130,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
             context: context,
             builder: (ctx) => AlertDialog(
               title: const Text('深度润色'),
-              content: const Text(
-                  '深度润色可能调整段落结构和措辞，请在预览中逐段核对后再应用。'),
+              content: const Text('深度润色可能调整段落结构和措辞，请在预览中逐段核对后再应用。'),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, false),
@@ -1167,7 +1243,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
   void _showAiSnack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// 1. 校验正文不为空
@@ -1209,8 +1287,10 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
 
       // 保存成功后才删除被移除的附件（避免用户取消编辑时误删）
       for (final att in _removedAttachments) {
-        if (att.remoteResName != null) AttachmentService.deleteRemote(att.remoteResName!);
-        if (att.localPath != null) AttachmentService.deleteLocal(att.localPath!);
+        if (att.remoteResName != null)
+          AttachmentService.deleteRemote(att.remoteResName!);
+        if (att.localPath != null)
+          AttachmentService.deleteLocal(att.localPath!);
       }
 
       // 保存成功后清除草稿
@@ -1356,299 +1436,438 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           ): _save,
         },
         child: Column(
-        children: [
-          // ── 正文输入区 + 右侧标签面板 ────────────────────────────
-          Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 正文输入
-                Expanded(
-                  child: SingleChildScrollView(
-                    keyboardDismissBehavior:
-                        ScrollViewKeyboardDismissBehavior.onDrag,
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                    child: TextField(
-                      key: _contentFieldKey,
-                      controller: _contentCtrl,
-                      focusNode: _contentFocus,
-                      maxLines: null,
-                      autofocus: false,
-                      style: const TextStyle(fontSize: 16, height: 1.7),
-                      decoration: const InputDecoration(
-                        hintText: AppStrings.editorContentHint,
-                        border: InputBorder.none,
-                        hintStyle: TextStyle(color: Color(0xFFBDBDBD)),
+          children: [
+            // ── 正文输入区 + 右侧标签面板 ────────────────────────────
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 正文输入
+                  Expanded(
+                    child: SingleChildScrollView(
+                      keyboardDismissBehavior:
+                          ScrollViewKeyboardDismissBehavior.onDrag,
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                      child: TextField(
+                        key: _contentFieldKey,
+                        controller: _contentCtrl,
+                        focusNode: _contentFocus,
+                        maxLines: null,
+                        autofocus: false,
+                        style: const TextStyle(fontSize: 16, height: 1.7),
+                        decoration: const InputDecoration(
+                          hintText: AppStrings.editorContentHint,
+                          border: InputBorder.none,
+                          hintStyle: TextStyle(color: Color(0xFFBDBDBD)),
+                        ),
                       ),
                     ),
                   ),
-                ),
-                // 右侧标签面板（输入 # 时出现）
-                if (_tagPrefix != null)
-                  _TagSuggestionPanel(
-                    suggestions: _tagSuggestions,
-                    onSelect: _acceptTag,
-                  ),
-              ],
-            ),
-          ),
-
-          const Divider(height: 1),
-
-          // ── 附件预览条（有附件时展示）────────────────────────────
-          if (_pendingAttachments.isNotEmpty)
-            _AttachmentBar(
-              attachments: _pendingAttachments,
-              onRemove: _removeAttachment,
+                  // 右侧标签面板（输入 # 时出现）
+                  if (_tagPrefix != null)
+                    _TagSuggestionPanel(
+                      suggestions: _tagSuggestions,
+                      onSelect: _acceptTag,
+                    ),
+                ],
+              ),
             ),
 
-          // ── 底部工具栏（两行）────────────────────────────────────
-          SafeArea(
-            top: false,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // ── 第一行：# · 时间戳 · B · I · ` · 有序列表 · 无序列表 · -[]
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
-                  child: Row(
-                    children: [
-                      _FmtButton(
-                        label: '#',
-                        tooltip: '标题',
-                        onTap: () {
-                          final ctrl = _contentCtrl;
-                          final sel = ctrl.selection;
-                          final pos = sel.isValid ? sel.baseOffset : ctrl.text.length;
-                          final newText = ctrl.text.substring(0, pos) + '# ' + ctrl.text.substring(pos);
-                          ctrl.value = TextEditingValue(
-                            text: newText,
-                            selection: TextSelection.collapsed(offset: pos + 1),
-                          );
-                          _contentFocus.requestFocus();
-                        },
-                      ),
-                      _FmtButton(
-                        icon: Icons.access_time,
-                        tooltip: '插入时间戳',
-                        onTap: () {
-                          final now = DateTime.now();
-                          final ts =
-                              '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
-                              '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
-                          final ctrl = _contentCtrl;
-                          final sel = ctrl.selection;
-                          final pos = sel.isValid ? sel.baseOffset : ctrl.text.length;
-                          final newText = ctrl.text.substring(0, pos) + ts + ctrl.text.substring(pos);
-                          ctrl.value = TextEditingValue(
-                            text: newText,
-                            selection: TextSelection.collapsed(offset: pos + ts.length),
-                          );
-                          _contentFocus.requestFocus();
-                        },
-                      ),
-                      _FmtButton(icon: Icons.format_bold, tooltip: '加粗', onTap: () => _wrapSelection('**', '**')),
-                      _FmtButton(icon: Icons.format_italic, tooltip: '斜体', onTap: () => _wrapSelection('*', '*')),
-                      _FmtButton(icon: Icons.code, tooltip: '代码', onTap: () => _wrapSelection('`', '`')),
-                      _FmtButton(icon: Icons.format_list_numbered, tooltip: '有序列表', onTap: _insertOrderedList),
-                      _FmtButton(icon: Icons.format_list_bulleted, tooltip: '无序列表', onTap: _insertUnorderedList),
-                      _FmtButton(icon: Icons.check_box_outline_blank, tooltip: 'Todo', onTap: _insertTodo),
-                      const SizedBox(width: 8),
-                      // 日期时间
-                      GestureDetector(
-                        onTap: _pickDateTime,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.access_time_outlined, size: 15, color: Colors.grey[500]),
-                            const SizedBox(width: 4),
-                            Text(_dateTimeLabel, style: TextStyle(fontSize: 12, color: Colors.grey[500])),
-                          ],
+            const Divider(height: 1),
+
+            // ── 附件预览条（有附件时展示）────────────────────────────
+            if (_pendingAttachments.isNotEmpty)
+              _AttachmentBar(
+                attachments: _pendingAttachments,
+                onRemove: _removeAttachment,
+              ),
+
+            // ── 底部工具栏（两行）────────────────────────────────────
+            SafeArea(
+              top: false,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // ── 第一行：# · 时间戳 · B · I · ` · 有序列表 · 无序列表 · -[]
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
+                    child: Row(
+                      children: [
+                        _FmtButton(
+                          label: '#',
+                          tooltip: '标题',
+                          onTap: () {
+                            final ctrl = _contentCtrl;
+                            final sel = ctrl.selection;
+                            final pos = sel.isValid
+                                ? sel.baseOffset
+                                : ctrl.text.length;
+                            final newText =
+                                ctrl.text.substring(0, pos) +
+                                '# ' +
+                                ctrl.text.substring(pos);
+                            ctrl.value = TextEditingValue(
+                              text: newText,
+                              selection: TextSelection.collapsed(
+                                offset: pos + 1,
+                              ),
+                            );
+                            _contentFocus.requestFocus();
+                          },
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                  ),
-                ),
-
-                // ── 第二行：录音 · 拍照 · 附件 · 位置 · 保存 ──────
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
-                  child: Row(
-                    children: [
-                      // 录音按钮
-                      _recording
-                          ? GestureDetector(
-                              onTap: _toggleRecording,
-                              child: Container(
-                                height: 36,
-                                padding: const EdgeInsets.symmetric(horizontal: 10),
-                                alignment: Alignment.center,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(Icons.stop_circle_outlined, size: 20, color: Colors.red),
-                                    const SizedBox(width: 4),
-                                    Text(_recordLabel, style: const TextStyle(fontSize: 13, color: Colors.red, fontFeatures: [FontFeature.tabularFigures()])),
-                                  ],
+                        _FmtButton(
+                          icon: Icons.access_time,
+                          tooltip: '插入时间戳',
+                          onTap: () {
+                            final now = DateTime.now();
+                            final ts =
+                                '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
+                                '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+                            final ctrl = _contentCtrl;
+                            final sel = ctrl.selection;
+                            final pos = sel.isValid
+                                ? sel.baseOffset
+                                : ctrl.text.length;
+                            final newText =
+                                ctrl.text.substring(0, pos) +
+                                ts +
+                                ctrl.text.substring(pos);
+                            ctrl.value = TextEditingValue(
+                              text: newText,
+                              selection: TextSelection.collapsed(
+                                offset: pos + ts.length,
+                              ),
+                            );
+                            _contentFocus.requestFocus();
+                          },
+                        ),
+                        _FmtButton(
+                          icon: Icons.format_bold,
+                          tooltip: '加粗',
+                          onTap: () => _wrapSelection('**', '**'),
+                        ),
+                        _FmtButton(
+                          icon: Icons.format_italic,
+                          tooltip: '斜体',
+                          onTap: () => _wrapSelection('*', '*'),
+                        ),
+                        _FmtButton(
+                          icon: Icons.code,
+                          tooltip: '代码',
+                          onTap: () => _wrapSelection('`', '`'),
+                        ),
+                        _FmtButton(
+                          icon: Icons.format_list_numbered,
+                          tooltip: '有序列表',
+                          onTap: _insertOrderedList,
+                        ),
+                        _FmtButton(
+                          icon: Icons.format_list_bulleted,
+                          tooltip: '无序列表',
+                          onTap: _insertUnorderedList,
+                        ),
+                        _FmtButton(
+                          icon: Icons.check_box_outline_blank,
+                          tooltip: 'Todo',
+                          onTap: _insertTodo,
+                        ),
+                        const SizedBox(width: 8),
+                        // 日期时间
+                        GestureDetector(
+                          onTap: _pickDateTime,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.access_time_outlined,
+                                size: 15,
+                                color: Colors.grey[500],
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _dateTimeLabel,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[500],
                                 ),
                               ),
-                            )
-                          : IconButton(
-                              icon: const Icon(Icons.mic_outlined),
-                              color: Colors.grey[600],
-                              iconSize: 22,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                              tooltip: '录音',
-                              onPressed: _uploading ? null : _toggleRecording,
-                            ),
-                      if (_isMobile)
-                        IconButton(
-                          icon: const Icon(Icons.camera_alt_outlined),
-                          color: Colors.grey[600],
-                          iconSize: 22,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          tooltip: '拍照',
-                          onPressed: _uploading ? null : _takePhoto,
+                            ],
+                          ),
                         ),
-                      _uploading
-                          ? const SizedBox(
-                              width: 36, height: 36,
-                              child: Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)),
-                            )
-                          : IconButton(
-                              icon: const Icon(Icons.attach_file),
-                              color: Colors.grey[600],
-                              iconSize: 22,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                              tooltip: '添加附件',
-                              onPressed: _pickAttachment,
-                            ),
-                      // 位置图标
-                      _isMobile && _locating
-                          ? const SizedBox(width: 36, height: 36,
-                              child: Padding(padding: EdgeInsets.all(10), child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)))
-                          : IconButton(
-                              icon: Icon(_locationInfo != null ? Icons.location_on : Icons.location_on_outlined),
-                              color: _locationInfo != null ? AppColors.primary : Colors.grey[600],
-                              iconSize: 22,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                              tooltip: '位置',
-                              onPressed: _isMobile ? _manualGetLocation : null,
-                            ),
-                      // 天气按钮
-                      _fetchingWeather
-                          ? const SizedBox(width: 36, height: 36,
-                              child: Padding(padding: EdgeInsets.all(10), child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)))
-                          : _weatherInfo != null
-                              ? GestureDetector(
-                                  onTap: _fetchWeather,
-                                  child: Container(
-                                    height: 36,
-                                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                                    alignment: Alignment.center,
-                                    child: Text(_weatherInfo!.condition,
-                                        style: const TextStyle(fontSize: 11, color: AppColors.primary)),
-                                  ),
-                                )
-                              : IconButton(
-                                  icon: const Icon(Icons.wb_sunny_outlined),
-                                  color: Colors.grey[600],
-                                  iconSize: 22,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                                  tooltip: '获取天气',
-                                  onPressed: _fetchWeather,
-                                ),
-                      // 心情按钮
-                      IconButton(
-                              icon: Icon(moodByKey(_mood)?.icon ?? Icons.emoji_emotions_outlined),
-                              color: moodByKey(_mood)?.color ?? Colors.grey[600],
-                              iconSize: 22,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                              tooltip: '选择心情',
-                              onPressed: _pickMood,
-                            ),
-                      // 位置文本
-                      Expanded(
-                        child: _locationInfo != null
+                        const SizedBox(width: 8),
+                      ],
+                    ),
+                  ),
+
+                  // ── 第二行：录音 · 拍照 · 附件 · 位置 · 保存 ──────
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
+                    child: Row(
+                      children: [
+                        // 录音按钮
+                        _recording
                             ? GestureDetector(
-                                onTap: _openLocationMap,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Flexible(
-                                      child: Text(_locationCtrl.text,
-                                        style: const TextStyle(fontSize: 12, color: AppColors.primary, decoration: TextDecoration.underline, decorationColor: AppColors.primary),
-                                        overflow: TextOverflow.ellipsis),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    GestureDetector(
-                                      onTap: () => setState(() { _locationInfo = null; _locationCtrl.clear(); }),
-                                      child: Icon(Icons.close, size: 14, color: Colors.grey[400]),
-                                    ),
-                                  ],
+                                onTap: _toggleRecording,
+                                child: Container(
+                                  height: 36,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.stop_circle_outlined,
+                                        size: 20,
+                                        color: Colors.red,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        _recordLabel,
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          color: Colors.red,
+                                          fontFeatures: [
+                                            FontFeature.tabularFigures(),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               )
-                            : SizedBox(
-                                height: 24,
-                                child: TextField(
-                                  controller: _locationCtrl,
-                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                            : IconButton(
+                                icon: const Icon(Icons.mic_outlined),
+                                color: Colors.grey[600],
+                                iconSize: 22,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                  minWidth: 36,
+                                  minHeight: 36,
+                                ),
+                                tooltip: '录音',
+                                onPressed: _uploading ? null : _toggleRecording,
+                              ),
+                        if (_isMobile)
+                          IconButton(
+                            icon: const Icon(Icons.camera_alt_outlined),
+                            color: Colors.grey[600],
+                            iconSize: 22,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 36,
+                              minHeight: 36,
+                            ),
+                            tooltip: '拍照',
+                            onPressed: _uploading ? null : _takePhoto,
+                          ),
+                        _uploading
+                            ? const SizedBox(
+                                width: 36,
+                                height: 36,
+                                child: Padding(
+                                  padding: EdgeInsets.all(8),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              )
+                            : IconButton(
+                                icon: const Icon(Icons.attach_file),
+                                color: Colors.grey[600],
+                                iconSize: 22,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                  minWidth: 36,
+                                  minHeight: 36,
+                                ),
+                                tooltip: '添加附件',
+                                onPressed: _pickAttachment,
+                              ),
+                        // 位置图标
+                        IconButton(
+                          key: const Key('memo-editor-location-action'),
+                          icon: Icon(
+                            _hasLocation
+                                ? Icons.location_on
+                                : Icons.location_on_outlined,
+                          ),
+                          color: _hasLocation
+                              ? AppColors.primary
+                              : Colors.grey[600],
+                          iconSize: 22,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 36,
+                            minHeight: 36,
+                          ),
+                          tooltip: '位置',
+                          onPressed: _openLocationSheet,
+                        ),
+                        // 天气按钮
+                        _weatherInfo != null
+                            ? GestureDetector(
+                                key: const Key('memo-editor-weather-action'),
+                                onTap: _openWeatherSheet,
+                                child: Container(
+                                  height: 36,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    _weatherInfo!.condition.isEmpty
+                                        ? '天气'
+                                        : _weatherInfo!.condition,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppColors.primary,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : IconButton(
+                                key: const Key('memo-editor-weather-action'),
+                                icon: const Icon(Icons.wb_sunny_outlined),
+                                color: Colors.grey[600],
+                                iconSize: 22,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                  minWidth: 36,
+                                  minHeight: 36,
+                                ),
+                                tooltip: '获取天气',
+                                onPressed: _openWeatherSheet,
+                              ),
+                        // 心情按钮
+                        IconButton(
+                          icon: Icon(
+                            moodByKey(_mood)?.icon ??
+                                Icons.emoji_emotions_outlined,
+                          ),
+                          color: moodByKey(_mood)?.color ?? Colors.grey[600],
+                          iconSize: 22,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 36,
+                            minHeight: 36,
+                          ),
+                          tooltip: '选择心情',
+                          onPressed: _pickMood,
+                        ),
+                        // 位置文本
+                        Expanded(
+                          child: _locationInfo != null
+                              ? GestureDetector(
+                                  onTap: _openLocationMap,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          _locationDisplayText,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: AppColors.primary,
+                                            decoration:
+                                                TextDecoration.underline,
+                                            decorationColor: AppColors.primary,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      GestureDetector(
+                                        onTap: () => setState(() {
+                                          _locationRevision++;
+                                          _locationInfo = null;
+                                          _locationCtrl.clear();
+                                        }),
+                                        child: Icon(
+                                          Icons.close,
+                                          size: 14,
+                                          color: Colors.grey[400],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                )
+                              : SizedBox(
+                                  height: 24,
+                                  child: TextField(
+                                    controller: _locationCtrl,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[600],
+                                    ),
                                   decoration: InputDecoration(
-                                    hintText: _isMobile ? '位置' : AppStrings.editorLocationHint,
-                                    hintStyle: TextStyle(fontSize: 12, color: Colors.grey[400]),
-                                    border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero,
+                                    hintText: _isMobile
+                                        ? '位置'
+                                          : AppStrings.editorLocationHint,
+                                      hintStyle: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey[400],
+                                      ),
+                                      border: InputBorder.none,
+                                      isDense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                  ),
+                                  onChanged: (_) {
+                                    setState(() => _locationRevision++);
+                                  },
+                                ),
+                              ),
+                        ),
+                        const SizedBox(width: 4),
+                        // 保存按钮
+                        _saving
+                            ? const SizedBox(
+                                width: 36,
+                                height: 36,
+                                child: Padding(
+                                  padding: EdgeInsets.all(8),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              )
+                            : TextButton(
+                                onPressed: _save,
+                                style: TextButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 8,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  minimumSize: Size.zero,
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                child: const Text(
+                                  AppStrings.save,
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
                                   ),
                                 ),
                               ),
-                      ),
-                      const SizedBox(width: 4),
-                      // 保存按钮
-                      _saving
-                          ? const SizedBox(
-                              width: 36,
-                              height: 36,
-                              child: Padding(
-                                padding: EdgeInsets.all(8),
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.primary),
-                              ),
-                            )
-                          : TextButton(
-                              onPressed: _save,
-                              style: TextButton.styleFrom(
-                                backgroundColor: AppColors.primary,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 20, vertical: 8),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8)),
-                                minimumSize: Size.zero,
-                                tapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
-                              ),
-                              child: const Text(AppStrings.save,
-                                  style: TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.bold)),
-                            ),
-                      const SizedBox(width: 8),
-                    ],
+                        const SizedBox(width: 8),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
       ),
     );
   }
@@ -1667,10 +1886,7 @@ class _AttachmentBar extends StatelessWidget {
   final List<AttachmentInfo> attachments;
   final ValueChanged<AttachmentInfo> onRemove;
 
-  const _AttachmentBar({
-    required this.attachments,
-    required this.onRemove,
-  });
+  const _AttachmentBar({required this.attachments, required this.onRemove});
 
   @override
   Widget build(BuildContext context) {
@@ -1760,14 +1976,20 @@ class _AttachThumbState extends State<_AttachThumb> {
       if (path != null) {
         final file = File(path);
         if (file.existsSync()) {
-          return Image.file(file, fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => _iconFallback());
+          return Image.file(
+            file,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _iconFallback(),
+          );
         }
       }
       final url = attachment.fullUrl(_baseUrl);
       if (url != null && url.isNotEmpty) {
-        return Image.network(url, fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _iconFallback());
+        return Image.network(
+          url,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _iconFallback(),
+        );
       }
       return _iconFallback();
     }
@@ -1829,14 +2051,14 @@ class _TagSuggestionPanel extends StatelessWidget {
       width: 120,
       decoration: BoxDecoration(
         color: AppColors.surface(context),
-        border: Border(
-          left: BorderSide(color: Colors.grey[200]!, width: 1),
-        ),
+        border: Border(left: BorderSide(color: Colors.grey[200]!, width: 1)),
       ),
       child: suggestions.isEmpty
           ? Center(
-              child: Text('暂无标签',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+              child: Text(
+                '暂无标签',
+                style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+              ),
             )
           : ListView.builder(
               padding: const EdgeInsets.symmetric(vertical: 6),
@@ -1847,7 +2069,9 @@ class _TagSuggestionPanel extends StatelessWidget {
                   onTap: () => onSelect(tag.name),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 8),
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
                     child: Row(
                       children: [
                         Expanded(
@@ -1865,7 +2089,9 @@ class _TagSuggestionPanel extends StatelessWidget {
                         Text(
                           '${tag.count}',
                           style: TextStyle(
-                              fontSize: 11, color: Colors.grey[400]),
+                            fontSize: 11,
+                            color: Colors.grey[400],
+                          ),
                         ),
                       ],
                     ),
@@ -1920,68 +2146,391 @@ class _FmtButton extends StatelessWidget {
   }
 }
 
-// ── 天气操作选择底部弹窗 ────────────────────────────────────────────
+// ── 位置设置底部弹窗 ────────────────────────────────────────────────
 
-enum _WeatherAction { auto, manual, clear }
+/// 位置设置结果：仅覆盖明确修改过的字段，清除操作单独标记
+class _LocationSheetResult {
+  final double? latitude;
+  final double? longitude;
+  final String? name;
+  final bool coordinatesChanged;
+  final bool nameChanged;
+  final bool clearAll;
 
-class _WeatherActionSheet extends StatelessWidget {
-  final bool hasWeather;
-  final bool canAutoLocate;
+  const _LocationSheetResult({
+    this.latitude,
+    this.longitude,
+    this.name,
+    this.coordinatesChanged = false,
+    this.nameChanged = false,
+    this.clearAll = false,
+  });
+}
 
-  const _WeatherActionSheet({required this.hasWeather, required this.canAutoLocate});
+class _LocationSheet extends StatefulWidget {
+  final double? latitude;
+  final double? longitude;
+  final String name;
+
+  const _LocationSheet({this.latitude, this.longitude, this.name = ''});
+
+  @override
+  State<_LocationSheet> createState() => _LocationSheetState();
+}
+
+class _LocationSheetState extends State<_LocationSheet> {
+  late final TextEditingController _coordsCtrl;
+  late final TextEditingController _nameCtrl;
+
+  /// 是否正在自动获取经纬度
+  bool _gettingCoords = false;
+
+  /// 是否正在反查位置名称
+  bool _gettingName = false;
+
+  /// 用户或自动操作是否实际修改过对应字段
+  bool _coordinatesChanged = false;
+  bool _nameChanged = false;
+
+  /// 输入版本号，确保后发的手动输入不会被较早的异步结果覆盖
+  int _coordinatesInputRevision = 0;
+  int _nameInputRevision = 0;
+
+  /// 弹窗内的错误提示（避免被底部弹窗遮挡的 SnackBar）
+  String? _message;
+
+  void _showMessage(String message) {
+    if (mounted) setState(() => _message = message);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // 经纬度显示格式：经度, 纬度
+    final lng = widget.longitude;
+    final lat = widget.latitude;
+    _coordsCtrl = TextEditingController(
+      text: (lat == null || lng == null)
+          ? ''
+          : '${lng.toStringAsFixed(5)}, ${lat.toStringAsFixed(5)}',
+    );
+    _nameCtrl = TextEditingController(text: widget.name);
+  }
+
+  @override
+  void dispose() {
+    _coordsCtrl.dispose();
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  /// 解析"经度, 纬度"文本框 → (纬度, 经度)，格式错误返回 null
+  (double?, double?) _parseCoords(String text) {
+    final parts = text
+        .replaceAll('，', ',')
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (parts.length != 2) return (null, null);
+    final lng = double.tryParse(parts[0]);
+    final lat = double.tryParse(parts[1]);
+    if (lat == null || lng == null) return (null, null);
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      return (null, null);
+    }
+    return (lat, lng);
+  }
+
+  /// 自动获取经纬度（GPS，离线可用）
+  Future<void> _autoGetCoords() async {
+    if (_gettingCoords) return;
+    final revision = _coordinatesInputRevision;
+    setState(() {
+      _gettingCoords = true;
+      _message = null;
+    });
+    try {
+      final (lat, lng) = await LocationService.getCoordinates();
+      if (mounted && revision == _coordinatesInputRevision) {
+        setState(() {
+          _coordsCtrl.text =
+              '${lng.toStringAsFixed(5)}, ${lat.toStringAsFixed(5)}';
+          _coordinatesChanged = true;
+          _coordinatesInputRevision++;
+          _gettingCoords = false;
+        });
+      } else if (mounted) {
+        setState(() => _gettingCoords = false);
+      }
+    } on LocationException catch (e) {
+      if (mounted) {
+        setState(() => _gettingCoords = false);
+        _showMessage(e.message);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _gettingCoords = false);
+        _showMessage('获取经纬度失败：$e');
+      }
+    }
+  }
+
+  /// 用当前经纬度反查位置名称（需网络）
+  Future<void> _autoGetName() async {
+    if (_gettingName) return;
+    final (lat, lng) = _parseCoords(_coordsCtrl.text);
+    if (lat == null || lng == null) {
+      _showMessage('请先获取或填写有效的经纬度');
+      return;
+    }
+    final revision = _nameInputRevision;
+    setState(() {
+      _gettingName = true;
+      _message = null;
+    });
+    try {
+      final address = await LocationService.reverseGeocode(lat, lng);
+      if (mounted && revision == _nameInputRevision) {
+        if (address != null && address.isNotEmpty) {
+          setState(() {
+            _gettingName = false;
+            _nameCtrl.text = address;
+            _nameChanged = true;
+            _nameInputRevision++;
+          });
+        } else {
+          setState(() => _gettingName = false);
+          _showMessage('获取位置名称失败，请检查网络后重试');
+        }
+      } else if (mounted) {
+        setState(() => _gettingName = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _gettingName = false);
+        _showMessage('获取位置名称失败：$e');
+      }
+    }
+  }
+
+  void _confirm() {
+    final (lat, lng) = _parseCoords(_coordsCtrl.text);
+    final coordsEmpty = _coordsCtrl.text.trim().isEmpty;
+    if (_coordinatesChanged && coordsEmpty) {
+      _showMessage('经纬度不能为空；如需删除位置，请点击“清除”');
+      return;
+    }
+    if (_coordinatesChanged && (lat == null || lng == null)) {
+      _showMessage('经纬度格式或范围错误，应为“经度, 纬度”，如 113.93, 22.54');
+      return;
+    }
+    final name = _nameCtrl.text.trim();
+    if (_nameChanged && name.isEmpty && widget.name.trim().isNotEmpty) {
+      _showMessage('位置名称不能为空；如需删除位置，请点击“清除”');
+      return;
+    }
+    Navigator.pop(
+      context,
+      _LocationSheetResult(
+        latitude: _coordinatesChanged ? lat : null,
+        longitude: _coordinatesChanged ? lng : null,
+        name: _nameChanged ? name : null,
+        coordinatesChanged: _coordinatesChanged,
+        nameChanged: _nameChanged,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 8),
-          Container(
-            width: 36, height: 4,
-            decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Center(
+                child: Text(
+                  '位置设置',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+
+              if (_message != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  _message!,
+                  style: const TextStyle(fontSize: 12, color: Colors.red),
+                ),
+              ],
+              const SizedBox(height: 16),
+              TextField(
+                key: const Key('location-coordinates-field'),
+                controller: _coordsCtrl,
+                decoration: const InputDecoration(
+                  labelText: '经纬度',
+                  hintText: '经度, 纬度，如 113.93, 22.54',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                keyboardType: TextInputType.text,
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[-0-9.,，\s]')),
+                ],
+                onChanged: (_) {
+                  _coordinatesChanged = true;
+                  _coordinatesInputRevision++;
+                },
+              ),
+
+              const SizedBox(height: 16),
+              // 自动获取经纬度
+              FilledButton.tonalIcon(
+                onPressed: _gettingCoords ? null : _autoGetCoords,
+                icon: _gettingCoords
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.my_location, size: 20),
+                label: Text(_gettingCoords ? '定位中...' : '自动获取经纬度'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                key: const Key('location-name-field'),
+                controller: _nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: '位置名称',
+                  hintText: '暂无，可点击上方"获取位置名称"补充',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onChanged: (_) {
+                  _nameChanged = true;
+                  _nameInputRevision++;
+                },
+              ),
+              const SizedBox(height: 8),
+              // 获取位置名称
+              FilledButton.tonalIcon(
+                onPressed: _gettingName ? null : _autoGetName,
+                icon: _gettingName
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.place_outlined, size: 20),
+                label: Text(_gettingName ? '查询中...' : '获取位置名称'),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.pop(
+                        context,
+                        const _LocationSheetResult(clearAll: true),
+                      );
+                    },
+                    child: const Text(
+                      '清除',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(onPressed: _confirm, child: const Text('确定')),
+                ],
+              ),
+            ],
           ),
-          const SizedBox(height: 12),
-          if (canAutoLocate)
-            ListTile(
-              leading: const Icon(Icons.my_location, color: AppColors.primary),
-              title: const Text('自动定位获取天气'),
-              onTap: () => Navigator.pop(context, _WeatherAction.auto),
-            ),
-          ListTile(
-            leading: const Icon(Icons.location_city, color: AppColors.primary),
-            title: const Text('手动输入城市'),
-            onTap: () => Navigator.pop(context, _WeatherAction.manual),
-          ),
-          if (hasWeather)
-            ListTile(
-              leading: Icon(Icons.clear, color: Colors.grey[600]),
-              title: Text('清除天气', style: TextStyle(color: Colors.grey[600])),
-              onTap: () => Navigator.pop(context, _WeatherAction.clear),
-            ),
-          const SizedBox(height: 8),
-        ],
+        ),
       ),
     );
   }
 }
 
-// ── 城市输入对话框 ──────────────────────────────────────────────
+// ── 天气设置底部弹窗 ────────────────────────────────────────────────
 
-class _CityInputDialog extends StatefulWidget {
-  const _CityInputDialog();
+/// 天气设置结果：仅覆盖明确修改过的字段，清除操作单独标记
+class _WeatherSheetResult {
+  final String? condition;
+  final String? detail;
+  final bool conditionChanged;
+  final bool detailChanged;
+  final bool clearAll;
 
-  @override
-  State<_CityInputDialog> createState() => _CityInputDialogState();
+  const _WeatherSheetResult({
+    this.condition,
+    this.detail,
+    this.conditionChanged = false,
+    this.detailChanged = false,
+    this.clearAll = false,
+  });
 }
 
-class _CityInputDialogState extends State<_CityInputDialog> {
-  final _ctrl = TextEditingController();
+class _WeatherSheet extends StatefulWidget {
+  final WeatherInfo? current;
+  final LocationInfo? location;
+  final bool canAutoLocate;
+
+  const _WeatherSheet({
+    this.current,
+    this.location,
+    required this.canAutoLocate,
+  });
+
+  @override
+  State<_WeatherSheet> createState() => _WeatherSheetState();
+}
+
+class _WeatherSheetState extends State<_WeatherSheet> {
+  /// 当前选中的天气状况（如"晴"），null 表示未选择
+  String? _condition;
+
+  late final TextEditingController _detailCtrl;
+  late final TextEditingController _cityCtrl;
   List<String> _favCities = [];
+
+  /// 是否正在自动获取
+  bool _fetchingAuto = false;
+
+  /// 是否正在按城市获取
+  bool _fetchingCity = false;
+
+  /// 用户或自动操作是否实际修改过对应字段
+  bool _conditionChanged = false;
+  bool _detailChanged = false;
+
+  /// 输入版本号，确保较早的异步结果不会覆盖后发的手动输入
+  int _conditionInputRevision = 0;
+  int _detailInputRevision = 0;
+
+  bool get _fetching => _fetchingAuto || _fetchingCity;
+
+  /// 弹窗内的错误提示（避免被底部弹窗遮挡的 SnackBar）
+  String? _message;
+
+  void _showMessage(String message) {
+    if (mounted) setState(() => _message = message);
+  }
 
   @override
   void initState() {
     super.initState();
+    _condition = widget.current?.condition;
+    _detailCtrl = TextEditingController(text: widget.current?.detail ?? '');
+    _cityCtrl = TextEditingController();
     SettingsService.favoriteCities.then((cities) {
       if (mounted) setState(() => _favCities = cities);
     });
@@ -1989,61 +2538,304 @@ class _CityInputDialogState extends State<_CityInputDialog> {
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    _detailCtrl.dispose();
+    _cityCtrl.dispose();
     super.dispose();
   }
 
-  void _submit() {
-    final city = _ctrl.text.trim();
-    if (city.isNotEmpty) Navigator.pop(context, city);
+  /// 自动获取天气：优先用当前定位，没有则先 GPS 定位（移动端）
+  Future<void> _autoFetch() async {
+    if (_fetching) return;
+    final conditionRevision = _conditionInputRevision;
+    final detailRevision = _detailInputRevision;
+    setState(() {
+      _fetchingAuto = true;
+      _message = null;
+    });
+    try {
+      var located = widget.location;
+      if (located == null && widget.canAutoLocate) {
+        try {
+          final (lat, lng) = await LocationService.getCoordinates();
+          located = LocationInfo(latitude: lat, longitude: lng);
+        } catch (_) {}
+      }
+      WeatherInfo? info;
+      if (located != null) {
+        info = await WeatherService.fetchWeatherByCoords(
+          latitude: located.latitude,
+          longitude: located.longitude,
+        );
+      }
+      if (mounted) {
+        if (info != null) {
+          final fetched = info;
+          setState(() {
+            _fetchingAuto = false;
+            if (conditionRevision == _conditionInputRevision) {
+              _condition = fetched.condition;
+              _conditionChanged = true;
+              _conditionInputRevision++;
+            }
+            if (detailRevision == _detailInputRevision) {
+              _detailCtrl.text = fetched.detail;
+              _detailChanged = true;
+              _detailInputRevision++;
+            }
+          });
+        } else {
+          setState(() => _fetchingAuto = false);
+          _showMessage('获取天气失败，请检查网络或 API Key');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _fetchingAuto = false);
+        _showMessage('获取天气失败：$e');
+      }
+    }
+  }
+
+  /// 按城市名获取天气，成功后回填选择与描述
+  Future<void> _fetchByCity() async {
+    final city = _cityCtrl.text.trim();
+    if (city.isEmpty || _fetching) return;
+    final conditionRevision = _conditionInputRevision;
+    final detailRevision = _detailInputRevision;
+    setState(() {
+      _fetchingCity = true;
+      _message = null;
+    });
+    try {
+      final info = await WeatherService.fetchWeatherByCity(city);
+      if (mounted) {
+        if (info != null) {
+          setState(() {
+            _fetchingCity = false;
+            if (conditionRevision == _conditionInputRevision) {
+              _condition = info.condition;
+              _conditionChanged = true;
+              _conditionInputRevision++;
+            }
+            if (detailRevision == _detailInputRevision) {
+              _detailCtrl.text = info.detail;
+              _detailChanged = true;
+              _detailInputRevision++;
+            }
+          });
+        } else {
+          setState(() => _fetchingCity = false);
+          _showMessage('未找到"$city"的天气，请检查城市名或 API Key');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _fetchingCity = false);
+        _showMessage('获取天气失败：$e');
+      }
+    }
+  }
+
+  void _confirm() {
+    Navigator.pop(
+      context,
+      _WeatherSheetResult(
+        condition: _conditionChanged ? _condition : null,
+        detail: _detailChanged ? _detailCtrl.text.trim() : null,
+        conditionChanged: _conditionChanged,
+        detailChanged: _detailChanged,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('选择城市'),
-      contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _ctrl,
-            autofocus: true,
-            decoration: const InputDecoration(
-              hintText: '输入城市名，如：深圳',
-              border: OutlineInputBorder(),
-              isDense: true,
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 16,
+        right: 16,
+        top: 16,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Center(
+              child: Text(
+                '天气设置',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
             ),
-            onSubmitted: (_) => _submit(),
-          ),
-          if (_favCities.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Text('常用城市', style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+            const SizedBox(height: 16),
+            // 自动获取（按位置）
+            FilledButton.tonalIcon(
+              onPressed: _fetching ? null : _autoFetch,
+              icon: _fetchingAuto
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.wb_sunny_outlined, size: 20),
+              label: Text(_fetchingAuto ? '获取中...' : '自动获取（按位置）'),
+            ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: _favCities.map((city) => GestureDetector(
-                onTap: () => Navigator.pop(context, city),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: AppColors.primaryLight,
-                    borderRadius: BorderRadius.circular(16),
+            // 按城市获取
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _cityCtrl,
+                    decoration: const InputDecoration(
+                      hintText: '输入城市名，如：深圳',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    onSubmitted: (_) => _fetchByCity(),
                   ),
-                  child: Text(city, style: const TextStyle(fontSize: 13, color: AppColors.primaryDark)),
                 ),
-              )).toList(),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  onPressed: _fetching ? null : _fetchByCity,
+                  child: _fetchingCity
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('按城市获取'),
+                ),
+              ],
+            ),
+            if (_favCities.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: _favCities
+                    .map(
+                      (city) => GestureDetector(
+                        onTap: () {
+                          _cityCtrl.text = city;
+                          _fetchByCity();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.primaryLight,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Text(
+                            city,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: AppColors.primaryDark,
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+            if (_message != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _message!,
+                style: const TextStyle(fontSize: 12, color: Colors.red),
+              ),
+            ],
+            const SizedBox(height: 16),
+            const Text('手动选择天气', style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 8),
+            // 手动选择天气：横向滚动单选，不换行
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: <String>{
+                  if (_condition != null && _condition!.isNotEmpty) _condition!,
+                  ...kIntToWeatherCondition.values,
+                }.map((condition) {
+                  final selected = _condition == condition;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: GestureDetector(
+                      onTap: () => setState(() {
+                        _condition = selected ? null : condition;
+                        _conditionChanged = true;
+                        _conditionInputRevision++;
+                      }),
+                      child: Container(
+                        height: 32,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: selected
+                              ? AppColors.primaryLight
+                              : Colors.grey[100],
+                          borderRadius: BorderRadius.circular(16),
+                          border: selected
+                              ? Border.all(color: AppColors.primary, width: 1.5)
+                              : null,
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          condition,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: selected
+                                ? AppColors.primaryDark
+                                : Colors.grey[700],
+                            fontWeight: selected
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('weather-detail-field'),
+              controller: _detailCtrl,
+              decoration: const InputDecoration(
+                labelText: '天气描述',
+                hintText: '如：晴，25°C，微风',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              onChanged: (_) {
+                _detailChanged = true;
+                _detailInputRevision++;
+              },
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(
+                      context,
+                      const _WeatherSheetResult(clearAll: true),
+                    );
+                  },
+                  child: const Text('清除', style: TextStyle(color: Colors.grey)),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(onPressed: _confirm, child: const Text('确定')),
+              ],
             ),
           ],
-          const SizedBox(height: 8),
-        ],
+        ),
       ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-        TextButton(onPressed: _submit, child: const Text('确定')),
-      ],
     );
   }
 }
@@ -2066,12 +2858,18 @@ class _MoodPickerSheet extends StatelessWidget {
           children: [
             Row(
               children: [
-                const Text('选择心情', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                const Text(
+                  '选择心情',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
                 const Spacer(),
                 if (selectedKey != null)
                   TextButton(
                     onPressed: () => Navigator.pop(context, ''),
-                    child: const Text('清除', style: TextStyle(color: Colors.grey)),
+                    child: const Text(
+                      '清除',
+                      style: TextStyle(color: Colors.grey),
+                    ),
                   ),
               ],
             ),
@@ -2087,7 +2885,9 @@ class _MoodPickerSheet extends StatelessWidget {
                     height: 36,
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
-                      color: selected ? AppColors.primaryLight : Colors.grey[100],
+                      color: selected
+                          ? AppColors.primaryLight
+                          : Colors.grey[100],
                       borderRadius: BorderRadius.circular(18),
                       border: selected
                           ? Border.all(color: AppColors.primary, width: 1.5)
@@ -2096,14 +2896,26 @@ class _MoodPickerSheet extends StatelessWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(opt.icon, size: 18, color: selected ? opt.color : opt.color.withAlpha(180)),
+                        Icon(
+                          opt.icon,
+                          size: 18,
+                          color: selected
+                              ? opt.color
+                              : opt.color.withAlpha(180),
+                        ),
                         const SizedBox(width: 5),
-                        Text(opt.label,
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: selected ? AppColors.primaryDark : Colors.grey[700],
-                              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                            )),
+                        Text(
+                          opt.label,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: selected
+                                ? AppColors.primaryDark
+                                : Colors.grey[700],
+                            fontWeight: selected
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -2148,13 +2960,9 @@ class _AiRequestProgressBar extends StatelessWidget {
                   ),
                   const SizedBox(width: 12),
                   const Expanded(
-                    child: Text('AI 处理中...',
-                        style: TextStyle(fontSize: 13)),
+                    child: Text('AI 处理中...', style: TextStyle(fontSize: 13)),
                   ),
-                  TextButton(
-                    onPressed: onCancel,
-                    child: const Text('取消'),
-                  ),
+                  TextButton(onPressed: onCancel, child: const Text('取消')),
                 ],
               ),
             ),
