@@ -31,28 +31,18 @@
 
 ```sql
 CREATE TABLE IF NOT EXISTS threads (
-  id           INTEGER PRIMARY KEY,   -- snowflake，复用 util/snowflake.go
-  user_id      INTEGER NOT NULL,
-  title        TEXT NOT NULL,
-  summary      TEXT DEFAULT '',       -- 一句话进展简介
-  summary_source TEXT DEFAULT 'AI',   -- AI / MANUAL，MANUAL 后 AI 不再覆盖
-  status       TEXT DEFAULT 'ACTIVE', -- ACTIVE / RESOLVED
-  member_count INTEGER DEFAULT 0,     -- 冗余，列表页免 JOIN
-  started_ts   INTEGER DEFAULT 0,     -- 冗余：最早成员 display_ts
-  last_ts      INTEGER DEFAULT 0,     -- 冗余：最新成员 display_ts
-  created_ts   INTEGER NOT NULL,
-  updated_ts   INTEGER NOT NULL,
-  row_status   TEXT DEFAULT 'NORMAL'  -- NORMAL / DELETED（软删，供同步删除检测）
+  id             INTEGER PRIMARY KEY,   -- snowflake，复用 util/snowflake.go
+  user_id        INTEGER NOT NULL,
+  title          TEXT NOT NULL,
+  summary        TEXT DEFAULT '',       -- 一句话进展简介
+  summary_source TEXT DEFAULT 'AI',     -- AI / MANUAL，MANUAL 后 AI 不再覆盖
+  status         TEXT DEFAULT 'ACTIVE', -- ACTIVE / RESOLVED
+  members        TEXT DEFAULT '[]',     -- JSON 数组，成员 memo id，如 [1001,1002]
+  created_ts     INTEGER NOT NULL,
+  updated_ts     INTEGER NOT NULL,
+  row_status     TEXT DEFAULT 'NORMAL'  -- NORMAL / DELETED（软删，供同步删除检测）
 );
 CREATE INDEX IF NOT EXISTS idx_threads_user ON threads(user_id);
-
-CREATE TABLE IF NOT EXISTS thread_members (
-  thread_id  INTEGER NOT NULL,
-  memo_id    INTEGER NOT NULL,
-  created_ts INTEGER NOT NULL,
-  PRIMARY KEY (thread_id, memo_id)
-);
-CREATE INDEX IF NOT EXISTS idx_thread_members_memo ON thread_members(memo_id);
 
 CREATE TABLE IF NOT EXISTS thread_suggestions (
   id         INTEGER PRIMARY KEY,
@@ -75,6 +65,13 @@ ALTER TABLE memos ADD COLUMN thread_scan_ts INTEGER DEFAULT 0;
 ```
 
 ### 3.2 设计取舍
+
+**成员用 JSON 列而非中间表。** 三条理由：
+1. 本仓库已有先例 —— `memos.tags` 就是 JSON 数组字符串，`ParseTagsJSON` / `MarshalTagsJSON` 是现成模式，直接沿用
+2. 与客户端 `ThreadEntry.memberLocalIds` 形态 1:1 对应，两侧不需要形态转换
+3. 服务端不存在反查需求 —— 客户端本地查所属事件串，服务端唯一的反查场景是「删 memo 时级联清理」，在几十行 threads 上用 SQLite 的 `json_each()` 扫一遍即可
+
+**不存冗余的 `member_count` / `started_ts` / `last_ts`。** 这些冗余不只是维护成本，是**会算错**：`started_ts` / `last_ts` 冗余的是成员 memo 的 `display_ts`，而用户随时能改某篇日记的日期。改完之后冗余列就悄悄过期，且没有任何地方会触发重算 —— 除非在 memo 的 PATCH 里反查所有包含它的事件串。为一个列表页排序字段付这个代价不划算。列表接口现查聚合（`COUNT` / `MIN` / `MAX`），事件串是几十个量级，开销可忽略。
 
 **不存 `seq` 排序字段。** 成员一律按 memo 的 `display_ts` 排序。日记本身就是时间事件，而 `display_ts` 已可由客户端修改；再存一个手工顺序会与之打架，还需额外处理顺序冲突。
 
@@ -144,7 +141,7 @@ dart run build_runner build --delete-conflicting-outputs
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/threads` | 列表，参数 `status` / `pageSize` / `pageToken`；不含成员，只带 `memberCount`/`startedTs`/`lastTs` |
+| GET | `/api/v1/threads` | 列表，参数 `status` / `pageSize` / `pageToken`；不含成员详情，`memberCount`/`startedTime`/`lastTime` 由 JOIN `memos` 现算 |
 | POST | `/api/v1/threads` | 创建，`{title, summary?, memos: ["memos/1", ...]}` |
 | GET | `/api/v1/threads/:thread` | 详情，含 `members: [{memo, snippet, displayTime}]` |
 | PATCH | `/api/v1/threads/:thread` | 改 `title` / `summary` / `status`，支持 `?updateMask=` |
@@ -155,7 +152,11 @@ dart run build_runner build --delete-conflicting-outputs
 | POST | `/api/v1/ai/thread-summary` | 手动重新生成简介 `{thread, provider, cloudConsent}` |
 | POST | `/api/v1/ai/thread-match` | 手动重新分析归属 `{memo, provider, cloudConsent}` |
 
-**只做成员的全量替换**，不做单成员 POST/DELETE：客户端本就整体 LWW 推送，单成员接口用不上。对齐现有「设置 Memo 的附件」（`PATCH /memos/:memo/attachments`）的做法。
+**只做成员的全量替换**，不做单成员 POST/DELETE。理由是**离线客户端的重试语义**：客户端离线期间可能对同一事件串加了 3 篇、删了 1 篇；若只有单条接口，push 需先 diff 再发 4 个请求，第 3 个失败时事件串停在中间状态 —— 而 `syncStatus` 只有一个标记位，表达不了「还差一篇和一个删除」，重试也得记住发到哪了。`PUT` 整个列表则是一个请求、一次原子写、一条 changelog、天然幂等，失败原样重发即可。配合 JSON 列，服务端实现就是一条 `UPDATE threads SET members = ?`。
+
+代价是并发覆盖：两台设备同时改同一事件串时后写覆盖先写，先写方新增的成员会丢。这正是 §5.3 接受的 LWW 取舍，对单人单设备为主的场景成本远低于成员级墓碑机制。
+
+接口风格对齐现有「设置 Memo 的附件」（`PATCH /memos/:memo/attachments`）。
 
 **不做反查接口** `GET /memos/:memo/threads`：客户端本地有全量数据，本地索引查询即可。
 
@@ -207,8 +208,14 @@ dart run build_runner build --delete-conflicting-outputs
 
 ### 5.2 级联删除
 
-- **删除 memo**：级联删除其 `thread_members` 行，重算受影响事件串的 `member_count` / `started_ts` / `last_ts`，bump `threads.updated_ts` 并写 `thread` 的 UPDATE changelog；同时把该 memo 相关的 `PENDING` 建议置为 `DISMISSED`
-- **软删 thread**（`row_status = DELETED`）：保留 `thread_members` 行不动（便于恢复），仅写 `thread` 的 DELETE changelog；客户端据此本地删除
+- **删除 memo**：用 `json_each()` 找出所有含该 memo 的事件串，重写其 `members` JSON，bump `updated_ts` 并写 `thread` 的 UPDATE changelog；同时把该 memo 相关的 `PENDING` 建议置为 `DISMISSED`
+
+  ```sql
+  SELECT t.id FROM threads t, json_each(t.members) je
+  WHERE t.user_id = ? AND je.value = ?;
+  ```
+
+- **软删 thread**（`row_status = DELETED`）：`members` 原样保留（便于恢复），仅写 `thread` 的 DELETE changelog；客户端据此本地删除
 - 客户端侧对应：memo 本地删除时从所有 `ThreadEntry.memberLocalIds` 中移除该 id
 
 ### 5.3 冲突
@@ -265,7 +272,7 @@ dart run build_runner build --delete-conflicting-outputs
 - `LOCAL` 不可用时：简介生成跳过（保持旧简介）；归属匹配退化为关键词粗排，`confidence` 封顶 0.5，`reason` 标注「关键词匹配」，且**不写 `thread_scan_ts`**，待 LOCAL 恢复后重跑
 - 用户在客户端手动触发 `/ai/thread-summary` 或 `/ai/thread-match` 时，才可选 DeepSeek 并带 `cloudConsent`
 
-**AI 永不直接写 `thread_members`。** AI 只写 `thread_suggestions` 和 `threads.summary`。成员写入一律由用户确认后走普通 API。这是服务端既有规则「AI 接口不会直接修改 memo 或 article，仅返回建议内容供客户端确认」的延续。
+**AI 永不直接写 `threads.members`。** AI 只写 `thread_suggestions` 和 `threads.summary`。成员写入一律由用户确认后走普通 API。这是服务端既有规则「AI 接口不会直接修改 memo 或 article，仅返回建议内容供客户端确认」的延续。
 
 ### 6.3 前台抢占
 
@@ -325,7 +332,7 @@ dart run build_runner build --delete-conflicting-outputs
 
 **Phase 1 — 纯手动，无 AI。做完即可解决蛐蛐问题。**
 
-- 服务端：`threads` / `thread_members` 两表 + CRUD API + changelog entity `thread`
+- 服务端：`threads` 单表 + CRUD API + changelog entity `thread`
 - 客户端：`ThreadEntry` 模型 + 同步（含离线推送顺序、冲突）+ 底部 Tab 改版 + 详情页事件串 chip 与上下篇导航 + 编辑器手动挂载 + 创建页批量加入
 - 文档：`server-API.md` 补 threads 章节
 
