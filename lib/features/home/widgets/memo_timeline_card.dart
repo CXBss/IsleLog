@@ -18,6 +18,7 @@ import '../../../data/database/database_service.dart' as db_svc;
 import '../../../features/memo_detail/memo_detail_page.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
 import '../../../features/revision_history/revision_history_page.dart';
+import '../../../features/threads/thread_picker_sheet.dart';
 import '../../../services/location/location_service.dart';
 import '../../../services/settings/settings_service.dart'; // Bearer Token 用于图片认证
 import '../../../services/sync/sync_service.dart';
@@ -316,6 +317,15 @@ class _MemoCardState extends State<_MemoCard> {
               onTap: () {
                 Navigator.pop(context);
                 _openEdit(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.timeline_outlined),
+              title: const Text('归入事件串'),
+              onTap: () async {
+                Navigator.pop(context);
+                // 归属变化由 watchDbChanges 的 threadEntrys 流触发列表刷新
+                await showThreadPickerSheet(context, memoLocalId: memo.id);
               },
             ),
             ListTile(

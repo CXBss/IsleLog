@@ -108,6 +108,21 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 编辑模式下被移除的旧附件（仅保存成功后才真正删除远端资源）
   final List<AttachmentInfo> _removedAttachments = [];
 
+  /// 新建日记保存前先记录事件串选择，取得本地 id 后再写入成员。
+  final Set<int> _pendingThreadIds = {};
+
+  Future<void> _attachPendingThreads(int memoLocalId) async {
+    for (final id in _pendingThreadIds) {
+      final thread = await DatabaseService.getThreadById(id);
+      if (thread == null || thread.memberLocalIds.contains(memoLocalId))
+        continue;
+      thread
+        ..memberLocalIds = [...thread.memberLocalIds, memoLocalId]
+        ..syncStatus = SyncStatus.pending;
+      await DatabaseService.saveThread(thread);
+    }
+  }
+
   /// 是否为编辑模式（影响标题文字）
   bool get _isEditing => widget.editingMemo != null;
 
@@ -214,6 +229,12 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
         } catch (_) {}
       }
       _mood = m.mood;
+      DatabaseService.getThreadsForMemo(m.id).then((threads) {
+        if (mounted)
+          setState(
+            () => _pendingThreadIds.addAll(threads.map((thread) => thread.id)),
+          );
+      });
     }
 
     // 新建模式下恢复草稿；移动端进入编辑页后自动获取位置（经纬度）和天气
@@ -1248,6 +1269,69 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// 编辑器内选择事件串。取消勾选不会移除已有归属，避免误操作。
+  Future<void> _pickThreads() async {
+    final threads = await DatabaseService.getAllThreads();
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text(
+                  '归入事件串',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+              const Divider(height: 1),
+              if (threads.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text(
+                    '还没有事件串，可在事件串页新建',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final thread in threads)
+                        CheckboxListTile(
+                          value: _pendingThreadIds.contains(thread.id),
+                          title: Text(thread.title),
+                          activeColor: AppColors.primary,
+                          onChanged: (value) {
+                            setSheetState(() {
+                              if (value ?? false) {
+                                _pendingThreadIds.add(thread.id);
+                              } else {
+                                _pendingThreadIds.remove(thread.id);
+                              }
+                            });
+                            setState(() {});
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('完成'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 1. 校验正文不为空
   /// 2. 写入本地 DB（新建或更新）
   /// 3. 如已配置服务器，在后台推送到远端
@@ -1283,6 +1367,7 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       memo.conflictRemoteContent = null;
 
       await DatabaseService.saveMemo(memo);
+      await _attachPendingThreads(memo.id);
       debugPrint('[MemoEditor] 本地保存成功，memo.id=${memo.id}');
 
       // 保存成功后才删除被移除的附件（避免用户取消编辑时误删）
@@ -1418,6 +1503,17 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
         actions: [
+          // 事件串放在 AppBar 而非底部工具栏：底部那一行已有录音/拍照/附件/位置/
+          // 天气/心情，再加一个 36px 按钮会在窄屏上把保存按钮挤出可视区
+          IconButton(
+            key: const Key('memo-editor-thread-action'),
+            icon: Icon(
+              Icons.timeline_outlined,
+              color: _pendingThreadIds.isEmpty ? null : AppColors.primary,
+            ),
+            tooltip: '事件串',
+            onPressed: _pickThreads,
+          ),
           if (_aiAvailable)
             IconButton(
               key: const Key('memo-editor-ai-action'),
@@ -1803,9 +1899,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                                       fontSize: 12,
                                       color: Colors.grey[600],
                                     ),
-                                  decoration: InputDecoration(
-                                    hintText: _isMobile
-                                        ? '位置'
+                                    decoration: InputDecoration(
+                                      hintText: _isMobile
+                                          ? '位置'
                                           : AppStrings.editorLocationHint,
                                       hintStyle: TextStyle(
                                         fontSize: 12,
@@ -1813,13 +1909,13 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                                       ),
                                       border: InputBorder.none,
                                       isDense: true,
-                                    contentPadding: EdgeInsets.zero,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                    onChanged: (_) {
+                                      setState(() => _locationRevision++);
+                                    },
                                   ),
-                                  onChanged: (_) {
-                                    setState(() => _locationRevision++);
-                                  },
                                 ),
-                              ),
                         ),
                         const SizedBox(width: 4),
                         // 保存按钮
@@ -2757,48 +2853,53 @@ class _WeatherSheetState extends State<_WeatherSheet> {
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
-                children: <String>{
-                  if (_condition != null && _condition!.isNotEmpty) _condition!,
-                  ...kIntToWeatherCondition.values,
-                }.map((condition) {
-                  final selected = _condition == condition;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: GestureDetector(
-                      onTap: () => setState(() {
-                        _condition = selected ? null : condition;
-                        _conditionChanged = true;
-                        _conditionInputRevision++;
-                      }),
-                      child: Container(
-                        height: 32,
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        decoration: BoxDecoration(
-                          color: selected
-                              ? AppColors.primaryLight
-                              : Colors.grey[100],
-                          borderRadius: BorderRadius.circular(16),
-                          border: selected
-                              ? Border.all(color: AppColors.primary, width: 1.5)
-                              : null,
-                        ),
-                        alignment: Alignment.center,
-                        child: Text(
-                          condition,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: selected
-                                ? AppColors.primaryDark
-                                : Colors.grey[700],
-                            fontWeight: selected
-                                ? FontWeight.w600
-                                : FontWeight.normal,
+                children:
+                    <String>{
+                      if (_condition != null && _condition!.isNotEmpty)
+                        _condition!,
+                      ...kIntToWeatherCondition.values,
+                    }.map((condition) {
+                      final selected = _condition == condition;
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: GestureDetector(
+                          onTap: () => setState(() {
+                            _condition = selected ? null : condition;
+                            _conditionChanged = true;
+                            _conditionInputRevision++;
+                          }),
+                          child: Container(
+                            height: 32,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              color: selected
+                                  ? AppColors.primaryLight
+                                  : Colors.grey[100],
+                              borderRadius: BorderRadius.circular(16),
+                              border: selected
+                                  ? Border.all(
+                                      color: AppColors.primary,
+                                      width: 1.5,
+                                    )
+                                  : null,
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              condition,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: selected
+                                    ? AppColors.primaryDark
+                                    : Colors.grey[700],
+                                fontWeight: selected
+                                    ? FontWeight.w600
+                                    : FontWeight.normal,
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  );
-                }).toList(),
+                      );
+                    }).toList(),
               ),
             ),
             const SizedBox(height: 12),

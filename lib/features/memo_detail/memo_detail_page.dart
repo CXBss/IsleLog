@@ -11,6 +11,7 @@ import '../../data/database/database_service.dart';
 import '../../data/models/attachment_info.dart';
 import '../../data/models/comment_entry.dart';
 import '../../data/models/memo_entry.dart';
+import '../../data/models/thread_entry.dart';
 import '../../data/models/weather_info.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
@@ -19,6 +20,9 @@ import '../../features/home/widgets/audio_player_widget.dart';
 import '../../features/home/widgets/file_chip_widget.dart';
 import '../../features/memo_editor/memo_editor_page.dart';
 import '../../features/revision_history/revision_history_page.dart';
+import '../threads/thread_detail_page.dart';
+import '../threads/thread_picker_sheet.dart';
+import 'widgets/thread_nav_bar.dart';
 import '../../shared/constants/app_constants.dart';
 
 /// 日记详情页
@@ -36,6 +40,11 @@ class MemoDetailPage extends StatefulWidget {
 
 class _MemoDetailPageState extends State<MemoDetailPage> {
   MemoEntry get memo => widget.memo;
+
+  /// 本篇日记可同时归属多条事件串。
+  List<ThreadEntry> _threads = [];
+  ThreadEntry? _navThread;
+  List<MemoEntry> _navMembers = [];
 
   // ── 评论 ──
   List<CommentEntry> _comments = [];
@@ -95,6 +104,57 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
     _loadComments();
     _prefetchLocation();
     _syncComments();
+    _loadThreads();
+  }
+
+  Future<void> _loadThreads() async {
+    final threads = await DatabaseService.getThreadsForMemo(memo.id);
+    final navThread = threads.isEmpty ? null : threads.first;
+    final members = <MemoEntry>[];
+    if (navThread != null) {
+      for (final id in navThread.memberLocalIds) {
+        final item = await DatabaseService.getMemoById(id);
+        if (item != null && !item.isDeleted) members.add(item);
+      }
+      members.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    }
+    if (mounted)
+      setState(() {
+        _threads = threads;
+        _navThread = navThread;
+        _navMembers = members;
+      });
+  }
+
+  ThreadNavData? _navData() {
+    final thread = _navThread;
+    final index = _navMembers.indexWhere((item) => item.id == memo.id);
+    if (thread == null || index < 0) return null;
+    return ThreadNavData(
+      threadTitle: thread.title,
+      position: index + 1,
+      total: _navMembers.length,
+      hasPrevious: index > 0,
+      hasNext: index < _navMembers.length - 1,
+    );
+  }
+
+  void _jumpThreadMember(int offset) {
+    final index = _navMembers.indexWhere((item) => item.id == memo.id);
+    final target = index + offset;
+    if (target < 0 || target >= _navMembers.length) return;
+    // 事件串内翻页读起来是「换一篇内容」而不是「进入新页面」，
+    // 因此用短淡入代替 MaterialPageRoute 的整页滑动，减少视觉动静。
+    Navigator.pushReplacement(
+      context,
+      PageRouteBuilder<void>(
+        transitionDuration: const Duration(milliseconds: 140),
+        reverseTransitionDuration: const Duration(milliseconds: 140),
+        pageBuilder: (_, _, _) => MemoDetailPage(memo: _navMembers[target]),
+        transitionsBuilder: (_, animation, _, child) =>
+            FadeTransition(opacity: animation, child: child),
+      ),
+    );
   }
 
   /// 后台同步评论（静默，完成后刷新列表）
@@ -173,7 +233,10 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
         title: const Text('删除评论'),
         content: const Text('确认删除这条评论？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(foregroundColor: AppColors.error),
@@ -210,7 +273,9 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
               onTap: () async {
                 Navigator.pop(context);
                 await Clipboard.setData(ClipboardData(text: memo.content));
-                messenger.showSnackBar(const SnackBar(content: Text('已复制 Markdown')));
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('已复制 Markdown')),
+                );
               },
             ),
           ],
@@ -244,16 +309,18 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
 
   MarkdownStyleSheet _mdStyle(BuildContext context) =>
       MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-        p: TextStyle(fontSize: 15, height: 1.7, color: AppColors.textBody(context)),
+        p: TextStyle(
+          fontSize: 15,
+          height: 1.7,
+          color: AppColors.textBody(context),
+        ),
         blockquote: const TextStyle(
           fontSize: 14,
           color: Colors.grey,
           fontStyle: FontStyle.italic,
         ),
         blockquoteDecoration: BoxDecoration(
-          border: Border(
-            left: BorderSide(color: Colors.grey[300]!, width: 3),
-          ),
+          border: Border(left: BorderSide(color: Colors.grey[300]!, width: 3)),
         ),
         code: TextStyle(fontSize: 13, backgroundColor: Colors.grey[100]),
         codeblockDecoration: BoxDecoration(
@@ -282,10 +349,8 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
               onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => RevisionHistoryPage(
-                    memoName: memo.memosName!,
-                    title: '',
-                  ),
+                  builder: (_) =>
+                      RevisionHistoryPage(memoName: memo.memosName!, title: ''),
                 ),
               ),
             ),
@@ -293,6 +358,16 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
             icon: const Icon(Icons.copy_outlined),
             tooltip: '复制',
             onPressed: () => _showCopyMenu(context),
+          ),
+          IconButton(
+            icon: const Icon(Icons.timeline_outlined),
+            tooltip: '归入事件串',
+            onPressed: () async {
+              if (await showThreadPickerSheet(context, memoLocalId: memo.id) ==
+                  true) {
+                await _loadThreads();
+              }
+            },
           ),
           IconButton(
             icon: const Icon(Icons.edit_outlined),
@@ -303,210 +378,306 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
       ),
       body: Column(
         children: [
-          Expanded(
-          child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── 正文（完整 Markdown 渲染）────────────────────────
-            if (_displayContent.isNotEmpty)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                decoration: BoxDecoration(
-                  color: AppColors.surface(context),
-                  borderRadius: BorderRadius.circular(AppDimens.cardRadius),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.06),
-                      blurRadius: 6,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: MarkdownBody(
-                  data: _displayContent,
-                  styleSheet: _mdStyle(context),
-                  checkboxBuilder: (checked) {
-                    final idx = checkboxIdx++;
-                    return GestureDetector(
-                      onTap: () {
-                        final lineIndex = _findTodoLineIndex(memo.content, idx);
-                        _toggleTodo(lineIndex, !checked);
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.only(right: 4),
-                        child: Icon(
-                          checked ? Icons.check_box : Icons.check_box_outline_blank,
-                          size: 18,
-                          color: checked ? AppColors.primary : Colors.grey[500],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-
-            // ── 冲突：远端版本 ────────────────────────────────────
-            if (memo.conflictRemoteContent != null) ...[
-              const SizedBox(height: 12),
-              _ConflictRemoteBlock(
-                remoteContent: memo.conflictRemoteContent!,
-                mdStyle: _mdStyle(context),
-              ),
-            ],
-
-            // ── 图片附件 ──────────────────────────────────────────
-            if (_imageAttachments.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              _DetailImageGrid(attachments: _imageAttachments),
-            ],
-
-            // ── 音频附件 ──────────────────────────────────────────
-            if (_audioAttachments.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              ..._audioAttachments.map((a) =>
-                  AudioPlayerWidget(key: ValueKey(a.localId), attachment: a)),
-            ],
-
-            // ── 文件附件 ──────────────────────────────────────────
-            if (_fileAttachments.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
+          if (_threads.isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Wrap(
+                spacing: 6,
                 runSpacing: 4,
-                children: _fileAttachments
-                    .map((a) => FileChipWidget(attachment: a))
-                    .toList(),
-              ),
-            ],
-
-            // ── 位置 ──────────────────────────────────────────────
-            if (memo.location != null && memo.location!.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              GestureDetector(
-                onTap: memo.latitude != null
-                    ? () => openMapFromCoords(
-                        memo.latitude, memo.longitude, memo.location)
-                    : null,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 1),
-                      child: Icon(Icons.location_on_outlined,
-                          size: 14,
-                          color: memo.latitude != null
-                              ? AppColors.primary
-                              : Colors.blueGrey[400]),
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        memo.location!,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: memo.latitude != null
-                              ? AppColors.primary
-                              : Colors.blueGrey[400],
-                          decoration: memo.latitude != null
-                              ? TextDecoration.underline
-                              : null,
-                          decorationColor: AppColors.primary,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-
-            // ── 天气 + 心情 ───────────────────────────────────────
-            if (memo.weatherJson != null || memo.mood != null) ...[
-              const SizedBox(height: 12),
-              Row(
                 children: [
-                  if (memo.weatherJson != null) ...[
-                    const Icon(Icons.wb_sunny_outlined, size: 14, color: Colors.blueGrey),
-                    const SizedBox(width: 4),
-                    Text(
-                      () {
-                        try {
-                          return WeatherInfo.fromJsonString(memo.weatherJson!).detail;
-                        } catch (_) {
-                          return '';
-                        }
-                      }(),
-                      style: TextStyle(fontSize: 13, color: Colors.blueGrey[600]),
+                  for (final thread in _threads.take(2))
+                    ActionChip(
+                      avatar: const Icon(Icons.timeline, size: 14),
+                      backgroundColor: AppColors.primaryLight,
+                      label: Text(
+                        thread.title,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ThreadDetailPage(threadId: thread.id),
+                        ),
+                      ).then((_) => _loadThreads()),
                     ),
-                  ],
-                  if (memo.weatherJson != null && memo.mood != null)
-                    const SizedBox(width: 12),
-                  if (memo.mood != null) ...[
-                    Icon(moodByKey(memo.mood)?.icon ?? Icons.sentiment_neutral,
-                        size: 14, color: moodByKey(memo.mood)?.color ?? Colors.blueGrey),
-                    const SizedBox(width: 4),
-                    Text(
-                      moodByKey(memo.mood)?.label ?? '',
-                      style: TextStyle(fontSize: 13, color: Colors.blueGrey[600]),
+                  if (_threads.length > 2)
+                    Chip(
+                      label: Text('+${_threads.length - 2}'),
+                      backgroundColor: AppColors.primaryLight,
                     ),
-                  ],
                 ],
               ),
-            ],
-
-            // ── 标签 ──────────────────────────────────────────────
-            if (memo.tags.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                children: memo.tags.map((tag) => _DetailTagChip(tag: tag)).toList(),
-              ),
-            ],
-
-            // ── 底部元信息（修改时间 + 字数）─────────────────────
-            const SizedBox(height: 16),
-            _MetaInfoRow(memo: memo),
-
-            // ── 评论区 ────────────────────────────────────────────
-            const SizedBox(height: 20),
-            const Divider(height: 1),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                const Icon(Icons.chat_bubble_outline, size: 15, color: Colors.grey),
-                const SizedBox(width: 6),
-                Text('评论 ${_comments.length > 0 ? "(${_comments.length})" : ""}',
-                    style: const TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.w500)),
-              ],
             ),
-            if (_comments.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: Center(
-                  child: Text('暂无评论', style: TextStyle(fontSize: 13, color: Colors.grey[400])),
-                ),
-              )
-            else
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                padding: const EdgeInsets.only(top: 8),
-                itemCount: _comments.length,
-                itemBuilder: (_, i) => _CommentTile(
-                  comment: _comments[i],
-                  onEdit: () => _startEditComment(_comments[i]),
-                  onDelete: () => _deleteComment(_comments[i]),
-                ),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ── 正文（完整 Markdown 渲染）────────────────────────
+                  if (_displayContent.isNotEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface(context),
+                        borderRadius: BorderRadius.circular(
+                          AppDimens.cardRadius,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.06),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: MarkdownBody(
+                        data: _displayContent,
+                        styleSheet: _mdStyle(context),
+                        checkboxBuilder: (checked) {
+                          final idx = checkboxIdx++;
+                          return GestureDetector(
+                            onTap: () {
+                              final lineIndex = _findTodoLineIndex(
+                                memo.content,
+                                idx,
+                              );
+                              _toggleTodo(lineIndex, !checked);
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.only(right: 4),
+                              child: Icon(
+                                checked
+                                    ? Icons.check_box
+                                    : Icons.check_box_outline_blank,
+                                size: 18,
+                                color: checked
+                                    ? AppColors.primary
+                                    : Colors.grey[500],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+
+                  // ── 冲突：远端版本 ────────────────────────────────────
+                  if (memo.conflictRemoteContent != null) ...[
+                    const SizedBox(height: 12),
+                    _ConflictRemoteBlock(
+                      remoteContent: memo.conflictRemoteContent!,
+                      mdStyle: _mdStyle(context),
+                    ),
+                  ],
+
+                  // ── 图片附件 ──────────────────────────────────────────
+                  if (_imageAttachments.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _DetailImageGrid(attachments: _imageAttachments),
+                  ],
+
+                  // ── 音频附件 ──────────────────────────────────────────
+                  if (_audioAttachments.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    ..._audioAttachments.map(
+                      (a) => AudioPlayerWidget(
+                        key: ValueKey(a.localId),
+                        attachment: a,
+                      ),
+                    ),
+                  ],
+
+                  // ── 文件附件 ──────────────────────────────────────────
+                  if (_fileAttachments.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: _fileAttachments
+                          .map((a) => FileChipWidget(attachment: a))
+                          .toList(),
+                    ),
+                  ],
+
+                  // ── 位置 ──────────────────────────────────────────────
+                  if (memo.location != null && memo.location!.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    GestureDetector(
+                      onTap: memo.latitude != null
+                          ? () => openMapFromCoords(
+                              memo.latitude,
+                              memo.longitude,
+                              memo.location,
+                            )
+                          : null,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 1),
+                            child: Icon(
+                              Icons.location_on_outlined,
+                              size: 14,
+                              color: memo.latitude != null
+                                  ? AppColors.primary
+                                  : Colors.blueGrey[400],
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              memo.location!,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: memo.latitude != null
+                                    ? AppColors.primary
+                                    : Colors.blueGrey[400],
+                                decoration: memo.latitude != null
+                                    ? TextDecoration.underline
+                                    : null,
+                                decorationColor: AppColors.primary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  // ── 天气 + 心情 ───────────────────────────────────────
+                  if (memo.weatherJson != null || memo.mood != null) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        if (memo.weatherJson != null) ...[
+                          const Icon(
+                            Icons.wb_sunny_outlined,
+                            size: 14,
+                            color: Colors.blueGrey,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            () {
+                              try {
+                                return WeatherInfo.fromJsonString(
+                                  memo.weatherJson!,
+                                ).detail;
+                              } catch (_) {
+                                return '';
+                              }
+                            }(),
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.blueGrey[600],
+                            ),
+                          ),
+                        ],
+                        if (memo.weatherJson != null && memo.mood != null)
+                          const SizedBox(width: 12),
+                        if (memo.mood != null) ...[
+                          Icon(
+                            moodByKey(memo.mood)?.icon ??
+                                Icons.sentiment_neutral,
+                            size: 14,
+                            color:
+                                moodByKey(memo.mood)?.color ?? Colors.blueGrey,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            moodByKey(memo.mood)?.label ?? '',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.blueGrey[600],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+
+                  // ── 标签 ──────────────────────────────────────────────
+                  if (memo.tags.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: memo.tags
+                          .map((tag) => _DetailTagChip(tag: tag))
+                          .toList(),
+                    ),
+                  ],
+
+                  // ── 底部元信息（修改时间 + 字数）─────────────────────
+                  const SizedBox(height: 16),
+                  _MetaInfoRow(memo: memo),
+
+                  // ── 评论区 ────────────────────────────────────────────
+                  const SizedBox(height: 20),
+                  const Divider(height: 1),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.chat_bubble_outline,
+                        size: 15,
+                        color: Colors.grey,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '评论 ${_comments.length > 0 ? "(${_comments.length})" : ""}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (_comments.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Center(
+                        child: Text(
+                          '暂无评论',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey[400],
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      padding: const EdgeInsets.only(top: 8),
+                      itemCount: _comments.length,
+                      itemBuilder: (_, i) => _CommentTile(
+                        comment: _comments[i],
+                        onEdit: () => _startEditComment(_comments[i]),
+                        onDelete: () => _deleteComment(_comments[i]),
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                ],
               ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
+            ),
           ),
 
+          if (_navData() case final navData?)
+            ThreadNavBar(
+              data: navData,
+              onPrevious: () => _jumpThreadMember(-1),
+              onNext: () => _jumpThreadMember(1),
+              onOpenThread: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ThreadDetailPage(threadId: _navThread!.id),
+                ),
+              ).then((_) => _loadThreads()),
+            ),
           // ── 评论输入框（固定底部）────────────────────────────────
           _CommentInputBar(
             controller: _commentCtrl,
@@ -538,7 +709,11 @@ Widget _syncIcon(SyncStatus status) {
     case SyncStatus.conflict:
       return const Padding(
         padding: EdgeInsets.symmetric(horizontal: 8),
-        child: Icon(Icons.warning_amber_rounded, size: 18, color: Colors.orange),
+        child: Icon(
+          Icons.warning_amber_rounded,
+          size: 18,
+          color: Colors.orange,
+        ),
       );
   }
 }
@@ -626,7 +801,9 @@ class _DetailImageGrid extends StatelessWidget {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: _DetailAttachThumb(
-                      attachment: attachments[i], height: 160),
+                    attachment: attachments[i],
+                    height: 160,
+                  ),
                 ),
               ),
             ),
@@ -642,7 +819,10 @@ class _DetailImageGrid extends StatelessWidget {
             onTap: () => _openViewer(context, 0),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(8),
-              child: _DetailAttachThumb(attachment: attachments[0], height: 180),
+              child: _DetailAttachThumb(
+                attachment: attachments[0],
+                height: 180,
+              ),
             ),
           ),
         ),
@@ -656,12 +836,14 @@ class _DetailImageGrid extends StatelessWidget {
                 child: GestureDetector(
                   onTap: () => _openViewer(context, 1),
                   child: ClipRRect(
-                    borderRadius:
-                        const BorderRadius.only(topRight: Radius.circular(8)),
+                    borderRadius: const BorderRadius.only(
+                      topRight: Radius.circular(8),
+                    ),
                     child: _DetailAttachThumb(
-                        attachment: attachments[1],
-                        width: double.infinity,
-                        height: double.infinity),
+                      attachment: attachments[1],
+                      width: double.infinity,
+                      height: double.infinity,
+                    ),
                   ),
                 ),
               ),
@@ -674,24 +856,30 @@ class _DetailImageGrid extends StatelessWidget {
                     children: [
                       ClipRRect(
                         borderRadius: const BorderRadius.only(
-                            bottomRight: Radius.circular(8)),
+                          bottomRight: Radius.circular(8),
+                        ),
                         child: _DetailAttachThumb(
-                            attachment: attachments[2],
-                            width: double.infinity,
-                            height: double.infinity),
+                          attachment: attachments[2],
+                          width: double.infinity,
+                          height: double.infinity,
+                        ),
                       ),
                       if (count > 3)
                         ClipRRect(
                           borderRadius: const BorderRadius.only(
-                              bottomRight: Radius.circular(8)),
+                            bottomRight: Radius.circular(8),
+                          ),
                           child: ColoredBox(
                             color: Colors.black45,
                             child: Center(
-                              child: Text('+${count - 3}',
-                                  style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold)),
+                              child: Text(
+                                '+${count - 3}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ),
                           ),
                         ),
@@ -712,8 +900,7 @@ class _DetailAttachThumb extends StatefulWidget {
   final AttachmentInfo attachment;
   final double? width;
   final double? height;
-  const _DetailAttachThumb(
-      {required this.attachment, this.width, this.height});
+  const _DetailAttachThumb({required this.attachment, this.width, this.height});
 
   @override
   State<_DetailAttachThumb> createState() => _DetailAttachThumbState();
@@ -745,11 +932,7 @@ class _DetailAttachThumbState extends State<_DetailAttachThumb> {
       );
     }
     if (_baseUrl != null && att.fullUrl(_baseUrl!) != null) {
-      return _AuthImage(
-        url: att.fullUrl(_baseUrl!)!,
-        width: w,
-        height: h,
-      );
+      return _AuthImage(url: att.fullUrl(_baseUrl!)!, width: w, height: h);
     }
     return SizedBox(
       width: w,
@@ -763,8 +946,10 @@ class _DetailAttachThumbState extends State<_DetailAttachThumb> {
 class _DetailImageViewer extends StatefulWidget {
   final List<AttachmentInfo> attachments;
   final int initialIndex;
-  const _DetailImageViewer(
-      {required this.attachments, required this.initialIndex});
+  const _DetailImageViewer({
+    required this.attachments,
+    required this.initialIndex,
+  });
 
   @override
   State<_DetailImageViewer> createState() => _DetailImageViewerState();
@@ -810,14 +995,19 @@ class _DetailImageViewerState extends State<_DetailImageViewer> {
                   content = InteractiveViewer(
                     minScale: 1.0,
                     maxScale: 5.0,
-                    child: Image.file(File(att.localPath!), fit: BoxFit.contain),
+                    child: Image.file(
+                      File(att.localPath!),
+                      fit: BoxFit.contain,
+                    ),
                   );
                 } else if (_baseUrl != null && att.fullUrl(_baseUrl!) != null) {
                   content = InteractiveViewer(
                     minScale: 1.0,
                     maxScale: 5.0,
                     child: _AuthImage(
-                        url: att.fullUrl(_baseUrl!)!, fit: BoxFit.contain),
+                      url: att.fullUrl(_baseUrl!)!,
+                      fit: BoxFit.contain,
+                    ),
                   );
                 } else {
                   return const SizedBox.shrink();
@@ -825,7 +1015,9 @@ class _DetailImageViewerState extends State<_DetailImageViewer> {
                 return GestureDetector(
                   onTap: () {},
                   onLongPress: () => img_actions.showImageActions(
-                    context, att, baseUrl: _baseUrl,
+                    context,
+                    att,
+                    baseUrl: _baseUrl,
                   ),
                   child: Center(child: content),
                 );
@@ -910,15 +1102,32 @@ class _CommentTile extends StatelessWidget {
               children: [
                 Icon(Icons.person_outline, size: 13, color: Colors.grey[500]),
                 const SizedBox(width: 4),
-                Text(_authorLabel,
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600], fontWeight: FontWeight.w500)),
+                Text(
+                  _authorLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
                 const Spacer(),
                 if (comment.syncStatus == SyncStatus.pending)
-                  Icon(Icons.cloud_upload_outlined, size: 13, color: Colors.grey[400]),
+                  Icon(
+                    Icons.cloud_upload_outlined,
+                    size: 13,
+                    color: Colors.grey[400],
+                  ),
                 if (comment.syncStatus == SyncStatus.conflict)
-                  Icon(Icons.warning_amber_rounded, size: 13, color: Colors.orange[400]),
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: 13,
+                    color: Colors.orange[400],
+                  ),
                 const SizedBox(width: 4),
-                Text(_timeLabel, style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+                Text(
+                  _timeLabel,
+                  style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+                ),
               ],
             ),
             const SizedBox(height: 6),
@@ -926,8 +1135,15 @@ class _CommentTile extends StatelessWidget {
             MarkdownBody(
               data: comment.content,
               styleSheet: MarkdownStyleSheet(
-                p: TextStyle(fontSize: 14, height: 1.5, color: AppColors.textBody(context)),
-                code: TextStyle(fontSize: 13, backgroundColor: Colors.grey[100]),
+                p: TextStyle(
+                  fontSize: 14,
+                  height: 1.5,
+                  color: AppColors.textBody(context),
+                ),
+                code: TextStyle(
+                  fontSize: 13,
+                  backgroundColor: Colors.grey[100],
+                ),
               ),
             ),
             // 位置（有则显示）
@@ -936,12 +1152,19 @@ class _CommentTile extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.location_on_outlined, size: 12, color: Colors.blueGrey[400]),
+                  Icon(
+                    Icons.location_on_outlined,
+                    size: 12,
+                    color: Colors.blueGrey[400],
+                  ),
                   const SizedBox(width: 3),
                   Flexible(
                     child: Text(
                       comment.location!,
-                      style: TextStyle(fontSize: 11, color: Colors.blueGrey[400]),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.blueGrey[400],
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -964,12 +1187,18 @@ class _CommentTile extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.edit_outlined),
               title: const Text('编辑'),
-              onTap: () { Navigator.pop(ctx); onEdit(); },
+              onTap: () {
+                Navigator.pop(ctx);
+                onEdit();
+              },
             ),
             ListTile(
               leading: const Icon(Icons.delete_outline, color: AppColors.error),
               title: const Text('删除', style: TextStyle(color: AppColors.error)),
-              onTap: () { Navigator.pop(ctx); onDelete(); },
+              onTap: () {
+                Navigator.pop(ctx);
+                onDelete();
+              },
             ),
           ],
         ),
@@ -1015,13 +1244,24 @@ class _CommentInputBar extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Row(
                   children: [
-                    const Icon(Icons.edit_outlined, size: 13, color: AppColors.primary),
+                    const Icon(
+                      Icons.edit_outlined,
+                      size: 13,
+                      color: AppColors.primary,
+                    ),
                     const SizedBox(width: 4),
-                    const Text('编辑评论', style: TextStyle(fontSize: 12, color: AppColors.primary)),
+                    const Text(
+                      '编辑评论',
+                      style: TextStyle(fontSize: 12, color: AppColors.primary),
+                    ),
                     const Spacer(),
                     GestureDetector(
                       onTap: onCancelEdit,
-                      child: const Icon(Icons.close, size: 16, color: Colors.grey),
+                      child: const Icon(
+                        Icons.close,
+                        size: 16,
+                        color: Colors.grey,
+                      ),
                     ),
                   ],
                 ),
@@ -1038,7 +1278,10 @@ class _CommentInputBar extends StatelessWidget {
                     style: const TextStyle(fontSize: 14),
                     decoration: InputDecoration(
                       hintText: '写评论…',
-                      hintStyle: TextStyle(color: Colors.grey[400], fontSize: 14),
+                      hintStyle: TextStyle(
+                        color: Colors.grey[400],
+                        fontSize: 14,
+                      ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
                         borderSide: BorderSide(color: Colors.grey[300]!),
@@ -1047,21 +1290,38 @@ class _CommentInputBar extends StatelessWidget {
                         borderRadius: BorderRadius.circular(8),
                         borderSide: const BorderSide(color: AppColors.primary),
                       ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
                       isDense: true,
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
                 saving
-                    ? const SizedBox(width: 36, height: 36,
-                        child: Padding(padding: EdgeInsets.all(8),
-                            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)))
+                    ? const SizedBox(
+                        width: 36,
+                        height: 36,
+                        child: Padding(
+                          padding: EdgeInsets.all(8),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      )
                     : IconButton(
-                        icon: const Icon(Icons.send_rounded, color: AppColors.primary),
+                        icon: const Icon(
+                          Icons.send_rounded,
+                          color: AppColors.primary,
+                        ),
                         onPressed: onSubmit,
                         padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        constraints: const BoxConstraints(
+                          minWidth: 36,
+                          minHeight: 36,
+                        ),
                       ),
               ],
             ),
@@ -1107,11 +1367,12 @@ class _AuthImage extends StatefulWidget {
   final double? width;
   final double? height;
   final BoxFit fit;
-  const _AuthImage(
-      {required this.url,
-      this.width,
-      this.height,
-      this.fit = BoxFit.cover});
+  const _AuthImage({
+    required this.url,
+    this.width,
+    this.height,
+    this.fit = BoxFit.cover,
+  });
 
   @override
   State<_AuthImage> createState() => _AuthImageState();
@@ -1212,7 +1473,9 @@ class _ConflictRemoteBlock extends StatelessWidget {
       children: [
         // 虚线分隔
         CustomPaint(
-          painter: _DashedLinePainter(color: Colors.orange.withValues(alpha: 0.6)),
+          painter: _DashedLinePainter(
+            color: Colors.orange.withValues(alpha: 0.6),
+          ),
           child: const SizedBox(height: 1, width: double.infinity),
         ),
         const SizedBox(height: 8),
@@ -1225,7 +1488,11 @@ class _ConflictRemoteBlock extends StatelessWidget {
           ),
           child: const Text(
             '远端版本',
-            style: TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.w500),
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.orange,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ),
         const SizedBox(height: 8),
@@ -1240,10 +1507,7 @@ class _ConflictRemoteBlock extends StatelessWidget {
               borderRadius: BorderRadius.circular(AppDimens.cardRadius),
               border: Border.all(color: Colors.orange.withValues(alpha: 0.25)),
             ),
-            child: MarkdownBody(
-              data: _displayContent,
-              styleSheet: mdStyle,
-            ),
+            child: MarkdownBody(data: _displayContent, styleSheet: mdStyle),
           ),
         ),
       ],

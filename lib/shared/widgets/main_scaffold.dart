@@ -1,16 +1,16 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
-import '../../features/articles/articles_view.dart';
 import '../../features/calendar/calendar_view.dart';
 import '../../features/home/home_view.dart';
 import '../../features/memo_editor/memo_editor_page.dart';
 import '../../features/todo/todo_view.dart';
+import '../../features/threads/threads_view.dart';
 import '../constants/app_constants.dart';
 
 /// 带底部导航栏和居中 FAB 的主骨架
 ///
-/// 5 个 Tab：待办 | 主页 | [FAB] | 日历 | 文章
+/// 5 个 Tab：事件串 | 主页 | [FAB] | 日历 | 待办
 /// 底部使用 [BottomAppBar] + [FloatingActionButton] 组合，FAB 居中嵌入导航栏缺口。
 class MainScaffold extends StatefulWidget {
   const MainScaffold({super.key});
@@ -21,7 +21,7 @@ class MainScaffold extends StatefulWidget {
 
 class _MainScaffoldState extends State<MainScaffold> {
   /// 当前选中 Tab 索引
-  /// 0=待办  1=主页  2=日历  3=文章
+  /// 0=事件串  1=主页  2=日历  3=待办
   /// （FAB 在主页/日历时新建日记，其他页隐藏）
   int _currentIndex = 1; // 默认打开主页
 
@@ -52,9 +52,9 @@ class _MainScaffoldState extends State<MainScaffold> {
       mainAxisAlignment: MainAxisAlignment.spaceAround,
       children: [
         _NavItem(
-          icon: Icons.check_box_outline_blank,
-          activeIcon: Icons.check_box,
-          label: AppStrings.navTodo,
+          icon: Icons.timeline_outlined,
+          activeIcon: Icons.timeline,
+          label: AppStrings.navThreads,
           selected: _currentIndex == 0,
           onTap: () => setState(() => _currentIndex = 0),
         ),
@@ -75,9 +75,9 @@ class _MainScaffoldState extends State<MainScaffold> {
           onTap: () => setState(() => _currentIndex = 2),
         ),
         _NavItem(
-          icon: Icons.article_outlined,
-          activeIcon: Icons.article,
-          label: AppStrings.navArticles,
+          icon: Icons.check_box_outline_blank,
+          activeIcon: Icons.check_box,
+          label: AppStrings.navTodo,
           selected: _currentIndex == 3,
           onTap: () => setState(() => _currentIndex = 3),
         ),
@@ -92,14 +92,14 @@ class _MainScaffoldState extends State<MainScaffold> {
       body: IndexedStack(
         index: _currentIndex,
         children: [
-          const TodoView(),
+          const ThreadsView(),
           const HomeView(),
           CalendarView(
             onSelectedDayChanged: (day) {
               _calendarSelectedDay = day;
             },
           ),
-          const ArticlesView(),
+          const TodoView(),
         ],
       ),
 

@@ -7,6 +7,7 @@ import '../../data/models/comment_entry.dart';
 import '../../data/models/memo_entry.dart';
 import '../../data/models/tag_stat.dart';
 import '../../features/archive/archive_view.dart';
+import '../../features/articles/articles_view.dart';
 import '../../features/memo_detail/memo_detail_page.dart';
 import '../../features/on_this_day/on_this_day_page.dart';
 import '../../features/settings/settings_page.dart';
@@ -437,6 +438,17 @@ class _HomeViewState extends State<HomeView> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const ArchiveView()),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.article_outlined),
+              title: const Text('文章'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ArticlesView()),
                 );
               },
             ),

@@ -44,17 +44,17 @@ class MemosApiService {
   /// [baseUrl]：服务器地址（不带末尾斜杠，如 "https://memos.example.com"）
   /// [token]：Bearer Token（在 Memos → 设置 → Access Tokens 中生成）
   MemosApiService({required String baseUrl, required String token})
-      : _dio = Dio(
-          BaseOptions(
-            baseUrl: baseUrl,
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Content-Type': 'application/json',
-            },
-            connectTimeout: const Duration(seconds: 10),
-            receiveTimeout: const Duration(seconds: 20),
-          ),
-        );
+    : _dio = Dio(
+        BaseOptions(
+          baseUrl: baseUrl,
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+          },
+          connectTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 20),
+        ),
+      );
 
   // ── Memo CRUD ─────────────────────────────────────────────────
 
@@ -66,21 +66,22 @@ class MemosApiService {
   ///
   /// 返回 memos 列表和下一页的 pageToken（最后一页时为 null）。
   Future<({List<Map<String, dynamic>> memos, String? nextPageToken})>
-      listMemos({
+  listMemos({
     int pageSize = 100,
     String? pageToken,
     String? filter,
     String state = 'NORMAL',
   }) async {
-    debugPrint('[API] listMemos pageSize=$pageSize, pageToken=$pageToken, filter=$filter state=$state');
+    debugPrint(
+      '[API] listMemos pageSize=$pageSize, pageToken=$pageToken, filter=$filter state=$state',
+    );
     try {
       final params = <String, dynamic>{'pageSize': pageSize, 'state': state};
       if (pageToken != null) params['pageToken'] = pageToken;
       if (filter != null) params['filter'] = filter;
 
       final res = await _dio.get('/api/v1/memos', queryParameters: params);
-      final memos =
-          List<Map<String, dynamic>>.from(res.data['memos'] ?? []);
+      final memos = List<Map<String, dynamic>>.from(res.data['memos'] ?? []);
       final next = res.data['nextPageToken'] as String?;
       debugPrint('[API] listMemos 返回 ${memos.length} 条，nextPageToken=$next');
       return (
@@ -104,7 +105,11 @@ class MemosApiService {
     final all = <Map<String, dynamic>>[];
     String? pageToken;
     do {
-      final result = await listMemos(pageToken: pageToken, filter: filter, state: state);
+      final result = await listMemos(
+        pageToken: pageToken,
+        filter: filter,
+        state: state,
+      );
       all.addAll(result.memos);
       pageToken = result.nextPageToken;
     } while (pageToken != null);
@@ -131,7 +136,11 @@ class MemosApiService {
     int? weather,
     String? weatherDetail,
   }) async {
-    unawaited(FileLogger.log('[API] createMemo contentLen=${content.length} lat=$latitude lng=$longitude placeholder=$locationPlaceholder'));
+    unawaited(
+      FileLogger.log(
+        '[API] createMemo contentLen=${content.length} lat=$latitude lng=$longitude placeholder=$locationPlaceholder',
+      ),
+    );
     try {
       final body = <String, dynamic>{
         'content': content,
@@ -148,12 +157,19 @@ class MemosApiService {
           },
         if (mood != null && mood != 0) 'mood': mood,
         if (weather != null && weather != 0) 'weather': weather,
-        if (weatherDetail != null && weatherDetail.isNotEmpty) 'weatherDetail': weatherDetail,
+        if (weatherDetail != null && weatherDetail.isNotEmpty)
+          'weatherDetail': weatherDetail,
       };
-      unawaited(FileLogger.log('[API] createMemo body.location=${body['location']}'));
+      unawaited(
+        FileLogger.log('[API] createMemo body.location=${body['location']}'),
+      );
       final res = await _dio.post('/api/v1/memos', data: body);
       final result = Map<String, dynamic>.from(res.data);
-      unawaited(FileLogger.log('[API] createMemo 成功 name=${result["name"]} resp.location=${result["location"]}'));
+      unawaited(
+        FileLogger.log(
+          '[API] createMemo 成功 name=${result["name"]} resp.location=${result["location"]}',
+        ),
+      );
       return result;
     } on DioException catch (e) {
       throw _wrap(e);
@@ -179,7 +195,11 @@ class MemosApiService {
     int? weather,
     String? weatherDetail,
   }) async {
-    unawaited(FileLogger.log('[API] updateMemo name=$name lat=$latitude lng=$longitude placeholder=$locationPlaceholder'));
+    unawaited(
+      FileLogger.log(
+        '[API] updateMemo name=$name lat=$latitude lng=$longitude placeholder=$locationPlaceholder',
+      ),
+    );
     try {
       final body = <String, dynamic>{
         'content': content,
@@ -188,7 +208,8 @@ class MemosApiService {
         if (createTime != null)
           'createTime': createTime.toUtc().toIso8601String(),
         'updateTime': DateTime.now().toUtc().toIso8601String(),
-        if (locationPlaceholder != null || (latitude != null && longitude != null))
+        if (locationPlaceholder != null ||
+            (latitude != null && longitude != null))
           'location': {
             'placeholder': locationPlaceholder ?? '',
             'latitude': latitude,
@@ -316,7 +337,9 @@ class MemosApiService {
     final mime = lookupMimeType(file.path) ?? 'application/octet-stream';
     final bytes = await file.readAsBytes();
     final base64Content = base64Encode(bytes);
-    debugPrint('[API] uploadAttachment filename=$filename mime=$mime size=${bytes.length}B');
+    debugPrint(
+      '[API] uploadAttachment filename=$filename mime=$mime size=${bytes.length}B',
+    );
     try {
       final body = <String, dynamic>{
         'filename': filename,
@@ -357,7 +380,9 @@ class MemosApiService {
     try {
       final res = await _dio.get('/api/v1/$userName:getStats');
       final result = Map<String, dynamic>.from(res.data as Map);
-      debugPrint('[API] getUserStats 成功，tagCount keys=${((result["tagCount"] as Map?)?.length ?? 0)}');
+      debugPrint(
+        '[API] getUserStats 成功，tagCount keys=${((result["tagCount"] as Map?)?.length ?? 0)}',
+      );
       return result;
     } on DioException catch (e) {
       throw _wrap(e);
@@ -411,8 +436,10 @@ class MemosApiService {
       final data = res.data;
       if (data is Map) {
         return List<Map<String, dynamic>>.from(
-            (data['changelogs'] as List<dynamic>? ?? []).map(
-                (e) => Map<String, dynamic>.from(e as Map)));
+          (data['changelogs'] as List<dynamic>? ?? []).map(
+            (e) => Map<String, dynamic>.from(e as Map),
+          ),
+        );
       }
       return [];
     } on DioException catch (e) {
@@ -462,17 +489,21 @@ class MemosApiService {
 
   /// 分页列出文章
   Future<({List<Map<String, dynamic>> articles, String? nextPageToken})>
-      listArticles({
+  listArticles({
     int pageSize = 100,
     String? pageToken,
     String state = 'NORMAL',
   }) async {
-    debugPrint('[API] listArticles pageSize=$pageSize pageToken=$pageToken state=$state');
+    debugPrint(
+      '[API] listArticles pageSize=$pageSize pageToken=$pageToken state=$state',
+    );
     try {
       final params = <String, dynamic>{'pageSize': pageSize, 'state': state};
       if (pageToken != null) params['pageToken'] = pageToken;
       final res = await _dio.get('/api/v1/articles', queryParameters: params);
-      final articles = List<Map<String, dynamic>>.from(res.data['articles'] ?? []);
+      final articles = List<Map<String, dynamic>>.from(
+        res.data['articles'] ?? [],
+      );
       final next = res.data['nextPageToken'] as String?;
       debugPrint('[API] listArticles 返回 ${articles.length} 条');
       return (
@@ -485,7 +516,9 @@ class MemosApiService {
   }
 
   /// 自动翻页，获取全部文章
-  Future<List<Map<String, dynamic>>> listAllArticles({String state = 'NORMAL'}) async {
+  Future<List<Map<String, dynamic>>> listAllArticles({
+    String state = 'NORMAL',
+  }) async {
     debugPrint('[API] listAllArticles 开始全量拉取');
     final all = <Map<String, dynamic>>[];
     String? pageToken;
@@ -552,7 +585,9 @@ class MemosApiService {
     bool updateParent = false,
     List<String>? attachmentNames,
   }) async {
-    debugPrint('[API] updateArticle name=$name parent=$parent updateParent=$updateParent');
+    debugPrint(
+      '[API] updateArticle name=$name parent=$parent updateParent=$updateParent',
+    );
     try {
       final body = <String, dynamic>{
         if (title != null) 'title': title,
@@ -596,7 +631,9 @@ class MemosApiService {
     debugPrint('[API] listFolders');
     try {
       final res = await _dio.get('/api/v1/folders');
-      final folders = List<Map<String, dynamic>>.from(res.data['folders'] ?? []);
+      final folders = List<Map<String, dynamic>>.from(
+        res.data['folders'] ?? [],
+      );
       debugPrint('[API] listFolders → ${folders.length} 个');
       return folders;
     } on DioException catch (e) {
@@ -656,6 +693,102 @@ class MemosApiService {
     }
   }
 
+  // ── 事件串 API（IsleLog 扩展）──────────────────────────────────
+
+  /// 列出事件串，列表响应不含成员详情。
+  Future<List<Map<String, dynamic>>> listThreads({String? status}) async {
+    try {
+      final res = await _dio.get(
+        '/api/v1/threads',
+        queryParameters: {if (status != null) 'status': status},
+      );
+      return (res.data['threads'] as List<dynamic>? ?? [])
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 获取事件串详情，响应包含 members。
+  Future<Map<String, dynamic>> getThread(String name) async {
+    try {
+      final res = await _dio.get('/api/v1/$name');
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> createThread({
+    required String title,
+    String? summary,
+    String? status,
+    List<String>? memos,
+  }) async {
+    try {
+      final res = await _dio.post(
+        '/api/v1/threads',
+        data: {
+          'title': title,
+          if (summary != null) 'summary': summary,
+          // 离线期间标记的完结状态必须随创建一起上传，否则首次推送后会被远端的
+          // 默认 ACTIVE 覆盖掉
+          if (status != null) 'status': status,
+          if (memos != null) 'memos': memos,
+        },
+      );
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> updateThread({
+    required String name,
+    String? title,
+    String? summary,
+    String? status,
+  }) async {
+    try {
+      final res = await _dio.patch(
+        '/api/v1/$name',
+        data: {
+          if (title != null) 'title': title,
+          if (summary != null) 'summary': summary,
+          if (status != null) 'status': status,
+        },
+      );
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  Future<void> deleteThread(String name) async {
+    try {
+      await _dio.delete('/api/v1/$name');
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 原子地全量替换事件串成员。
+  Future<Map<String, dynamic>> setThreadMembers({
+    required String name,
+    required List<String> memos,
+  }) async {
+    try {
+      final res = await _dio.put(
+        '/api/v1/$name/members',
+        data: {'memos': memos},
+      );
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   // ── Revision History ─────────────────────────────────────────
 
   /// 获取 memo/文章的版本列表
@@ -682,13 +815,16 @@ class MemosApiService {
   /// [memoName]：资源名，如 `"memos/42"`
   /// [version]：版本号
   Future<MemoRevisionDetail> getMemoRevision(
-      String memoName, int version) async {
+    String memoName,
+    int version,
+  ) async {
     final id = memoName.split('/').last;
     debugPrint('[API] getMemoRevision memoName=$memoName version=$version');
     try {
       final res = await _dio.get('/api/v1/revisions/$id/$version');
-      final detail =
-          MemoRevisionDetail.fromJson(res.data as Map<String, dynamic>);
+      final detail = MemoRevisionDetail.fromJson(
+        res.data as Map<String, dynamic>,
+      );
       debugPrint('[API] getMemoRevision 返回 ${detail.details.length} 个字段');
       return detail;
     } on DioException catch (e) {
@@ -704,20 +840,19 @@ class MemosApiService {
     debugPrint('[API] 请求失败 statusCode=$code, type=${e.type}, msg=${e.message}');
 
     if (code == 401) {
-      return const MemosApiException('Token 无效或已过期，请重新生成',
-          statusCode: 401);
+      return const MemosApiException('Token 无效或已过期，请重新生成', statusCode: 401);
     }
     if (code == 403) {
       return const MemosApiException('无权限访问，请检查 Token', statusCode: 403);
     }
     if (code == 404) {
-      return MemosApiException('接口不存在 (404)，请确认服务器版本为 v0.22+',
-          statusCode: 404);
+      return MemosApiException('接口不存在 (404)，请确认服务器版本为 v0.22+', statusCode: 404);
     }
     if (e.response != null) {
       return MemosApiException(
-          '服务器错误 $code: ${e.response?.statusMessage}',
-          statusCode: code);
+        '服务器错误 $code: ${e.response?.statusMessage}',
+        statusCode: code,
+      );
     }
     if (e.type == DioExceptionType.connectionTimeout ||
         e.type == DioExceptionType.receiveTimeout) {

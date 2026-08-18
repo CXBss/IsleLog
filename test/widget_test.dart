@@ -101,13 +101,13 @@ void main() {
     expect(tester.takeException(), isNull);
     await pumpUntilNoVisibleProgress(tester, '日历页');
 
-    await tester.tap(find.text('文章'));
-    await tester.pump();
-    expect(tester.takeException(), isNull);
-    await pumpUntilNoVisibleProgress(tester, '文章页');
-
     await tester.tap(find.text('主页'));
     await tester.pump();
+    await tester.tap(find.byTooltip('菜单'));
+    await tester.pumpAndSettle();
+    expect(find.text('文章'), findsOneWidget);
+    await tester.tapAt(const Offset(760, 300));
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     await pumpUntilNoVisibleProgress(tester, '主页');
 

@@ -8,6 +8,7 @@ import '../models/comment_entry.dart';
 import '../models/folder_entry.dart';
 import '../models/memo_entry.dart';
 import '../models/tag_stat.dart';
+import '../models/thread_entry.dart';
 import 'memo_write_policy.dart';
 
 /// 本地数据库服务（单例）
@@ -21,6 +22,13 @@ class DatabaseService {
   static Isar? _isar;
 
   /// 获取已初始化的 Isar 实例（懒加载，首次调用时打开数据库）
+  ///
+  /// 注意：这里存在已知的 async 竞态——首个调用方在 await 处挂起期间 `_isar`
+  /// 仍是 null，并发调用方会各自再执行一次 Isar.open（实测启动时会打开 12 次）。
+  /// 曾尝试改为缓存 Future 使其只打开一次，但那样会让
+  /// `close(deleteFromDisk: true)` 在测试的 tearDownAll 中永久阻塞
+  /// （见 memo_editor_ai_test），推测多次打开反而使 Isar 提前放弃完全关闭。
+  /// 在查清 close 的阻塞原因前保持原状，不要「顺手」改成 Future 缓存。
   static Future<Isar> get db async {
     return _isar ??= await _open();
   }
@@ -30,7 +38,14 @@ class DatabaseService {
     final dir = await getApplicationDocumentsDirectory();
     debugPrint('[DB] 打开数据库，路径：${dir.path}');
     final isar = await Isar.open(
-      [MemoEntrySchema, TagStatSchema, CommentEntrySchema, ArticleEntrySchema, FolderEntrySchema],
+      [
+        MemoEntrySchema,
+        TagStatSchema,
+        CommentEntrySchema,
+        ArticleEntrySchema,
+        FolderEntrySchema,
+        ThreadEntrySchema,
+      ],
       directory: dir.path,
       name: 'isle_v2', // v2: 新增 originalContent 字段，旧 default.isar 自动废弃
       inspector: true,
@@ -48,8 +63,10 @@ class DatabaseService {
   /// 写入前自动解析标签并更新 [MemoEntry.tags]。
   /// [skipTimestamp] 为 true 时不修改 [MemoEntry.updatedAt]（同步场景使用）。
   /// 返回本地主键 id。
-  static Future<int> saveMemo(MemoEntry memo,
-      {bool skipTimestamp = false}) async {
+  static Future<int> saveMemo(
+    MemoEntry memo, {
+    bool skipTimestamp = false,
+  }) async {
     final isar = await db;
     // 每次保存前重新解析正文中的标签，并更新待办状态
     memo.tags = extractTags(memo.content);
@@ -63,7 +80,8 @@ class DatabaseService {
       return isar.memoEntrys.put(memo);
     });
     debugPrint(
-        '[DB] saveMemo → id=$id, tags=${memo.tags}, skipTimestamp=$skipTimestamp');
+      '[DB] saveMemo → id=$id, tags=${memo.tags}, skipTimestamp=$skipTimestamp',
+    );
     return id;
   }
 
@@ -79,7 +97,8 @@ class DatabaseService {
       return true;
     });
     debugPrint(
-        '[DB] savePreparedMemoForPush id=${prepared.id}, merged=$merged');
+      '[DB] savePreparedMemoForPush id=${prepared.id}, merged=$merged',
+    );
     return merged;
   }
 
@@ -101,8 +120,9 @@ class DatabaseService {
       return current;
     });
     debugPrint(
-        '[DB] completeMemoPush id=${submitted.id}, '
-        'memosName=${latest?.memosName}, status=${latest?.syncStatus.name}');
+      '[DB] completeMemoPush id=${submitted.id}, '
+      'memosName=${latest?.memosName}, status=${latest?.syncStatus.name}',
+    );
     return latest;
   }
 
@@ -124,6 +144,7 @@ class DatabaseService {
       await isar.memoEntrys.put(memo);
     });
     debugPrint('[DB] softDelete: id=$id 已标记软删除');
+    await removeMemoFromAllThreads(id);
   }
 
   /// 物理删除（仅用于已确认远端同步删除后的清理）。
@@ -271,7 +292,9 @@ class DatabaseService {
         .offset(offset)
         .limit(limit)
         .findAll();
-    debugPrint('[DB] getMemosPaged offset=$offset limit=$limit → ${result.length} 条');
+    debugPrint(
+      '[DB] getMemosPaged offset=$offset limit=$limit → ${result.length} 条',
+    );
     return result;
   }
 
@@ -347,10 +370,7 @@ class DatabaseService {
   /// 根据远端资源名获取日记（如 "memos/42"）。
   static Future<MemoEntry?> getMemoByMemosName(String memosName) async {
     final isar = await db;
-    return isar.memoEntrys
-        .filter()
-        .memosNameEqualTo(memosName)
-        .findFirst();
+    return isar.memoEntrys.filter().memosNameEqualTo(memosName).findFirst();
   }
 
   /// 获取与指定日期相同月日（不限年份）的所有未删除、未归档日记，按创建时间倒序。
@@ -363,11 +383,18 @@ class DatabaseService {
         .isDeletedEqualTo(false)
         .isArchivedEqualTo(false)
         .findAll();
-    final result = all
-        .where((m) => m.createdAt.month == date.month && m.createdAt.day == date.day)
-        .toList()
-      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
-    debugPrint('[DB] getMemosOnThisDay(${date.month}-${date.day}) → ${result.length} 条');
+    final result =
+        all
+            .where(
+              (m) =>
+                  m.createdAt.month == date.month &&
+                  m.createdAt.day == date.day,
+            )
+            .toList()
+          ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    debugPrint(
+      '[DB] getMemosOnThisDay(${date.month}-${date.day}) → ${result.length} 条',
+    );
     return result;
   }
 
@@ -406,10 +433,9 @@ class DatabaseService {
         .isArchivedEqualTo(false)
         .findAll();
     final q = query.toLowerCase();
-    final result = all
-        .where((m) => m.content.toLowerCase().contains(q))
-        .toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final result =
+        all.where((m) => m.content.toLowerCase().contains(q)).toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     debugPrint('[DB] searchMemos "$query" → ${result.length} 条');
     return result;
   }
@@ -424,10 +450,9 @@ class DatabaseService {
         .isArchivedEqualTo(true)
         .findAll();
     final q = query.toLowerCase();
-    final result = all
-        .where((m) => m.content.toLowerCase().contains(q))
-        .toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final result =
+        all.where((m) => m.content.toLowerCase().contains(q)).toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     debugPrint('[DB] searchArchivedMemos "$query" → ${result.length} 条');
     return result;
   }
@@ -519,12 +544,16 @@ class DatabaseService {
     final filtered = remaining.isEmpty
         ? candidates
         : candidates
-            .where((m) => remaining.every((t) => m.tags.contains(t)))
-            .toList();
+              .where((m) => remaining.every((t) => m.tags.contains(t)))
+              .toList();
 
     final end = (offset + limit).clamp(0, filtered.length);
-    final page = offset >= filtered.length ? <MemoEntry>[] : filtered.sublist(offset, end);
-    debugPrint('[DB] getMemosByTags tags=$tags offset=$offset limit=$limit → ${page.length}/${filtered.length} 条');
+    final page = offset >= filtered.length
+        ? <MemoEntry>[]
+        : filtered.sublist(offset, end);
+    debugPrint(
+      '[DB] getMemosByTags tags=$tags offset=$offset limit=$limit → ${page.length}/${filtered.length} 条',
+    );
     return page;
   }
 
@@ -535,8 +564,9 @@ class DatabaseService {
   static Future<Set<DateTime>> getDatesWithMemos() async {
     final memos = await getAllMemos();
     final dates = memos
-        .map((m) =>
-            DateTime(m.createdAt.year, m.createdAt.month, m.createdAt.day))
+        .map(
+          (m) => DateTime(m.createdAt.year, m.createdAt.month, m.createdAt.day),
+        )
         .toSet();
     debugPrint('[DB] getDatesWithMemos → ${dates.length} 个有记录日期');
     return dates;
@@ -573,7 +603,10 @@ class DatabaseService {
       final wordCount = _countWords(memo.content);
       totalWords += wordCount;
       final day = DateTime(
-          memo.createdAt.year, memo.createdAt.month, memo.createdAt.day);
+        memo.createdAt.year,
+        memo.createdAt.month,
+        memo.createdAt.day,
+      );
       dailyWords[day] = (dailyWords[day] ?? 0) + wordCount;
     }
 
@@ -594,8 +627,9 @@ class DatabaseService {
     }
 
     debugPrint(
-        '[DB] getStatsData → 日记${memos.length}条，总字数=$totalWords，记录天数=${dailyWords.length}'
-        '；文章${articles.length}篇，文章总字数=$articleTotalWords');
+      '[DB] getStatsData → 日记${memos.length}条，总字数=$totalWords，记录天数=${dailyWords.length}'
+      '；文章${articles.length}篇，文章总字数=$articleTotalWords',
+    );
 
     return StatsData(
       dailyWords: dailyWords,
@@ -632,8 +666,10 @@ class DatabaseService {
     final commentStream = isar.commentEntrys.watchLazy(fireImmediately: false);
     final articleStream = isar.articleEntrys.watchLazy(fireImmediately: false);
     final folderStream = isar.folderEntrys.watchLazy(fireImmediately: false);
+    // 事件串同样并入：详情页移出成员、同步拉取到远端改动后，列表页需随之刷新
+    final threadStream = isar.threadEntrys.watchLazy(fireImmediately: false);
     return memoStream
-        .mergeWith([commentStream, articleStream, folderStream])
+        .mergeWith([commentStream, articleStream, folderStream, threadStream])
         .debounceTime(const Duration(milliseconds: 300));
   }
 
@@ -666,8 +702,10 @@ class DatabaseService {
 
   /// 新建或更新一条评论。
   /// [skipTimestamp] 为 true 时不修改 updatedAt（同步场景使用）。
-  static Future<int> saveComment(CommentEntry comment,
-      {bool skipTimestamp = false}) async {
+  static Future<int> saveComment(
+    CommentEntry comment, {
+    bool skipTimestamp = false,
+  }) async {
     final isar = await db;
     if (!skipTimestamp) comment.updatedAt = DateTime.now();
     final id = await isar.writeTxn(() => isar.commentEntrys.put(comment));
@@ -677,7 +715,8 @@ class DatabaseService {
 
   /// 获取指定日记（按 parentMemosName）的所有未删除评论，按创建时间升序。
   static Future<List<CommentEntry>> getCommentsByMemosName(
-      String parentMemosName) async {
+    String parentMemosName,
+  ) async {
     final isar = await db;
     final result = await isar.commentEntrys
         .filter()
@@ -685,7 +724,9 @@ class DatabaseService {
         .isDeletedEqualTo(false)
         .sortByCreatedAt()
         .findAll();
-    debugPrint('[DB] getCommentsByMemosName($parentMemosName) → ${result.length} 条');
+    debugPrint(
+      '[DB] getCommentsByMemosName($parentMemosName) → ${result.length} 条',
+    );
     return result;
   }
 
@@ -705,10 +746,7 @@ class DatabaseService {
   /// 根据评论自身的远端资源名查找。
   static Future<CommentEntry?> getCommentByMemosName(String memosName) async {
     final isar = await db;
-    return isar.commentEntrys
-        .filter()
-        .memosNameEqualTo(memosName)
-        .findFirst();
+    return isar.commentEntrys.filter().memosNameEqualTo(memosName).findFirst();
   }
 
   /// 软删除评论。
@@ -752,10 +790,9 @@ class DatabaseService {
         .isDeletedEqualTo(false)
         .findAll();
     final q = query.toLowerCase();
-    final result = all
-        .where((c) => c.content.toLowerCase().contains(q))
-        .toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final result =
+        all.where((c) => c.content.toLowerCase().contains(q)).toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     debugPrint('[DB] searchComments "$query" → ${result.length} 条');
     return result;
   }
@@ -795,7 +832,9 @@ class DatabaseService {
     });
 
     final total = memos.length + comments.length;
-    debugPrint('[DB] markAllPending: $total 条（日记 ${memos.length}，评论 ${comments.length}）');
+    debugPrint(
+      '[DB] markAllPending: $total 条（日记 ${memos.length}，评论 ${comments.length}）',
+    );
     return total;
   }
 
@@ -862,7 +901,10 @@ class DatabaseService {
   /// 返回实际更新的条目数。
   static Future<int> rebuildTodoStatus() async {
     final isar = await db;
-    final all = await isar.memoEntrys.filter().isDeletedEqualTo(false).findAll();
+    final all = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .findAll();
     final toUpdate = <MemoEntry>[];
     for (final memo in all) {
       final prevStatus = memo.todoStatus;
@@ -875,7 +917,9 @@ class DatabaseService {
     if (toUpdate.isNotEmpty) {
       await isar.writeTxn(() => isar.memoEntrys.putAll(toUpdate));
     }
-    debugPrint('[DB] rebuildTodoStatus: 扫描 ${all.length} 条，更新 ${toUpdate.length} 条');
+    debugPrint(
+      '[DB] rebuildTodoStatus: 扫描 ${all.length} 条，更新 ${toUpdate.length} 条',
+    );
     return toUpdate.length;
   }
 
@@ -914,8 +958,10 @@ class DatabaseService {
   /// 新建或更新一篇文章。
   ///
   /// [skipTimestamp] 为 true 时不修改 updatedAt（同步场景使用）。
-  static Future<int> saveArticle(ArticleEntry article,
-      {bool skipTimestamp = false}) async {
+  static Future<int> saveArticle(
+    ArticleEntry article, {
+    bool skipTimestamp = false,
+  }) async {
     final isar = await db;
     if (!skipTimestamp) article.updatedAt = DateTime.now();
     final id = await isar.writeTxn(() => isar.articleEntrys.put(article));
@@ -994,7 +1040,9 @@ class DatabaseService {
           .findAll();
     }
     final end = (offset + limit).clamp(0, result.length);
-    final page = offset >= result.length ? <ArticleEntry>[] : result.sublist(offset, end);
+    final page = offset >= result.length
+        ? <ArticleEntry>[]
+        : result.sublist(offset, end);
     debugPrint('[DB] getArticlesPaged → ${page.length} 条');
     return page;
   }
@@ -1006,7 +1054,9 @@ class DatabaseService {
   }
 
   /// 根据远端资源名获取文章。
-  static Future<ArticleEntry?> getArticleByArticleName(String articleName) async {
+  static Future<ArticleEntry?> getArticleByArticleName(
+    String articleName,
+  ) async {
     final isar = await db;
     return isar.articleEntrys
         .filter()
@@ -1044,12 +1094,15 @@ class DatabaseService {
         .isDeletedEqualTo(false)
         .findAll();
     final q = query.toLowerCase();
-    final result = all
-        .where((a) =>
-            a.title.toLowerCase().contains(q) ||
-            a.content.toLowerCase().contains(q))
-        .toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final result =
+        all
+            .where(
+              (a) =>
+                  a.title.toLowerCase().contains(q) ||
+                  a.content.toLowerCase().contains(q),
+            )
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     debugPrint('[DB] searchArticles "$query" → ${result.length} 条');
     return result;
   }
@@ -1059,8 +1112,10 @@ class DatabaseService {
   // ────────────────────────────────────────────────────────────────
 
   /// 新建或更新一个文件夹。
-  static Future<int> saveFolder(FolderEntry folder,
-      {bool skipTimestamp = false}) async {
+  static Future<int> saveFolder(
+    FolderEntry folder, {
+    bool skipTimestamp = false,
+  }) async {
     final isar = await db;
     if (!skipTimestamp) folder.updatedAt = DateTime.now();
     final id = await isar.writeTxn(() => isar.folderEntrys.put(folder));
@@ -1088,13 +1143,13 @@ class DatabaseService {
       // 子文件夹提升到根目录
       final childFolders = folder.folderName != null
           ? await isar.folderEntrys
-              .filter()
-              .parentFolderNameEqualTo(folder.folderName)
-              .findAll()
+                .filter()
+                .parentFolderNameEqualTo(folder.folderName)
+                .findAll()
           : await isar.folderEntrys
-              .filter()
-              .localParentFolderIdEqualTo(id)
-              .findAll();
+                .filter()
+                .localParentFolderIdEqualTo(id)
+                .findAll();
       for (final child in childFolders) {
         child.parentFolderName = null;
         child.localParentFolderId = null;
@@ -1106,13 +1161,13 @@ class DatabaseService {
       // 文件夹内文章提升到根目录
       final articles = folder.folderName != null
           ? await isar.articleEntrys
-              .filter()
-              .folderNameEqualTo(folder.folderName)
-              .findAll()
+                .filter()
+                .folderNameEqualTo(folder.folderName)
+                .findAll()
           : await isar.articleEntrys
-              .filter()
-              .localFolderIdEqualTo(id)
-              .findAll();
+                .filter()
+                .localFolderIdEqualTo(id)
+                .findAll();
       for (final article in articles) {
         article.folderName = null;
         article.localFolderId = null;
@@ -1183,10 +1238,7 @@ class DatabaseService {
   /// 根据远端资源名获取文件夹。
   static Future<FolderEntry?> getFolderByFolderName(String folderName) async {
     final isar = await db;
-    return isar.folderEntrys
-        .filter()
-        .folderNameEqualTo(folderName)
-        .findFirst();
+    return isar.folderEntrys.filter().folderNameEqualTo(folderName).findFirst();
   }
 
   /// 获取所有待同步的文件夹（含软删除）。
@@ -1213,7 +1265,10 @@ class DatabaseService {
   /// 文件夹同步成功后，将引用其 localId 的文章和子文件夹更新为 folderName。
   ///
   /// 由 SyncService 在文件夹 create 成功后调用。
-  static Future<void> resolveLocalFolderRefs(int localId, String folderName) async {
+  static Future<void> resolveLocalFolderRefs(
+    int localId,
+    String folderName,
+  ) async {
     final isar = await db;
 
     final articles = await isar.articleEntrys
@@ -1237,6 +1292,117 @@ class DatabaseService {
     if (children.isNotEmpty) {
       await isar.writeTxn(() => isar.folderEntrys.putAll(children));
     }
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 事件串（ThreadEntry）
+  // ────────────────────────────────────────────────────────────────
+
+  /// 新建或更新一个事件串。
+  static Future<int> saveThread(
+    ThreadEntry thread, {
+    bool skipTimestamp = false,
+  }) async {
+    final isar = await db;
+    if (!skipTimestamp) thread.updatedAt = DateTime.now();
+    final id = await isar.writeTxn(() => isar.threadEntrys.put(thread));
+    debugPrint('[DB] saveThread → id=$id title="${thread.title}"');
+    return id;
+  }
+
+  static Future<ThreadEntry?> getThreadById(int id) async {
+    final isar = await db;
+    return isar.threadEntrys.get(id);
+  }
+
+  static Future<ThreadEntry?> getThreadByThreadName(String threadName) async {
+    final isar = await db;
+    return isar.threadEntrys.filter().threadNameEqualTo(threadName).findFirst();
+  }
+
+  /// 返回未删除的事件串，按更新时间倒序。
+  static Future<List<ThreadEntry>> getAllThreads({
+    bool includeDeleted = false,
+  }) async {
+    final isar = await db;
+    final result = includeDeleted
+        ? await isar.threadEntrys
+              .filter()
+              .idGreaterThan(-1)
+              .sortByUpdatedAtDesc()
+              .findAll()
+        : await isar.threadEntrys
+              .filter()
+              .isDeletedEqualTo(false)
+              .sortByUpdatedAtDesc()
+              .findAll();
+    debugPrint('[DB] getAllThreads → ${result.length} 个');
+    return result;
+  }
+
+  /// 反查某篇日记所属的事件串。
+  static Future<List<ThreadEntry>> getThreadsForMemo(int memoLocalId) async {
+    final isar = await db;
+    return isar.threadEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .memberLocalIdsElementEqualTo(memoLocalId)
+        .sortByUpdatedAtDesc()
+        .findAll();
+  }
+
+  static Future<List<ThreadEntry>> getPendingSyncThreads() async {
+    final isar = await db;
+    return isar.threadEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.pending)
+        .findAll();
+  }
+
+  static Future<List<ThreadEntry>> getAllSyncedThreads() async {
+    final isar = await db;
+    return isar.threadEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.synced)
+        .isDeletedEqualTo(false)
+        .findAll();
+  }
+
+  static Future<void> softDeleteThread(int id) async {
+    final isar = await db;
+    final thread = await isar.threadEntrys.get(id);
+    if (thread == null) return;
+    thread
+      ..isDeleted = true
+      ..syncStatus = SyncStatus.pending
+      ..updatedAt = DateTime.now();
+    await isar.writeTxn(() => isar.threadEntrys.put(thread));
+  }
+
+  static Future<bool> hardDeleteThread(int id) async {
+    final isar = await db;
+    return isar.writeTxn(() => isar.threadEntrys.delete(id));
+  }
+
+  /// 日记删除时，摘除所有事件串成员并标记受影响事件串为待同步。
+  static Future<void> removeMemoFromAllThreads(int memoLocalId) async {
+    final isar = await db;
+    final affected = await isar.threadEntrys
+        .filter()
+        .memberLocalIdsElementEqualTo(memoLocalId)
+        .findAll();
+    if (affected.isEmpty) return;
+    await isar.writeTxn(() async {
+      for (final thread in affected) {
+        thread
+          ..memberLocalIds = thread.memberLocalIds
+              .where((id) => id != memoLocalId)
+              .toList()
+          ..syncStatus = SyncStatus.pending
+          ..updatedAt = DateTime.now();
+      }
+      await isar.threadEntrys.putAll(affected);
+    });
   }
 }
 

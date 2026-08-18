@@ -510,6 +510,63 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 
 ---
 
+## 事件串
+
+> 仅适用于 IsleLog 自建服务，不属于标准 Memos v0.25 API。
+
+事件串把跨多篇日记的同一件事串成有序时间线。成员按日记的 `displayTime` 升序排列；
+`memberCount`、`startedTime`、`lastTime` 均由服务端查询时计算。
+
+### 列表
+
+`GET /api/v1/threads`
+
+可选参数 `status`：`ACTIVE` 或 `RESOLVED`。按 `updateTime` 倒序返回，响应为
+`{"threads": [Thread]}`，列表不包含成员详情。
+
+### 创建与更新
+
+`POST /api/v1/threads` 请求体：
+`{"title":"工位蛐蛐","summary":"","status":"ACTIVE","memos":["memos/1001"]}`。
+`title` 必填且不可为空；不属于当前用户或已删除的日记会被忽略；传入 `summary` 时
+`summarySource` 记为 `MANUAL`。
+
+`status` 可选，取值 `ACTIVE`（默认）/ `RESOLVED`，其他值返回 400。**离线客户端必须
+在创建时带上该字段**：事件串可能在首次推送前就被标记完结，若创建时丢失状态，服务端会
+存成 `ACTIVE`，下一轮 pull 便把本地的完结标记覆盖掉。
+
+`PATCH /api/v1/threads/:id` 可更新 `title`、`summary`、`status`（`ACTIVE` / `RESOLVED`）。
+一旦手动传入 `summary`，`summarySource` 会变为 `MANUAL`。
+
+### 成员与删除
+
+`GET /api/v1/threads/:id` 返回事件串及其 `members`。
+
+`PUT /api/v1/threads/:id/members` 请求体：`{"memos":["memos/1001","memos/1002"]}`，
+原子地全量替换成员，方便离线客户端幂等重试。成员变更只更新事件串本身，不更新日记时间。
+
+`DELETE /api/v1/threads/:id` 软删除事件串，保留成员关系以便恢复。
+
+### Thread 响应结构
+
+```json
+{
+  "name": "threads/123",
+  "title": "工位蛐蛐",
+  "summary": "工位附近有蛐蛐叫",
+  "summarySource": "AI",
+  "status": "ACTIVE",
+  "memberCount": 4,
+  "startedTime": "2026-08-11T09:00:00Z",
+  "lastTime": "2026-08-13T22:00:00Z",
+  "createTime": "2026-08-11T09:30:00Z",
+  "updateTime": "2026-08-13T22:05:00Z",
+  "members": [{"memo":"memos/1001","snippet":"工位附近有蛐蛐在叫","displayTime":"2026-08-11T09:00:00Z"}]
+}
+```
+
+`members` 仅在单条查询和设置成员时返回；成员数为零时不返回起止时间。
+
 ## 变更日志（增量同步）
 
 > 用于客户端增量同步。客户端全量同步完成后保存最新的 `changeId` 作为游标，下次启动时拉取 `id > changeId` 的变更，再按 `entity`/`entityId` 拉取对应实体的最新数据。
@@ -570,7 +627,9 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 }
 ```
 
-> `action` 取值：`CREATE` / `UPDATE` / `DELETE`。`entity` 取值：`memo` / `article` / `comment` / `attachment`。
+> `action` 取值：`CREATE` / `UPDATE` / `DELETE`。`entity` 取值：`memo` / `article` / `comment` / `attachment` / `thread`。
+
+> `entity=thread` 时，`entityId` 格式为 `threads/{id}`，用 `GET /api/v1/threads/{id}` 拉取，其响应包含全部成员。
 >
 > `entity=comment` 时，`entityId` 格式为 `memos/{id}`，直接用 `GET /api/v1/memos/{id}` 拉取。
 >
