@@ -225,6 +225,7 @@ class SyncService {
         mood: moodInt,
         weather: weatherInt,
         weatherDetail: weatherDetail,
+        state: memo.isArchived ? 'ARCHIVED' : 'NORMAL',
       );
       if (memo.isPinned) {
         await api.pinMemo(memo.memosName!);
@@ -544,88 +545,12 @@ class SyncService {
           await DatabaseService.hardDelete(memo.id);
           debugPrint('[Sync] 本地物理删除完成 id=${memo.id}');
         } else if (memo.isArchived) {
-          // ── 处理归档 ──
-          if (memo.memosName != null) {
-            debugPrint('[Sync] 归档远端 memo: ${memo.memosName}');
-            await api.archiveMemo(memo.memosName!);
-          }
-          markMemoSynced(memo);
-          await DatabaseService.saveMemo(memo, skipTimestamp: true);
-          debugPrint('[Sync] 归档成功 id=${memo.id}');
+          // ── 归档条目同样需要把内容变更推上去（例如归档页/待办页勾选待办），
+          // 然后显式同步远端 state，避免只归档而丢掉 content 更新。
+          await _pushMemoUpdate(api, memo, url, token, state: 'ARCHIVED');
+          debugPrint('[Sync] 归档条目已同步 id=${memo.id}');
         } else {
-          // ── 补传离线附件 ──
-          await _uploadPendingAttachments(api, memo, url, token);
-
-          // 收集已上传的附件资源名
-          final attachmentNames = memo.attachments
-              .where((a) => a.remoteResName != null)
-              .map((a) => a.remoteResName!)
-              .toList();
-
-          final moodInt = kMoodToInt[memo.mood];
-          final weatherInt = weatherConditionToInt(
-            _weatherConditionFromJson(memo.weatherJson),
-          );
-          final weatherDetail = _weatherDetailFromJson(memo.weatherJson);
-
-          if (memo.memosName == null) {
-            // ── 处理新建 ──
-            debugPrint(
-              '[Sync] 新建远端 memo id=${memo.id}，附件 ${attachmentNames.length} 个',
-            );
-            final remoteData = await api.createMemo(
-              content: memo.content,
-              attachmentNames: attachmentNames,
-              createTime: memo.createdAt,
-              locationPlaceholder: memo.location,
-              latitude: memo.latitude,
-              longitude: memo.longitude,
-              mood: moodInt,
-              weather: weatherInt,
-              weatherDetail: weatherDetail,
-            );
-            final remoteName = remoteData['name'] as String?;
-            if (remoteName == null || remoteName.isEmpty) {
-              throw StateError('创建 memo 成功但响应缺少 name');
-            }
-            final latest = await DatabaseService.completeMemoPush(
-              memo,
-              remoteName: remoteName,
-            );
-            // 同步置顶状态
-            if (memo.isPinned) {
-              await api.pinMemo(remoteName);
-            }
-            debugPrint('[Sync] 新建成功，memosName=${latest?.memosName}');
-          } else {
-            // ── 处理更新 ──
-            debugPrint(
-              '[Sync] 更新远端 memo: ${memo.memosName}，附件 ${attachmentNames.length} 个',
-            );
-            await api.updateMemo(
-              name: memo.memosName!,
-              content: memo.content,
-              attachmentNames: attachmentNames,
-              createTime: memo.createdAt,
-              locationPlaceholder: memo.location,
-              latitude: memo.latitude,
-              longitude: memo.longitude,
-              mood: moodInt,
-              weather: weatherInt,
-              weatherDetail: weatherDetail,
-            );
-            // 同步置顶状态
-            if (memo.isPinned) {
-              await api.pinMemo(memo.memosName!);
-            } else {
-              await api.unpinMemo(memo.memosName!);
-            }
-            final latest = await DatabaseService.completeMemoPush(memo);
-            debugPrint('[Sync] 更新成功，memosName=${memo.memosName}');
-            if (latest?.syncStatus == SyncStatus.pending) {
-              debugPrint('[Sync] 更新期间检测到新编辑，保留 pending id=${memo.id}');
-            }
-          }
+          await _pushMemoUpdate(api, memo, url, token, state: 'NORMAL');
         }
         count++;
       } catch (e) {
@@ -645,6 +570,106 @@ class SyncService {
     // 事件串最后推送：离线日记先取得 memosName 后才能成为成员。
     count += await _pushPendingThreads(api);
     return count;
+  }
+
+  /// 推送一条未删除 memo 的内容与归档状态。
+  ///
+  /// [state] 同步远端归档字段（`NORMAL` / `ARCHIVED`），保证取消归档、以及
+  /// 归档条目上的待办勾选等内容变更都能正确落地，而不是只调用 archiveMemo。
+  static Future<void> _pushMemoUpdate(
+    MemosApiService api,
+    MemoEntry memo,
+    String url,
+    String token, {
+    required String state,
+  }) async {
+    // ── 补传离线附件 ──
+    await _uploadPendingAttachments(api, memo, url, token);
+
+    // 收集已上传的附件资源名
+    final attachmentNames = memo.attachments
+        .where((a) => a.remoteResName != null)
+        .map((a) => a.remoteResName!)
+        .toList();
+
+    final moodInt = kMoodToInt[memo.mood];
+    final weatherInt = weatherConditionToInt(
+      _weatherConditionFromJson(memo.weatherJson),
+    );
+    final weatherDetail = _weatherDetailFromJson(memo.weatherJson);
+
+    if (memo.memosName == null) {
+      // ── 处理新建 ──
+      debugPrint(
+        '[Sync] 新建远端 memo id=${memo.id}，附件 ${attachmentNames.length} 个，'
+        'state=$state',
+      );
+      final remoteData = await api.createMemo(
+        content: memo.content,
+        attachmentNames: attachmentNames,
+        createTime: memo.createdAt,
+        locationPlaceholder: memo.location,
+        latitude: memo.latitude,
+        longitude: memo.longitude,
+        mood: moodInt,
+        weather: weatherInt,
+        weatherDetail: weatherDetail,
+      );
+      final remoteName = remoteData['name'] as String?;
+      if (remoteName == null || remoteName.isEmpty) {
+        throw StateError('创建 memo 成功但响应缺少 name');
+      }
+
+      // 新建后的归档/置顶是额外请求：若其中一步失败，先写回资源名并保持
+      // pending，下次重试走 update 分支，避免重复 create 出两条远端 memo。
+      try {
+        if (state == 'ARCHIVED') {
+          await api.archiveMemo(remoteName);
+        }
+        if (memo.isPinned) {
+          await api.pinMemo(remoteName);
+        }
+      } catch (_) {
+        await DatabaseService.attachMemoRemoteName(memo.id, remoteName);
+        rethrow;
+      }
+
+      final latest = await DatabaseService.completeMemoPush(
+        memo,
+        remoteName: remoteName,
+      );
+      debugPrint('[Sync] 新建成功，memosName=${latest?.memosName}');
+    } else {
+      // ── 处理更新 ──
+      debugPrint(
+        '[Sync] 更新远端 memo: ${memo.memosName}，附件 ${attachmentNames.length} 个，'
+        'state=$state',
+      );
+      await api.updateMemo(
+        name: memo.memosName!,
+        content: memo.content,
+        attachmentNames: attachmentNames,
+        createTime: memo.createdAt,
+        locationPlaceholder: memo.location,
+        latitude: memo.latitude,
+        longitude: memo.longitude,
+        mood: moodInt,
+        weather: weatherInt,
+        weatherDetail: weatherDetail,
+        state: state,
+      );
+      // 同步置顶状态
+      if (memo.isPinned) {
+        await api.pinMemo(memo.memosName!);
+      } else {
+        await api.unpinMemo(memo.memosName!);
+      }
+      final latest = await DatabaseService.completeMemoPush(memo);
+      debugPrint('[Sync] 更新成功，memosName=${memo.memosName}');
+      if (latest?.syncStatus == SyncStatus.pending) {
+        debugPrint('[Sync] 更新期间检测到新编辑，保留 pending id=${memo.id}');
+      }
+    }
   }
 
   /// 推送所有 pending 评论到远端

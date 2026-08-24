@@ -126,6 +126,25 @@ class DatabaseService {
     return latest;
   }
 
+  /// 仅把远端资源名写回最新本地记录，并保持 pending 状态。
+  ///
+  /// 用于「新建成功但后续步骤（如归档）失败」的重试场景：避免下次同步
+  /// 因为本地 memosName 仍为 null 而重复 create，同时保留 pending 以便继续重试。
+  static Future<void> attachMemoRemoteName(int id, String remoteName) async {
+    final isar = await db;
+    var attached = false;
+    await isar.writeTxn(() async {
+      final latest = await isar.memoEntrys.get(id);
+      if (latest == null) return;
+      latest.memosName = remoteName;
+      await isar.memoEntrys.put(latest);
+      attached = true;
+    });
+    debugPrint(
+      '[DB] attachMemoRemoteName id=$id → $remoteName，写入=${attached ? '成功' : '未找到记录'}',
+    );
+  }
+
   /// 软删除（将 isDeleted 置为 true，syncStatus 置为 pending）。
   ///
   /// 软删除后条目仍保留在数据库，等待下次同步时推送删除到远端，

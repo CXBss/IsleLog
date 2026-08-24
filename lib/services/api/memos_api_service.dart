@@ -181,6 +181,7 @@ class MemosApiService {
   /// [name]：资源名，如 `"memos/42"`
   /// [content]：新的 Markdown 正文
   /// [visibility]：新的可见性
+  /// [state]：新的归档状态（`NORMAL` / `ARCHIVED`），null 时不更新
   /// [attachmentNames]：附件资源名列表（如 ["attachments/xxx"]），传空列表则清空附件
   Future<Map<String, dynamic>> updateMemo({
     required String name,
@@ -194,6 +195,7 @@ class MemosApiService {
     int? mood,
     int? weather,
     String? weatherDetail,
+    String? state,
   }) async {
     unawaited(
       FileLogger.log(
@@ -215,6 +217,7 @@ class MemosApiService {
             'latitude': latitude,
             'longitude': longitude,
           },
+        if (state != null) 'state': state,
         'mood': mood ?? 0,
         'weather': weather ?? 0,
         'weatherDetail': weatherDetail ?? '',
