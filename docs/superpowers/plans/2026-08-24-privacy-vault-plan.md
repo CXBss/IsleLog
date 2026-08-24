@@ -1185,9 +1185,23 @@ git commit -m "feat: 新增 VaultController，隐私空间会话状态与自动�
     return candidate.length >= 8 && !candidate.contains(' ');
   }
 
+  /// 创建口令的强约束：必须同时含大写、小写、数字。
+  ///
+  /// 只用于 '+' 创建路径——防止日常一次凑巧 8 位以上、以 '+' 开头的搜索
+  /// （比如 "+项目截止0824"）被误判成创建请求。不满足时按普通搜索处理，
+  /// 不弹任何提示（提示本身就会暴露"这里有个特殊入口"）。
+  bool _isStrongVaultPassphrase(String candidate) {
+    if (candidate.length < 8 || candidate.contains(' ')) return false;
+    final hasLower = candidate.contains(RegExp(r'[a-z]'));
+    final hasUpper = candidate.contains(RegExp(r'[A-Z]'));
+    final hasDigit = candidate.contains(RegExp(r'[0-9]'));
+    return hasLower && hasUpper && hasDigit;
+  }
+
   Future<bool> _tryHandleVaultInput(String q) async {
     if (q.startsWith('+')) {
       final passphrase = q.substring(1);
+      if (!_isStrongVaultPassphrase(passphrase)) return false; // 强度不够，当普通搜索处理
       final exists = await VaultController.instance.vaultExists();
       if (exists) return false; // 已创建过，'+' 前缀不再生效，走普通搜索
       if (!mounted) return true;
@@ -1258,10 +1272,11 @@ import '../../services/vault/vault_controller.dart';
 `_SearchResultsState` 是 `home_view.dart` 内的私有类，且 `showSearch`/`SearchDelegate` 的交互链路（打开搜索 → 输入 → 触发 dialog → 关闭搜索 → push 新页面）在 widget test 里搭建成本高、脆弱，与本代码库现状一致（`home_view.dart` 本身至今没有自己的 widget test，只有其子组件 `memo_search_card.dart` 有）。改为跑一次真机/模拟器手动验证：
 
 1. `flutter run`
-2. 主页点搜索图标，输入 `+testpass123` 回车 → 应弹出创建确认框
-3. 确认后应看到恢复码弹窗，关闭后进入隐私空间页（此时为空列表，因为 Task 8 才实现内容）
-4. 返回主页，再次搜索输入 `testpass123` 回车 → 应直接进入隐私空间页
-5. 输入错误口令（长度 ≥ 8）回车 → 应显示"没有找到"，与普通搜索失败一致
+2. 主页点搜索图标，输入 `+testpass123`（全小写+数字，不满足大小写强约束）回车 → 应表现为普通搜索失败，**不**弹创建确认框
+3. 输入 `+Testpass123`（含大小写+数字）回车 → 应弹出创建确认框
+4. 确认后应看到恢复码弹窗，关闭后进入隐私空间页（此时为空列表，因为 Task 8 才实现内容）
+5. 返回主页，再次搜索输入 `Testpass123` 回车 → 应直接进入隐私空间页
+6. 输入错误口令（长度 ≥ 8）回车 → 应显示"没有找到"，与普通搜索失败一致
 
 - [ ] **Step 3: Commit**
 
@@ -2229,8 +2244,87 @@ git commit -m "feat: 隐私空间同步，伪装为加密备份 memo"
 
 ---
 
+### Task 14: 编译期开关 —— 分享版不含隐私空间
+
+**Files:**
+- Create: `lib/shared/constants/build_flags.dart`
+- Modify: `lib/main.dart`
+- Modify: `lib/features/home/home_view.dart`
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `const bool kVaultEnabled`
+
+**为什么**：不只是运行时不显示入口，而是让分享出去的安装包在编译产物层面就不含这部分代码——这样即使有人拿这个包去反编译翻找，也翻不出"这个 App 曾经有隐私空间功能"这件事本身。
+
+- [ ] **Step 1: 新增开关文件**
+
+```dart
+// lib/shared/constants/build_flags.dart
+
+/// 编译期开关：控制隐私空间功能是否编译进最终产物。
+///
+/// 默认 true（日常自用构建不用额外传参）。要分享给他人的构建，显式传 false：
+///
+///   flutter build apk --release --dart-define=VAULT_ENABLED=false \
+///     --obfuscate --split-debug-info=build/symbols
+///
+/// 因为这是编译期常量，`if (kVaultEnabled)` 为 false 的分支在 release 编译时
+/// 会被当作死代码消除，连同其中只被这个分支引用的类一起被 tree-shake 掉，
+/// 不是运行时判断隐藏。`--obfuscate` 是顺手加的免费加固，不是本开关必需。
+const bool kVaultEnabled = bool.fromEnvironment(
+  'VAULT_ENABLED',
+  defaultValue: true,
+);
+```
+
+- [ ] **Step 2: main.dart 接入**
+
+把 Task 6 Step 5 加的两行包一层判断：
+
+```dart
+  if (kVaultEnabled) {
+    await VaultController.init();
+    VaultController.instance.attachLifecycleObserver();
+  }
+```
+
+文件顶部加 `import 'shared/constants/build_flags.dart';`。
+
+- [ ] **Step 3: home_view.dart 接入**
+
+把 Task 7 Step 1 加的钩子调用包一层判断：
+
+```dart
+    if (kVaultEnabled && _looksLikeVaultPassphrase(q)) {
+      final handled = await _tryHandleVaultInput(q);
+      if (handled) return;
+    }
+```
+
+文件顶部加 `import '../../shared/constants/build_flags.dart';`。
+
+- [ ] **Step 4: 验证两种构建都能跑**
+
+Run: `flutter build apk --debug`
+Expected: 成功（默认 `kVaultEnabled=true`）。
+
+Run: `flutter build apk --debug --dart-define=VAULT_ENABLED=false`
+Expected: 成功；安装运行后，搜索框输入任何长度≥8 的口令都只表现为普通搜索，无论内容是否满足大小写+数字，都不触发任何 vault 相关弹窗或跳转。
+
+这一步不做字节级反编译验证（超出常规开发流程的工具链，且对应的"不懂技术"威胁模型不需要这个强度的证明）——用"功能在运行时完全不可触发"作为验收标准。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/shared/constants/build_flags.dart lib/main.dart lib/features/home/home_view.dart
+git commit -m "feat: 新增隐私空间编译期开关，支持构建不含该功能的分享版"
+```
+
+---
+
 ## Self-Review 记录
 
-- **Spec 覆盖**：第 3 节（密钥）→ Task 2；第 4 节（入口锁定）→ Task 7、Task 6 的后台计时；第 5 节（数据视图）→ Task 3/8；第 6 节（附件）→ Task 4/10；第 7 节（移入移出）→ Task 12；第 8 节（同步 + 硬删除接口）→ Task 11/13；第 9 节（改动清单）→ 对应各任务。全部覆盖。
+- **Spec 覆盖**：第 3 节（密钥）→ Task 2；第 4 节（入口锁定，含创建强约束）→ Task 7、Task 6 的后台计时；第 5 节（数据视图）→ Task 3/8；第 6 节（附件）→ Task 4/10；第 7 节（移入移出）→ Task 12；第 8 节（同步）→ Task 13；第 9 节（编译期开关）→ Task 14；第 10 节（硬删除接口 + 改动清单）→ Task 11、对应各任务。全部覆盖。
 - **占位符扫描**：Task 13 的 `pull()` 附件下载部分不是占位符——已明确写出"为什么现在留白、需要执行者确认什么、确认后该怎么补"，且不影响本任务其余代码可编译可运行（`replaceFromRemote(idxBytes, null)` 是合法调用，只是附件暂不随拉取同步，文字内容的拉取路径是完整的）。
 - **类型一致性**：`VaultController.instance.storageForSyncAndMigration` 在 Task 6/8/10/12/13 里统一使用同一个 getter 名；`VaultAttachment`/`VaultEntry` 字段名在 Task 3 定义后，Task 4/5/9/10/12 均保持一致引用。

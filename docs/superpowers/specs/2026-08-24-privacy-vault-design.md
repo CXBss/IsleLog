@@ -47,9 +47,11 @@ MK 直接用作 AES-GCM 密钥，加密/解密 `idx.bin` 和 `atc.bin`（两个�
 
 **创建**：搜索框输入 `+口令` 回车（`+` 前缀仅创建时使用一次），二次确认后生效。
 
+**创建强约束**：`+` 后面的口令必须同时包含英文大写字母、小写字母、数字（长度 ≥ 8、不含空格的基础上）。不满足时**完全按普通搜索处理**——不弹确认框、不提示"口令强度不够"，因为提示本身就会暴露"这里有个特殊入口"。这一条同时起两个作用：防止日常输入一个凑巧 8 位以上、以 `+` 开头的搜索词（比如某次搜索 `+项目截止0824`）被误判成创建请求；顺带保证真正的口令有基本强度。
+
 **进入**：搜索框输入口令回车 → 直接推入隐私空间页，无任何过渡动画或提示。
 
-**触发条件**：仅当输入内容长度 ≥ 8 且不含空格时才尝试解密，避免每次日常搜索都跑一次 Argon2。
+**触发条件**：仅当输入内容长度 ≥ 8 且不含空格时才尝试解密，避免每次日常搜索都跑一次 Argon2。解锁沿用这个较宽松的门槛（不强制大小写+数字组合）——因为解锁失败的代价只是一次静默的空搜索结果，不像创建那样需要额外防误触。
 
 **锁定时机**：
 - 离开隐私空间页
@@ -134,19 +136,39 @@ DELETE /api/v1/memos/:id?hard=true   [IsleLog 扩展，待新增]
 
 这一步客户端单独做不到——现有软删除会让"移入前的明文"永久留在服务端数据库和版本历史里。在服务端配合之前，移入功能应视为不完整（明文在服务端只是被隐藏，未被清除）。
 
-## 9. 需要改动的现有代码
+## 9. 编译期开关——分享版不含隐私空间
+
+之前的方案默认"这台设备上装的 App 里含隐私空间功能，只是 UI 上没入口"。但如果要把安装包直接分享给别人（对方自己装在自己手机上，不是借你的手机看），更彻底的做法是：分享的那个包从编译层面就不包含这个功能，而不是含着但藏起来。
+
+用一个编译期常量控制：
+
+```dart
+const bool kVaultEnabled = bool.fromEnvironment('VAULT_ENABLED', defaultValue: true);
+```
+
+`main.dart` 里的初始化调用、`home_view.dart` 里的搜索框钩子，都包一层 `if (kVaultEnabled)`。因为这是编译期常量，Dart 的 release 编译器会把 `false` 分支连同其中专属引用的类（`VaultController`/`VaultPage`/`VaultStorage` 等，只要它们没有被其他路径引用）一起做死代码消除——不是运行时判断隐藏，是编译产物里那部分代码基本不存在。
+
+- **自用包**：不传参数，默认 `true`，正常编译
+- **分享包**：`flutter build apk --release --dart-define=VAULT_ENABLED=false --obfuscate --split-debug-info=build/symbols`
+
+`--obfuscate` 是顺手加的，几乎零成本（就是个编译参数），进一步把剩余类名/方法名混淆掉，对"分享出去的包经不经得住随手反编译看一眼"这个目标性价比很高，一并加上。
+
+不追求逆向工程级别的绝对不可恢复（比如残留字符串常量、符号表的边角案例），这已经超出"不懂技术、大概率想不到查这个"的威胁模型太多。
+
+## 10. 需要改动的现有代码
 
 | 文件 | 改动 |
 |---|---|
-| `lib/features/home/home_view.dart` | 搜索框加口令识别钩子（长度≥8 且无空格时尝试解密） |
+| `lib/features/home/home_view.dart` | 搜索框加口令识别钩子（长度≥8 且无空格时尝试解密；创建额外要求大小写+数字），整体包在 `kVaultEnabled` 判断内 |
 | `lib/services/sync/sync_service.dart` | `_applyRemoteMemo` 识别 `IsleLog-Backup/1` 前缀并跳过 |
-| `lib/features/memo_editor/memo_editor_page.dart` | 隐私空间内的编辑实例绕开 `SettingsService` 草稿逻辑，避免明文写入 SharedPreferences |
+| `lib/main.dart` | 初始化调用包在 `kVaultEnabled` 判断内 |
+| 新增 `lib/shared/constants/build_flags.dart` | `kVaultEnabled` 编译期开关 |
 | 新增 `lib/services/vault/` | 加密/解密、`idx.bin`/`atc.bin` 读写、口令派生 |
-| 新增 `lib/features/vault/` | 隐私空间页（合并时间线、编辑器、移入移出交互） |
+| 新增 `lib/features/vault/` | 隐私空间页（合并时间线、独立精简编辑器、移入移出交互） |
 
-不涉及 Isar `@collection` 模型改动，不需要跑 `build_runner`。
+不涉及 Isar `@collection` 模型改动，不需要跑 `build_runner`。隐私空间的编辑器是独立新写的精简页面，不是改造 `memo_editor_page.dart`（该文件耦合 AI/天气/位置/网络附件队列，改造审计成本高于新写）。
 
-## 10. 明确不处理的泄漏点
+## 11. 明确不处理的泄漏点
 
 - 服务端管理员/数据库层面能看到密文体积和上传时间等元数据（无法消除，取决于服务端）
 - 对方若已经知道存在隐私空间并索要口令，本设计不提供可否认的"假空间"机制（威胁模型已明确排除胁迫场景）
