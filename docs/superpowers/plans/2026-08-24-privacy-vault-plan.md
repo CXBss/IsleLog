@@ -30,6 +30,7 @@
 - 与本仓库现有的静态 service 类风格（`DatabaseService`/`SettingsService`）不同：`VaultStorage` 设计为可实例化的普通类（构造时注入 `Directory`），因为它涉及文件 IO + 加密，需要在单元测试中注入临时目录——这是刻意的风格偏离，理由见 Task 6。
 - Task 11（服务端硬删除）客户端改动可以完成，但**依赖服务端新增接口**，服务端代码不在本仓库，不在本计划实现范围内；该任务的定义是"客户端准备好调用它"，不是"端到端验证硬删除生效"。
 - 同步模型是**单设备写 + 换机恢复**，不支持多设备并行编辑；`revision` 计数器只提供整体先后取舍，后推送的整体覆盖先推送的。
+- 推送走 **3 分钟防抖**（密文整体重写，每次保存都是全量上传），并在 `lock()` 和 App `paused` 时强制 flush——没有这两个 flush，窗口内 App 被杀或锁定就会丢掉那次改动。
 
 ---
 
@@ -3035,7 +3036,8 @@ git commit -m "feat: 隐私空间移入/移出，含级联清理与同步队列�
 - Consumes: `VaultController`（Task 7）、`MemosApiService`（Task 12）
 - Produces:
   - `static const String VaultSync.contentHeader`
-  - `Future<void> VaultSync.push()`
+  - `void VaultSync.schedulePush(int revision)` — 3 分钟防抖
+  - `Future<void> VaultSync.flushPush()` — 立即推送待推的改动（锁定/进后台时调用）
   - `Future<void> VaultSync.pullIfNewer()`
   - `Future<bool> VaultSync.recoverFromRemote(String passphrase)`
   - `bool VaultSync.isBackupMemoContent(String content)` — 供 `_applyRemoteMemo` 过滤
@@ -3143,6 +3145,7 @@ key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPre
 
 ```dart
 // lib/services/vault/vault_sync.dart
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -3184,10 +3187,52 @@ class VaultSync {
     return MemosApiService(baseUrl: url, token: token);
   }
 
-  // ── 推送 ──────────────────────────────────────────────────────
+  // ── 推送（3 分钟防抖） ────────────────────────────────────────
 
-  static Future<void> push() async {
-    if (!VaultController.instance.isUnlocked) return;
+  static Timer? _pushTimer;
+  static int _pendingRevision = -1;
+  static int _lastPushedRevision = -1;
+
+  /// 防抖窗口。每次保存重置计时，窗口内连写多条只上传一次。
+  ///
+  /// 没有防抖的话，连写三条日记 = 三次全量上传（整个 idx.dat 每次都重传），
+  /// 编辑器进后台自动保存还会再触发一次。移动网络下这是实打实的浪费。
+  static const _pushDebounce = Duration(minutes: 3);
+
+  /// 记录一次待推送的改动并重置计时器。
+  ///
+  /// [revision] 由调用方在还持有密钥时读出并传进来——flushPush 可能在锁定之后
+  /// 才执行，那时已经拿不到解密后的 revision 了。
+  static void schedulePush(int revision) {
+    _pendingRevision = revision;
+    _pushTimer?.cancel();
+    _pushTimer = Timer(_pushDebounce, () => unawaited(flushPush()));
+  }
+
+  /// 立刻把待推送的改动传上去。
+  ///
+  /// 必须在这两个时机调用，否则 3 分钟窗口内 App 被杀 / vault 锁定，
+  /// 那次改动就永远推不上去了：
+  ///   - VaultController.lock()
+  ///   - App 进入 paused
+  ///
+  /// 刻意**不**检查 isUnlocked：推送只需要磁盘上的密文字节
+  /// （readEncryptedIndexBytes 不碰主密钥），所以锁定之后依然能完成。
+  static Future<void> flushPush() async {
+    _pushTimer?.cancel();
+    _pushTimer = null;
+    if (_pendingRevision < 0 || _pendingRevision == _lastPushedRevision) return;
+    final target = _pendingRevision;
+    try {
+      await _doPush();
+      _lastPushedRevision = target;
+    } catch (e) {
+      // 不推进 _lastPushedRevision，下次 flush 仍会重试这次改动
+      debugPrint('[VaultSync] flushPush 失败，保留待推状态：$e');
+    }
+  }
+
+  static Future<void> _doPush() async {
     final api = await _api();
     if (api == null) return;
 
@@ -3247,6 +3292,8 @@ class VaultSync {
       }
     } catch (e) {
       debugPrint('[VaultSync] push 失败：$e');
+      // 失败时不推进 _lastPushedRevision（由 flushPush 负责），下次还会重试
+      rethrow;
     }
   }
 
@@ -3286,7 +3333,16 @@ class VaultSync {
 
       final storage = VaultController.instance.storage;
       final remoteRevision = await storage.peekRemoteRevision(idxBytes);
-      if (remoteRevision == null || remoteRevision <= storage.revision) return;
+      if (remoteRevision == null) return;
+      if (remoteRevision <= storage.revision) {
+        // 本地更新：可能是上次改动还在 3 分钟防抖窗口里 App 就被杀了。
+        // 补一次推送，否则那次改动会一直留在本地不上云。
+        if (remoteRevision < storage.revision) {
+          schedulePush(storage.revision);
+          unawaited(flushPush());
+        }
+        return;
+      }
 
       // 内部先验证后落盘
       final ok = await storage.adoptRemoteIndexWithCurrentKey(idxBytes);
@@ -3421,17 +3477,58 @@ class VaultSync {
 
 - [ ] **Step 6: 接入调用点**
 
-`vault_controller.dart` 的 `saveEntry` / `deleteEntry` / `addAttachment` 末尾各加 `unawaited(VaultSync.push());`；`tryUnlock` 成功分支加 `unawaited(VaultSync.pullIfNewer());`。顶部加 `import 'dart:async';` 和 `import 'vault_sync.dart';`。
+`vault_controller.dart` 顶部加 `import 'dart:async';` 和 `import 'vault_sync.dart';`，然后：
+
+**写操作 → 排入防抖队列**（`saveEntry` / `deleteEntry` / `addAttachment` 末尾）：
+
+```dart
+    VaultSync.schedulePush(_storage.revision);
+```
+
+注意传的是**当前 revision**，因为 `flushPush()` 可能在锁定之后才执行，那时已经读不到解密后的 revision 了。
+
+**解锁成功 → 拉取**（`tryUnlock` 成功分支）：
+
+```dart
+    unawaited(VaultSync.pullIfNewer());
+```
+
+**锁定 → 强制 flush**（`lock()` 开头，清状态之前）：
+
+```dart
+  void lock() {
+    if (!_storage.isUnlocked) return;
+    // 3 分钟防抖窗口里的改动必须在这里推掉，否则锁定后就再没机会了。
+    // flushPush 不需要主密钥（只读磁盘密文），所以清 key 之后它照样能跑完。
+    unawaited(VaultSync.flushPush());
+    _storage.lock();
+    _isUnlocked.value = false;
+  }
+```
+
+**进后台 → 强制 flush**（`didChangeAppLifecycleState` 的 `paused` 分支）：
+
+```dart
+    if (state == AppLifecycleState.paused) {
+      _backgroundedAt = DateTime.now();
+      unawaited(VaultSync.flushPush()); // 用户已经离开，没必要再等满 3 分钟
+    }
+```
+
+这两个 flush 是防抖能成立的前提——没有它们，3 分钟窗口内 App 被杀或 vault 锁定，那次改动就永远推不上去了。
 
 - [ ] **Step 7: 手动验证**
 
 1. 配置服务端 → 创建隐私空间 → 写一条日记带一张图
 2. 服务端后台确认出现一条正文为「📦 加密备份 / 更新于 …」、`visibility=PRIVATE` 的 memo，挂着 `idx.dat` 和 `atc.dat` 两个附件
-3. **附件不被解绑**：再写一条隐私日记触发第二次 push → 后台确认该 memo 仍然挂着两个附件（不是 0 个），且旧附件资源已被清掉（没有越积越多）
-4. **版本历史不膨胀**：查看该 memo 的版本历史 → 每个版本的正文都只是那两行短文本
-5. 换一台已登录同一服务端、**从未创建过隐私空间**的设备 → 时间线上最多出现一条普通的"📦 加密备份"备忘录，无乱码、无崩溃
-6. **换机恢复**：在该设备搜索框输入 `?同一口令` 回车 → 应进入隐私空间并看到第 1 步写的日记和图片
-7. 输入 `?错误口令` → 应表现为普通搜索失败，本地不应产生 `blob/idx.bin`
+3. **防抖生效**：连续快速写三条隐私日记 → 抓包或看后台，3 分钟内应**只有一次**上传，不是三次
+4. **锁定强制 flush**：写一条日记后立刻退出隐私空间页（不等 3 分钟）→ 后台应立即出现这次改动。同理，写完直接把 App 切后台，也应立即上传
+5. **App 被杀后补推**：写一条日记 → 30 秒内强杀 App（不给防抖计时器机会）→ 重新进入隐私空间解锁 → 后台应能看到那条改动被补推上去
+6. **附件不被解绑**：再写一条隐私日记触发下一次 push → 后台确认该 memo 仍然挂着两个附件（不是 0 个），且旧附件资源已被清掉（没有越积越多）
+7. **版本历史不膨胀**：查看该 memo 的版本历史 → 每个版本的正文都只是那两行短文本
+8. 换一台已登录同一服务端、**从未创建过隐私空间**的设备 → 时间线上最多出现一条普通的"📦 加密备份"备忘录，无乱码、无崩溃
+9. **换机恢复**：在该设备搜索框输入 `?同一口令` 回车 → 应进入隐私空间并看到第 1 步写的日记和图片
+10. 输入 `?错误口令` → 应表现为普通搜索失败，本地不应产生 `blob/idx.bin`
 
 - [ ] **Step 8: Commit**
 
