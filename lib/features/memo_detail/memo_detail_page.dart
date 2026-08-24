@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -292,18 +293,27 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
   }
 
   Future<void> _toggleTodo(int lineIndex, bool checked) async {
-    final lines = memo.content.split('\n');
-    if (lineIndex < 0 || lineIndex >= lines.length) return;
-    final line = lines[lineIndex];
-    if (checked) {
-      lines[lineIndex] = line.replaceFirst('- [ ]', '- [x]');
-    } else {
-      lines[lineIndex] = line.replaceFirst('- [x]', '- [ ]');
-    }
-    memo.content = lines.join('\n');
-    memo.updatedAt = DateTime.now();
-    memo.syncStatus = SyncStatus.pending;
-    await DatabaseService.saveMemo(memo);
+    final latest = await DatabaseService.toggleTodoCheckbox(
+      memoId: memo.id,
+      lineIndex: lineIndex,
+      checked: checked,
+    );
+    if (latest == null) return;
+
+    unawaited(SyncService.checkConflictAndPush(latest));
+
+    // 同步回页面持有的对象，让详情页 Markdown 立即反映新状态
+    memo
+      ..memosName = latest.memosName
+      ..content = latest.content
+      ..updatedAt = latest.updatedAt
+      ..syncStatus = latest.syncStatus
+      ..lastSyncAt = latest.lastSyncAt
+      ..originalContent = latest.originalContent
+      ..conflictRemoteContent = latest.conflictRemoteContent
+      ..todoStatus = latest.todoStatus
+      ..pendingTodoCount = latest.pendingTodoCount
+      ..tags = List.of(latest.tags);
     if (mounted) setState(() {});
   }
 
@@ -726,7 +736,7 @@ int _findTodoLineIndex(String raw, int checkboxIndex) {
   int count = -1;
   for (var i = 0; i < lines.length; i++) {
     final trimmed = lines[i].trimLeft();
-    if (trimmed.startsWith('- [ ]') || trimmed.startsWith('- [x]')) {
+    if (RegExp(r'^- \[[ xX]\]').hasMatch(trimmed)) {
       count++;
       if (count == checkboxIndex) return i;
     }

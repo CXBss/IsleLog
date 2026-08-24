@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../data/database/database_service.dart';
 import '../../data/models/memo_entry.dart';
 import '../../features/memo_detail/memo_detail_page.dart';
+import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
 
 /// 待办视图
@@ -54,20 +55,22 @@ class _TodoViewState extends State<TodoView> {
   /// 切换某条日记中指定行的待办勾选状态。
   ///
   /// [memo]：目标日记；[lineIndex]：待办行在全文按行分割后的下标。
+  ///
+  /// [DatabaseService.toggleTodoCheckbox] 在单个事务内完成「读最新记录 +
+  /// 写入」，快速连续勾选也不会互相覆盖；切换后立即触发后台增量同步。
   Future<void> _toggleTodo(MemoEntry memo, int lineIndex) async {
     final lines = memo.content.split('\n');
-    if (lineIndex >= lines.length) return;
-    final line = lines[lineIndex];
-    if (line.contains('- [ ]')) {
-      lines[lineIndex] = line.replaceFirst('- [ ]', '- [x]');
-    } else if (RegExp(r'- \[[xX]\]').hasMatch(line)) {
-      lines[lineIndex] = line.replaceFirst(RegExp(r'- \[[xX]\]'), '- [ ]');
-    } else {
-      return;
-    }
-    memo.content = lines.join('\n');
-    memo.syncStatus = SyncStatus.pending;
-    await DatabaseService.saveMemo(memo);
+    if (lineIndex < 0 || lineIndex >= lines.length) return;
+    // 当前行是未完成待办 → 切换为已完成；否则（含 - [X]）切换回未完成
+    final checked = lines[lineIndex].contains('- [ ]');
+
+    final latest = await DatabaseService.toggleTodoCheckbox(
+      memoId: memo.id,
+      lineIndex: lineIndex,
+      checked: checked,
+    );
+    if (latest == null) return;
+    unawaited(SyncService.checkConflictAndPush(latest));
   }
 
   @override

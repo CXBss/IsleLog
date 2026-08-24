@@ -266,19 +266,31 @@ class _MemoCardState extends State<_MemoCard> {
   }
 
   /// 切换第 [lineIndex] 个 todo 行的勾选状态并保存
+  ///
+  /// 数据库层的 [db_svc.DatabaseService.toggleTodoCheckbox] 会原子地读取最新
+  /// 记录并写入，保存后触发一次后台增量同步。
   Future<void> _toggleTodo(int lineIndex, bool checked) async {
-    final lines = memo.content.split('\n');
-    if (lineIndex < 0 || lineIndex >= lines.length) return;
-    final line = lines[lineIndex];
-    if (checked) {
-      lines[lineIndex] = line.replaceFirst('- [ ]', '- [x]');
-    } else {
-      lines[lineIndex] = line.replaceFirst('- [x]', '- [ ]');
-    }
-    memo.content = lines.join('\n');
-    memo.updatedAt = DateTime.now();
-    memo.syncStatus = SyncStatus.pending;
-    await db_svc.DatabaseService.saveMemo(memo);
+    final latest = await db_svc.DatabaseService.toggleTodoCheckbox(
+      memoId: memo.id,
+      lineIndex: lineIndex,
+      checked: checked,
+    );
+    if (latest == null) return;
+
+    unawaited(SyncService.checkConflictAndPush(latest));
+
+    // 同步到页面持有的对象，让勾选框立即反映新状态，不等 DB watcher 刷新
+    memo
+      ..memosName = latest.memosName
+      ..content = latest.content
+      ..updatedAt = latest.updatedAt
+      ..syncStatus = latest.syncStatus
+      ..lastSyncAt = latest.lastSyncAt
+      ..originalContent = latest.originalContent
+      ..conflictRemoteContent = latest.conflictRemoteContent
+      ..todoStatus = latest.todoStatus
+      ..pendingTodoCount = latest.pendingTodoCount
+      ..tags = List.of(latest.tags);
     if (mounted) setState(() {});
   }
 
@@ -673,7 +685,7 @@ class _PreviewMarkdown extends StatelessWidget {
     int count = -1;
     for (var i = 0; i < lines.length; i++) {
       final trimmed = lines[i].trimLeft();
-      if (trimmed.startsWith('- [ ]') || trimmed.startsWith('- [x]')) {
+      if (RegExp(r'^- \[[ xX]\]').hasMatch(trimmed)) {
         count++;
         if (count == checkboxIndex) return i;
       }

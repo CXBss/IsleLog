@@ -923,6 +923,50 @@ class DatabaseService {
     return toUpdate.length;
   }
 
+  /// 原子地切换指定日记中某行待办的勾选状态。
+  ///
+  /// 读取最新记录与写入在同一个事务中完成，快速连续勾选同一篇日记的多个
+  /// 待办时也不会互相覆盖。返回更新后的 [MemoEntry]（用于触发同步和刷新
+  /// 页面对象）；目标行不存在或状态未变化时返回 null。
+  static Future<MemoEntry?> toggleTodoCheckbox({
+    required int memoId,
+    required int lineIndex,
+    required bool checked,
+  }) async {
+    final isar = await db;
+    final updated = await isar.writeTxn(() async {
+      final memo = await isar.memoEntrys.get(memoId);
+      if (memo == null) return null;
+
+      final lines = memo.content.split('\n');
+      if (lineIndex < 0 || lineIndex >= lines.length) return null;
+      final line = lines[lineIndex];
+      final next = checked
+          ? line.replaceFirst('- [ ]', '- [x]')
+          : line.replaceFirst(RegExp(r'- \[[xX]\]'), '- [ ]');
+      if (next == line) return null;
+
+      // 记录编辑前快照，供后续冲突检测使用；连续本地编辑保留最早基线
+      memo.originalContent ??= memo.content;
+      lines[lineIndex] = next;
+      memo
+        ..content = lines.join('\n')
+        ..updatedAt = DateTime.now()
+        ..syncStatus = SyncStatus.pending
+        ..conflictRemoteContent = null;
+      // 与 saveMemo 保持一致：同步更新标签和待办统计
+      memo.tags = extractTags(memo.content);
+      _updateTodoStatus(memo);
+      await isar.memoEntrys.put(memo);
+      return memo;
+    });
+    debugPrint(
+      '[DB] toggleTodoCheckbox id=$memoId line=$lineIndex checked=$checked → '
+      '${updated == null ? "未变化" : "已更新"}',
+    );
+    return updated;
+  }
+
   /// 获取含有待办项的日记，按创建时间倒序。
   ///
   /// [filter] 为 null 时返回全部（hasPending + allDone）；
