@@ -325,7 +325,9 @@ class VaultCrypto {
       );
       final mkBytes = await _aead.decrypt(box, secretKey: kek);
       return SecretKey(mkBytes);
-    } on SecretBoxAuthenticationError {
+    } catch (_) {
+      // GCM 失败、格式异常一律 null——调用方需要"打不开"这一个语义，
+      // 不允许任何异常冒泡（那会暴露特殊代码路径）。
       return null;
     }
   }
@@ -342,6 +344,7 @@ class VaultCrypto {
     SecretKey masterKey,
     Uint8List packed,
   ) async {
+    if (packed.length < _nonceLength + _macLength) return null;
     try {
       final box = SecretBox.fromConcatenation(
         packed,
@@ -350,7 +353,7 @@ class VaultCrypto {
       );
       final plaintext = await _aead.decrypt(box, secretKey: masterKey);
       return Uint8List.fromList(plaintext);
-    } on SecretBoxAuthenticationError {
+    } catch (_) {
       return null;
     }
   }
@@ -373,7 +376,7 @@ class VaultCrypto {
 - [ ] **Step 4: 运行确认通过**
 
 Run: `flutter test test/services/vault/vault_crypto_test.dart`
-Expected: PASS（6 个测试全绿）。
+Expected: PASS（11 个测试全绿）。
 
 - [ ] **Step 5: Commit**
 
@@ -1065,9 +1068,17 @@ class VaultStorage {
   Future<bool> unlock(String passphrase) async {
     for (final file in [_idxFile, _idxBak]) {
       if (!await file.exists()) continue;
-      final loaded = await _tryLoadIndexFrom(await file.readAsBytes(), passphrase);
+      final raw = await file.readAsBytes();
+      final loaded = await _tryLoadIndexFrom(raw, passphrase);
       if (loaded == null) continue;
       _applyLoaded(loaded);
+      // 从 .bak 恢复时立刻治愈主文件：否则后续 addAttachment 这类只写 atc
+      // 的操作触发推送时，会把损坏的主 idx.bin 原样传上云端。
+      // 注意用 _healFile 而不是 _atomicWrite——_atomicWrite 会把损坏的主文件
+      // 轮转成新的 .bak，反而把刚才救命的完好 .bak 覆盖掉。
+      if (file.path != _idxFile.path) {
+        await _healFile(_idxFile, raw);
+      }
       await _loadAttachments();
       return true;
     }
@@ -1109,6 +1120,8 @@ class VaultStorage {
       final decoded = jsonDecode(utf8.decode(plain));
       if (decoded is! Map<String, dynamic>) return null;
       final body = VaultBody.fromJson(decoded);
+      // 不支持未来版本。绝不回退 .bak 旧版继续用——那会在下次保存时覆盖新版本。
+      if (body.version != 1) return null;
 
       return _LoadedIndex(mk: mk, passwordSlot: pwSlot, recoverySlot: recSlot, body: body);
     } catch (_) {
@@ -1133,6 +1146,10 @@ class VaultStorage {
         final plain = await VaultCrypto.decryptBlob(mk, await file.readAsBytes());
         if (plain == null) continue;
         _attachments = VaultContainerCodec.decodeAttachments(plain);
+        // 从 bak 恢复时治愈主文件，且不破坏好 bak。
+        if (file.path != _atcFile.path) {
+          await _healFile(_atcFile, await file.readAsBytes());
+        }
         return;
       } catch (_) {
         continue;
@@ -1184,7 +1201,7 @@ class VaultStorage {
 
   Future<void> deleteEntry(String id) async {
     _requireKey();
-    final target = _entries.where((e) => e.id == id).firstOrNull;
+    final target = _findEntry(_entries, id);
     _entries = _entries.where((e) => e.id != id).toList();
     await _flushIndex();
     if (target != null && target.attachmentIds.isNotEmpty) {
@@ -1195,11 +1212,26 @@ class VaultStorage {
     }
   }
 
+  // 不使用 Iterable.firstOrNull：它来自 dart:collection 的扩展，本文件不引入
+  // 额外依赖。手工循环在任何 SDK 下都成立。
+  static T? _firstWhereOrNull<T>(List<T> list, bool Function(T) test) {
+    for (final item in list) {
+      if (test(item)) return item;
+    }
+    return null;
+  }
+
+  static VaultEntry? _findEntry(List<VaultEntry> list, String id) =>
+      _firstWhereOrNull(list, (e) => e.id == id);
+
+  static VaultAttachment? _findAttachment(List<VaultAttachment> list, String id) =>
+      _firstWhereOrNull(list, (a) => a.id == id);
+
   Uint8List? attachmentBytes(String id) =>
-      _attachments.where((a) => a.id == id).firstOrNull?.bytes;
+      _findAttachment(_attachments, id)?.bytes;
 
   String? attachmentMimeType(String id) =>
-      _attachments.where((a) => a.id == id).firstOrNull?.mimeType;
+      _findAttachment(_attachments, id)?.mimeType;
 
   Future<void> addAttachment(VaultAttachment attachment) async {
     _requireKey();
@@ -1263,6 +1295,15 @@ class VaultStorage {
     }
     await tmp.rename(target.path);
   }
+
+  /// 用已知完好的字节修复主文件，不旋转 .bak——调用场景是从 .bak 恢复成功，
+  /// 此时 .bak 是唯一的好副本，绝不能被损坏的主文件替换掉。
+  Future<void> _healFile(File target, List<int> bytes) async {
+    final tmp = File('${target.path}.heal');
+    await tmp.writeAsBytes(bytes, flush: true);
+    if (await target.exists()) await target.delete();
+    await tmp.rename(target.path);
+  }
 }
 
 class _LoadedIndex {
@@ -1283,7 +1324,7 @@ class _LoadedIndex {
 - [ ] **Step 4: 运行确认通过**
 
 Run: `flutter test test/services/vault/vault_storage_test.dart`
-Expected: PASS（11 个测试全绿）。
+Expected: PASS（13 个测试全绿，含 `adoptRemotePair` 的 atc-缺失整体失败用例）。
 
 - [ ] **Step 5: Commit**
 
@@ -1557,6 +1598,7 @@ git commit -m "feat: 新增 VaultController，会话状态与锁定广播"
 
 ```dart
 // lib/features/vault/vault_editor_page.dart
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -2051,6 +2093,13 @@ void main() {
       expect(_classify('alllowercase', vaultExists: true), VaultInputKind.unlock);
     });
 
+    test('非 ASCII（中文搜索词）不触发 KDF', () {
+      expect(
+        _classify('今天天气怎么样啊', vaultExists: true),
+        VaultInputKind.none,
+      );
+    });
+
     test('无本地 vault → none', () {
       expect(_classify('correcthorse1'), VaultInputKind.none);
     });
@@ -2099,6 +2148,7 @@ import 'package:flutter/material.dart';
 
 import '../../services/settings/settings_service.dart';
 import '../../services/vault/vault_controller.dart';
+import '../../services/vault/vault_crypto.dart';
 import '../../services/vault/vault_sync.dart';
 import 'vault_page.dart';
 
@@ -2136,9 +2186,11 @@ class VaultEntryGate {
     return _isPlausible(raw) ? VaultInputKind.unlock : VaultInputKind.none;
   }
 
-  /// 解锁/恢复的门槛：够长、无空格。不要求字符类组合——
-  /// 失败的代价只是一次静默的空搜索结果。
-  static bool _isPlausible(String s) => s.length >= 8 && !s.contains(' ');
+  /// 解锁/恢复的门槛：够长、无空格、ASCII 可打印。不要求字符类组合——
+  /// 失败的代价只是一次静默的空搜索结果；但创建阶段已强制 ASCII，
+  /// 加 ASCII 判断可以避免用户搜索 8 字以上的中文词时白跑 Argon2id。
+  static bool _isPlausible(String s) =>
+      s.length >= 8 && !s.contains(' ') && VaultCrypto.isAsciiPrintable(s);
 
   /// 创建的门槛：ASCII 可打印 + 大小写字母 + 数字。
   ///
@@ -2180,6 +2232,9 @@ class VaultEntryGate {
           return false;
         }
         _lastFailedCandidate = null;
+        // 进入页面之前同步完成拉取：unawaited 的 pull 会在页面打开后整体替换
+        // 内存 entries，用户可能基于旧条目保存，覆盖远端新内容。
+        await VaultSync.pullIfNewer();
         if (!context.mounted) return true;
         _enterVault(context);
         return true;
@@ -2202,6 +2257,26 @@ class VaultEntryGate {
     BuildContext context,
     String passphrase,
   ) async {
+    // 换机用户误用 +口令 会把云端旧备份整体覆盖成空 vault（新 MK）。
+    // 创建前先查云端：已有备份则阻止创建并引导用 ?口令 恢复。
+    if (await SettingsService.isConfigured) {
+      final hasRemote = await VaultSync.hasRemoteBackup();
+      if (hasRemote) {
+        if (!context.mounted) return true;
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('检测到已有备份'),
+            content: const Text('云端已存在加密备份，本机无法直接新建。\n请在搜索框输入 ?你的口令 从云端恢复。'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+            ],
+          ),
+        );
+        return true;
+      }
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -2256,12 +2331,12 @@ class VaultEntryGate {
 }
 ```
 
-> `VaultSync.recoverFromRemote` 由 Task 13 实现。本任务先写好调用点——Task 7 与 Task 13 之间存在这一处前向依赖，中间的任务不影响编译（`vault_sync.dart` 在 Task 13 创建），因此执行顺序上 Task 7 完成后到 Task 13 完成前，`vault_entry_gate.dart` 无法编译通过。执行者可先在 Task 7 里创建一个只含 `recoverFromRemote` 桩（`return false;`）的 `vault_sync.dart`，Task 13 再填充完整实现。
+> `VaultSync.recoverFromRemote` / `VaultSync.pullIfNewer` / `VaultSync.hasRemoteBackup` 由 Task 14 实现。本任务先写好调用点——Task 10 与 Task 14 之间存在这一处前向依赖。执行者在本任务提交时创建一个只含三个桩的 `vault_sync.dart`（`recoverFromRemote → false`、`pullIfNewer → async {}`、`hasRemoteBackup → false`），Task 14 再填充完整实现。
 
 - [ ] **Step 4: 运行确认通过**
 
 Run: `flutter test test/features/vault/vault_entry_gate_test.dart`
-Expected: PASS（14 个测试全绿）。
+Expected: PASS（15 个测试全绿）。
 
 - [ ] **Step 5: 接进 home_view.dart —— 只走 buildResults**
 
@@ -2311,7 +2386,8 @@ class _SearchResults extends StatefulWidget {
 
     // 只在回车提交时判定口令——逐键输入路径绝不触发，否则每按一个键
     // 都可能跑一次 32MB Argon2id（卡顿 + 时间侧信道）。
-    if (widget.submitted && mounted) {
+    // kVaultEnabled 是编译期常量：公版构建此分支连同 vault 代码一起被 tree-shake。
+    if (kVaultEnabled && widget.submitted && mounted) {
       final handled = await VaultEntryGate.handle(context, q);
       if (handled) return;
     }
@@ -2468,19 +2544,14 @@ import 'package:uuid/uuid.dart' show Uuid;
 import '../../data/models/vault_entry.dart';
 ```
 
-在 `_VaultEditorPageState` 内加状态与方法（沿用 `memo_editor_page.dart:675-701` 和 `:860-898` 的调用方式，改为写入内存而非上传/本地文件）：
+在 `_VaultEditorPageState` 内**增量**加状态与方法（沿用 `memo_editor_page.dart:675-701` 和 `:860-898` 的调用方式，改为写入内存而非上传/本地文件）。**不要整段替换 Task 8 的 `dispose`**——下面这个 `dispose` 只是示意，实际实现要在 Task 8 已有 dispose（移除 observer、移除 listener、释放 controller）的基础上追加 `_recorder.dispose()`，丢了任何一步都会泄漏监听器或让后台自动保存继续触发。
 
 ```dart
   final List<VaultAttachment> _pendingAttachments = [];
   final AudioRecorder _recorder = AudioRecorder();
   bool _recording = false;
 
-  @override
-  void dispose() {
-    _recorder.dispose();
-    _controller.dispose();
-    super.dispose();
-  }
+  // 在 Task 8 的 dispose 里追加：_recorder.dispose();
 
   Future<void> _pickImage() async {
     final picker = ImagePicker();
@@ -2492,6 +2563,11 @@ import '../../data/models/vault_entry.dart';
     );
     if (photo == null) return;
     final bytes = await File(photo.path).readAsBytes();
+    // image_picker 会先在应用缓存/临时目录落一份明文副本，读入内存后立即删除，
+    // 否则这份明文会一直留在缓存里。
+    try {
+      await File(photo.path).delete();
+    } catch (_) {}
     setState(() {
       _pendingAttachments.add(
         VaultAttachment(id: const Uuid().v4(), mimeType: 'image/jpeg', bytes: bytes),
@@ -2507,7 +2583,12 @@ import '../../data/models/vault_entry.dart';
       final file = File(path);
       if (!file.existsSync()) return;
       final bytes = await file.readAsBytes();
-      await file.delete(); // 录音包必须先落盘（record 包限制），读入内存后立即删除临时文件
+      // 录音包必须先落盘（record 包限制），读入内存后文件与所在临时目录都要删。
+      await file.delete();
+      final parent = file.parent;
+      try {
+        if (await parent.exists()) await parent.delete(recursive: true);
+      } catch (_) {}
       setState(() {
         _pendingAttachments.add(
           VaultAttachment(id: const Uuid().v4(), mimeType: 'audio/aac', bytes: bytes),
@@ -2524,50 +2605,54 @@ import '../../data/models/vault_entry.dart';
   }
 ```
 
-`_save()` 改为在保存 entry 前，把 `_pendingAttachments` 逐个写入 `VaultController.instance`（需要 Task 6 补一个方法）并把 id 汇总进 `entry.attachmentIds`：
+`_persist()`（后台自动保存）和 `_save()`（手动保存）**必须共用同一个组装逻辑**：先落 pending 附件，再复用 `_workingId`/`_workingCreatedAt` 组装 entry。否则会出现两个已知回归：自动保存不写附件；自动保存后回来点保存又生成一个新 id、同一条日记变两条。
 
 ```dart
+  Future<void> _persistPendingAttachments() async {
+    for (final a in _pendingAttachments) {
+      await VaultController.instance.addAttachment(a);
+    }
+  }
+
+  List<String> _mergedAttachmentIds() => [
+    ...?widget.existing?.attachmentIds,
+    ..._pendingAttachments.map((a) => a.id),
+  ];
+
+  /// Task 8 的 _persist 改为：先落附件，再组装（新建条目继续用 _workingId/_workingCreatedAt）。
+  Future<void> _persist() async {
+    await _persistPendingAttachments();
+    final now = DateTime.now();
+    final existing = widget.existing;
+    final entry = existing != null
+        ? (existing
+            ..content = _controller.text
+            ..attachmentIds = _mergedAttachmentIds())
+        : VaultEntry(
+            id: _workingId ??= const Uuid().v4(),
+            content: _controller.text,
+            createdAt: _workingCreatedAt ??= now,
+            updatedAt: now,
+            tags: const [],
+            attachmentIds: _mergedAttachmentIds(),
+          );
+    await VaultController.instance.saveEntry(entry);
+  }
+
   Future<void> _save() async {
     if (_controller.text.trim().isEmpty && _pendingAttachments.isEmpty) {
       Navigator.of(context).pop();
       return;
     }
     setState(() => _saving = true);
-    for (final a in _pendingAttachments) {
-      await VaultController.instance.addAttachment(a);
-    }
-    final now = DateTime.now();
-    final attachmentIds = [
-      ...?widget.existing?.attachmentIds,
-      ..._pendingAttachments.map((a) => a.id),
-    ];
-    final entry = widget.existing != null
-        ? (widget.existing!
-            ..content = _controller.text
-            ..attachmentIds = attachmentIds)
-        : VaultEntry(
-            id: const Uuid().v4(),
-            content: _controller.text,
-            createdAt: now,
-            updatedAt: now,
-            tags: const [],
-            attachmentIds: attachmentIds,
-          );
-    await VaultController.instance.saveEntry(entry);
+    await _persist();
     if (mounted) Navigator.of(context).pop();
   }
 ```
 
 在 UI 里的 `AppBar.actions` 加两个按钮触发 `_pickImage` / `_toggleRecording`（拍照按钮同理可加 `ImageSource.camera`，此处不重复列出，与 `_pickImage` 写法一致，仅 `source` 参数不同）。
 
-在 `VaultController`（Task 7 的类）里补一个方法：
-
-```dart
-  Future<void> addAttachment(VaultAttachment attachment) =>
-      _storage.addAttachment(attachment);
-```
-
-（记得在 `vault_controller.dart` 顶部加 `import '../../data/models/vault_entry.dart';` 若尚未导入。）
+`VaultController.addAttachment` 在 Task 7 已经定义，本任务直接使用即可，不需要再补方法。
 
 - [ ] **Step 6: 图片查看走内存**
 
@@ -2731,7 +2816,7 @@ git commit -m "feat: API 补齐硬删除参数、按 memo 列附件、下载附�
 **Interfaces:**
 - Consumes: `DatabaseService`（现有）、`AttachmentService`（现有）、`MemosApiService`（Task 11）、`VaultController`（Task 6）
 - Produces:
-  - `enum VaultMigrationResult { ok, blockedPendingSync, failed }`
+  - `enum VaultMigrationResult { ok, blockedPendingSync, blockedConflict, failed }`
   - `Future<VaultMigrationResult> VaultMigration.moveIntoVault(MemoEntry memo)`
   - `Future<VaultMigrationResult> VaultMigration.moveOutOfVault(VaultEntry entry)`
 
@@ -2782,7 +2867,7 @@ import '../settings/settings_service.dart';
 import '../sync/sync_service.dart';
 import 'vault_controller.dart';
 
-enum VaultMigrationResult { ok, blockedPendingSync, failed }
+enum VaultMigrationResult { ok, blockedPendingSync, blockedConflict, failed }
 
 /// 普通日记 ⇄ 隐私空间之间的移入/移出。
 class VaultMigration {
@@ -2799,6 +2884,10 @@ class VaultMigration {
     if (memo.syncStatus == SyncStatus.pending) {
       return VaultMigrationResult.blockedPendingSync;
     }
+    if (memo.syncStatus == SyncStatus.conflict) {
+      // 冲突条目的远端版本会被 hard delete 丢弃，等于替用户做了不可逆决定。
+      return VaultMigrationResult.blockedConflict;
+    }
     if (!VaultController.instance.isUnlocked) {
       return VaultMigrationResult.failed;
     }
@@ -2806,86 +2895,113 @@ class VaultMigration {
   }
 
   static Future<VaultMigrationResult> _moveIntoVaultLocked(MemoEntry memo) async {
-    final url = await SettingsService.serverUrl;
-    final token = await SettingsService.accessToken;
-    final api = (url != null && url.isNotEmpty && token != null && token.isNotEmpty)
-        ? MemosApiService(baseUrl: url, token: token)
-        : null;
+    try {
+      final url = await SettingsService.serverUrl;
+      final token = await SettingsService.accessToken;
+      final configured = url != null && url.isNotEmpty &&
+          token != null && token.isNotEmpty;
+      final api = configured
+          ? MemosApiService(baseUrl: url!, token: token!)
+          : null;
 
-    // ── 1. 收集附件字节，写进 vault ──
-    //
-    // 任何一个附件取不到字节就中止整个移入。不能 continue 跳过——那是把
-    // "移入"变成"移入并静默丢掉几张照片"，和移出销毁附件是同一类数据丢失。
-    final attachmentIds = <String>[];
-    final resolved = <AttachmentInfo>[];
-    for (final att in memo.attachments) {
-      var local = att;
-      final missing =
-          local.localPath == null || !File(local.localPath!).existsSync();
-      if (missing && url != null && token != null) {
-        local = await AttachmentService.downloadToLocal(att, url, token);
-      }
-      if (local.localPath == null || !File(local.localPath!).existsSync()) {
-        debugPrint('[VaultMigration] 附件字节取不到，中止移入：${local.filename}');
-        // 已写进 vault 的附件回滚掉，避免留下孤儿字节占空间
-        for (final id in attachmentIds) {
-          await VaultController.instance.storage.removeAttachment(id);
-        }
+      // 已同步到远端的条目，服务器必须可用——否则单方面删本地等于本地藏起来、
+      // 远端明文还在，违背移入的本意。
+      if (memo.memosName != null && api == null) {
+        debugPrint('[VaultMigration] 已同步条目但服务器未配置，中止移入');
         return VaultMigrationResult.failed;
       }
-      final bytes = await File(local.localPath!).readAsBytes();
-      final id = const Uuid().v4();
-      await VaultController.instance.addAttachment(
-        VaultAttachment(id: id, mimeType: local.mimeType, bytes: bytes),
+
+      // ── 1. 收集附件字节，写进 vault ──
+      final attachmentIds = <String>[];
+      final resolved = <AttachmentInfo>[];
+      for (final att in memo.attachments) {
+        var local = att;
+        final missing =
+            local.localPath == null || !File(local.localPath!).existsSync();
+        if (missing && api != null) {
+          local = await AttachmentService.downloadToLocal(att, url!, token!);
+        }
+        if (local.localPath == null || !File(local.localPath!).existsSync()) {
+          debugPrint('[VaultMigration] 附件字节取不到，中止移入：${local.filename}');
+          for (final id in attachmentIds) {
+            await VaultController.instance.storage.removeAttachment(id);
+          }
+          return VaultMigrationResult.failed;
+        }
+        final bytes = await File(local.localPath!).readAsBytes();
+        final id = const Uuid().v4();
+        await VaultController.instance.addAttachment(
+          VaultAttachment(id: id, mimeType: local.mimeType, bytes: bytes),
+        );
+        attachmentIds.add(id);
+        resolved.add(local);
+      }
+
+      final entry = VaultEntry(
+        id: const Uuid().v4(),
+        content: memo.content,
+        createdAt: memo.createdAt,
+        updatedAt: DateTime.now(),
+        tags: const [],
+        attachmentIds: attachmentIds,
+        movedFromMemosName: memo.memosName,
       );
-      attachmentIds.add(id);
-      resolved.add(local);
-    }
+      await VaultController.instance.saveEntry(entry);
 
-    final entry = VaultEntry(
-      id: const Uuid().v4(),
-      content: memo.content,
-      createdAt: memo.createdAt,
-      updatedAt: DateTime.now(),
-      tags: const [],
-      attachmentIds: attachmentIds,
-      movedFromMemosName: memo.memosName,
-    );
-    await VaultController.instance.saveEntry(entry);
-
-    // ── 2. 远端硬删除（memo + 附件资源） ──
-    if (api != null && memo.memosName != null) {
-      try {
+      // ── 2. 远端硬删除 ──
+      // 顺序：先删 memo（spec §11 的 hard=true 已级联附件），404 视为已删；
+      // 再对旧附件资源做 best-effort 清理。反过来（先删附件再删 memo）时，
+      // memo 删除失败会留下一条没有附件的半残记录。
+      if (api != null && memo.memosName != null) {
+        try {
+          await api.deleteMemo(memo.memosName!, hard: true);
+        } catch (e) {
+          if (!_isNotFound(e)) {
+            debugPrint('[VaultMigration] 远端 memo 删除失败：$e');
+            return VaultMigrationResult.failed;
+          }
+          debugPrint('[VaultMigration] 远端 memo 已不存在（404），按已删除继续');
+        }
         for (final att in memo.attachments) {
-          if (att.remoteResName != null) {
+          if (att.remoteResName == null) continue;
+          try {
             await api.deleteAttachment(att.remoteResName!);
+          } catch (e) {
+            debugPrint('[VaultMigration] 远端附件清理失败（忽略）：$e');
           }
         }
-        await api.deleteMemo(memo.memosName!, hard: true);
-      } catch (e) {
-        debugPrint('[VaultMigration] 远端删除失败：$e');
-        return VaultMigrationResult.failed;
       }
-    }
 
-    // ── 3. 本地级联清理 ──
-    // 3a. 附件明文文件（含刚下载的副本）
-    for (final att in resolved) {
-      if (att.localPath != null) {
-        await AttachmentService.deleteLocal(att.localPath!);
+      // ── 3. 本地级联清理 ──
+      // 3a. 附件明文文件（含刚下载的副本）
+      for (final att in resolved) {
+        if (att.localPath != null) {
+          await AttachmentService.deleteLocal(att.localPath!);
+        }
       }
-    }
-    // 3b. 评论——否则 CommentEntry 仍持明文且能被主库搜索命中
-    final comments = await DatabaseService.getCommentsByMemoId(memo.id);
-    for (final c in comments) {
-      await DatabaseService.hardDeleteComment(c.id);
-    }
-    // 3c. 事件串成员引用——softDelete 做了这步，hardDelete 没做
-    await DatabaseService.removeMemoFromAllThreads(memo.id);
-    // 3d. 最后删 memo 本体
-    await DatabaseService.hardDelete(memo.id);
+      // 3b. 评论
+      final comments = await DatabaseService.getCommentsByMemoId(memo.id);
+      for (final c in comments) {
+        await DatabaseService.hardDeleteComment(c.id);
+      }
+      // 3c. 事件串成员引用
+      await DatabaseService.removeMemoFromAllThreads(memo.id);
+      // 3d. TagStat 缓存重算——主页抽屉优先读缓存，残留标签名会泄漏
+      final counts = await DatabaseService.getAllTagCounts();
+      await DatabaseService.saveTagStats(counts);
+      // 3e. 最后删 memo 本体
+      await DatabaseService.hardDelete(memo.id);
 
-    return VaultMigrationResult.ok;
+      return VaultMigrationResult.ok;
+    } catch (e) {
+      debugPrint('[VaultMigration] 移入失败：$e');
+      return VaultMigrationResult.failed;
+    }
+  }
+
+  static bool _isNotFound(Object e) {
+    final text = e.toString();
+    return text.contains('404') || text.contains('not found');
   }
 
   /// vault → 普通日记。附件字节完整还原，不静默销毁。
@@ -2894,48 +3010,53 @@ class VaultMigration {
       return VaultMigrationResult.failed;
     }
 
-    // ── 1. 附件先还原成正常附件（经临时文件过渡给 AttachmentService） ──
-    final restored = <AttachmentInfo>[];
-    Directory? tmpDir;
     try {
-      for (final attId in entry.attachmentIds) {
-        final bytes = VaultController.instance.attachmentBytes(attId);
-        final mime = VaultController.instance.attachmentMimeType(attId);
-        if (bytes == null) continue;
+      // ── 1. 附件先还原成正常附件（经临时文件过渡给 AttachmentService） ──
+      final restored = <AttachmentInfo>[];
+      Directory? tmpDir;
+      try {
+        for (final attId in entry.attachmentIds) {
+          final bytes = VaultController.instance.attachmentBytes(attId);
+          final mime = VaultController.instance.attachmentMimeType(attId);
+          // 与移入同一原则：条目引用的附件字节缺失就整体中止，不能 continue
+          // 跳过——那会静默丢掉附件。
+          if (bytes == null) {
+            throw StateError('vault 附件字节缺失：$attId');
+          }
 
-        tmpDir ??= await Directory.systemTemp.createTemp('vault_out_');
-        final ext = _extensionFor(mime ?? 'application/octet-stream');
-        final tmpFile = File(p.join(tmpDir.path, '$attId$ext'));
-        await tmpFile.writeAsBytes(bytes, flush: true);
+          tmpDir ??= await Directory.systemTemp.createTemp('vault_out_');
+          final ext = _extensionFor(mime ?? 'application/octet-stream');
+          final tmpFile = File(p.join(tmpDir.path, '$attId$ext'));
+          await tmpFile.writeAsBytes(bytes, flush: true);
 
-        restored.add(
-          await AttachmentService.saveLocally(
-            tmpFile,
-            filename: '$attId$ext',
-            compress: false, // 已经是最终字节，不再压一次
-          ),
-        );
+          restored.add(
+            await AttachmentService.saveLocally(
+              tmpFile,
+              filename: '$attId$ext',
+              compress: false, // 已经是最终字节，不再压一次
+            ),
+          );
+        }
+      } finally {
+        // 临时明文文件用完立刻删
+        await tmpDir?.delete(recursive: true);
       }
+
+      // ── 2. 建主库条目 ──
+      final memo = MemoEntry()
+        ..content = entry.content
+        ..createdAt = entry.createdAt
+        ..updatedAt = DateTime.now()
+        ..attachments = restored;
+      await DatabaseService.saveMemo(memo);
+
+      // ── 3. 全部成功后才从 vault 移除 ──
+      await VaultController.instance.deleteEntry(entry.id);
+      return VaultMigrationResult.ok;
     } catch (e) {
-      debugPrint('[VaultMigration] 附件还原失败，中止移出：$e');
-      await tmpDir?.delete(recursive: true);
+      debugPrint('[VaultMigration] 移出失败：$e');
       return VaultMigrationResult.failed;
-    } finally {
-      // 临时明文文件用完立刻删
-      await tmpDir?.delete(recursive: true);
     }
-
-    // ── 2. 建主库条目 ──
-    final memo = MemoEntry()
-      ..content = entry.content
-      ..createdAt = entry.createdAt
-      ..updatedAt = DateTime.now()
-      ..attachments = restored;
-    await DatabaseService.saveMemo(memo);
-
-    // ── 3. 全部成功后才从 vault 移除 ──
-    await VaultController.instance.deleteEntry(entry.id);
-    return VaultMigrationResult.ok;
   }
 
   static String _extensionFor(String mime) => switch (mime) {
@@ -2991,6 +3112,10 @@ class VaultMigration {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('这条日记还有未同步的改动，请先完成同步')),
                           );
+                        case VaultMigrationResult.blockedConflict:
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('这条日记有冲突，请先在冲突页处理')),
+                          );
                         case VaultMigrationResult.failed:
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('移入失败，请稍后重试')),
@@ -3040,6 +3165,7 @@ git commit -m "feat: 隐私空间移入/移出，含级联清理与同步队列�
   - `Future<void> VaultSync.flushPush()` — 立即推送待推的改动（锁定/进后台时调用）
   - `Future<void> VaultSync.pullIfNewer()`
   - `Future<bool> VaultSync.recoverFromRemote(String passphrase)`
+  - `Future<bool> VaultSync.hasRemoteBackup()` — 供 Task 10 创建前防覆盖检查
   - `bool VaultSync.isBackupMemoContent(String content)` — 供 `_applyRemoteMemo` 过滤
   - `SyncService._applyRemoteMemo` 新增过滤
 
@@ -3073,22 +3199,42 @@ v1 不支持多设备并行编辑。`revision`（Task 4 的 `VaultBody` 字段�
 
 **换机恢复为什么能成立**：MK 是随机生成的、属于 vault 而非设备，keyslot 跟着 `idx.bin` 走（Task 6 的文件格式）。新设备只要拿到远端的 `idx.dat`，用同一口令就能解开——**前提是它不能先自己 `createVault`**（那会生成一把无关的新 MK）。这就是恢复要走独立 `?` 前缀、而不是"解锁失败后自动尝试"的原因：后者会让无 vault 设备上每次长搜索失败都触发一次远端全量列表拉取，既慢又在网络层可观察。
 
-- [ ] **Step 1: SettingsService 加中性命名的资源指针**
+- [ ] **Step 1: SettingsService 加中性命名的资源指针（按服务器隔离）**
 
 在 `lib/services/settings/settings_service.dart` 的 Draft 段附近加：
 
 ```dart
   static const _keyEncBackupMemoName = 'enc_backup_memo_name';
 
-  static Future<String?> get encBackupMemoName async =>
-      (await _prefs).getString(_keyEncBackupMemoName);
+  /// 按 serverUrl 隔离的备份 memo 指针。换服务器/换账号后不会拿着旧 id 去 404。
+  static Future<String?> encBackupMemoNameFor(String serverUrl) async {
+    final raw = (await _prefs).getString(_keyEncBackupMemoName);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      return map[serverUrl] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
 
-  static Future<void> setEncBackupMemoName(String name) async {
-    await (await _prefs).setString(_keyEncBackupMemoName, name);
+  static Future<void> setEncBackupMemoName(
+    String serverUrl,
+    String memoName,
+  ) async {
+    final raw = (await _prefs).getString(_keyEncBackupMemoName);
+    final map = <String, dynamic>{};
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        map.addAll(Map<String, dynamic>.from(jsonDecode(raw) as Map));
+      } catch (_) {}
+    }
+    map[serverUrl] = memoName;
+    await (await _prefs).setString(_keyEncBackupMemoName, jsonEncode(map));
   }
 ```
 
-key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPreferences 的 key 名在系统备份导出的 XML/plist 里明文可读，`vault` 这个词本身就是线索。它存的只是资源指针，不含秘密，与"加密云备份"的封面故事一致。
+需要 `import 'dart:convert';`。key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPreferences 的 key 名在系统备份导出的 XML/plist 里明文可读，`vault` 这个词本身就是线索。它存的只是资源指针，不含秘密，与"加密云备份"的封面故事一致。
 
 - [ ] **Step 2: MemosApiService 加 setMemoAttachments**
 
@@ -3129,7 +3275,10 @@ key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPre
     String baseUrl, {
     required bool archived,
   }) async {
-    if (VaultSync.isBackupMemoContent(data['content'] as String? ?? '')) {
+    // 必须包在 kVaultEnabled 里：公版既不含 vault 代码也不含模板字符串，
+    // 备份 memo 在公版时间线上作为普通备忘录显示（封面故事的一部分）。
+    if (kVaultEnabled &&
+        VaultSync.isBackupMemoContent(data['content'] as String? ?? '')) {
       return 0; // 隐私空间的封面备份 memo：不写入主库、不渲染
     }
 
@@ -3137,9 +3286,9 @@ key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPre
     // ...（原有逻辑不变）
 ```
 
-顶部加 `import '../vault/vault_sync.dart';`。
+顶部加 `import '../vault/vault_sync.dart';` 和 `import '../../shared/constants/build_flags.dart';`。
 
-> 这段过滤本身不需要 `kVaultEnabled` 判断：公版编译时 `vault_sync.dart` 里除 `contentHeader`/`isBackupMemoContent` 外都会被 tree-shake；即使这行留着，公版最多是不显示那条备忘录，不会暴露任何东西。若希望公版连这个字符串都不含，把这段也包进 `if (kVaultEnabled)`——公版就会把它当普通备忘录显示出来，效果同样可接受。二选一，实现时取前者（更少的公版行为差异）。
+> 不要再采用"过滤不 gate"的选项：那会让公版 APK 残留 `📦 加密备份` 字符串（与 Task 2、全量验收直接冲突），同时公版又静默吞掉这条 memo，与"公版把它当普通备忘录显示"的封面故事自相矛盾。
 
 - [ ] **Step 4: 实现 VaultSync**
 
@@ -3168,8 +3317,13 @@ class VaultSync {
   static const _indexFilename = 'idx.dat';
   static const _packFilename = 'atc.dat';
 
-  static bool isBackupMemoContent(String content) =>
-      content.startsWith(contentHeader);
+  static bool isBackupMemoContent(String content) {
+    final lines = content.split('\n');
+    // 只匹配首行会误伤用户自己写的同开头 memo；封面模板固定为两行。
+    return lines.length >= 2 &&
+        lines[0] == contentHeader &&
+        lines[1].startsWith('更新于 ');
+  }
 
   static String _buildContent() {
     final now = DateTime.now();
@@ -3178,13 +3332,15 @@ class VaultSync {
         '${two(now.hour)}:${two(now.minute)}';
   }
 
-  static Future<MemosApiService?> _api() async {
+  /// 返回 (规范化 serverUrl, api)；未配置返回 null。指针按 serverUrl 隔离，
+  /// 所以调用方必须同时拿到两者。
+  static Future<(String, MemosApiService)?> _apiAndUrl() async {
     final url = await SettingsService.serverUrl;
     final token = await SettingsService.accessToken;
     if (url == null || url.isEmpty || token == null || token.isEmpty) {
       return null;
     }
-    return MemosApiService(baseUrl: url, token: token);
+    return (url, MemosApiService(baseUrl: url, token: token));
   }
 
   // ── 推送（3 分钟防抖） ────────────────────────────────────────
@@ -3218,88 +3374,122 @@ class VaultSync {
   ///
   /// 刻意**不**检查 isUnlocked：推送只需要磁盘上的密文字节
   /// （readEncryptedIndexBytes 不碰主密钥），所以锁定之后依然能完成。
-  static Future<void> flushPush() async {
+  /// 单飞行队列：同一时刻最多一个 _doPush 在途；期间新的 flush 请求排队在
+  /// 后面（并用当时最新的 _pendingRevision 重查一次）。两个并发 push 的
+  /// 上传/关联/删旧序列会交错，旧附件集合可能覆盖新集合。
+  static Future<void>? _pushInFlight;
+
+  static Future<void> flushPush() {
     _pushTimer?.cancel();
     _pushTimer = null;
-    if (_pendingRevision < 0 || _pendingRevision == _lastPushedRevision) return;
+    final inFlight = _pushInFlight;
+    if (inFlight != null) {
+      // 已有 push 在途：等它结束后再跑一次，pick up 期间新到的 revision。
+      return inFlight.then((_) => flushPush());
+    }
+    if (_pendingRevision < 0 || _pendingRevision == _lastPushedRevision) {
+      return Future<void>.value();
+    }
     final target = _pendingRevision;
-    try {
-      await _doPush();
+    final future = _doPush();
+    _pushInFlight = future;
+    return future.then((_) {
+      _pushInFlight = null;
       _lastPushedRevision = target;
-    } catch (e) {
+    }).catchError((Object e) {
+      _pushInFlight = null;
       // 不推进 _lastPushedRevision，下次 flush 仍会重试这次改动
       debugPrint('[VaultSync] flushPush 失败，保留待推状态：$e');
-    }
+    }).whenComplete(() {
+      // 等待期间又 schedule 过新 revision：再推一次。
+      if (_pendingRevision >= 0 && _pendingRevision != _lastPushedRevision) {
+        unawaited(flushPush());
+      }
+    });
   }
 
   static Future<void> _doPush() async {
-    final api = await _api();
-    if (api == null) return;
+    final auth = await _apiAndUrl();
+    if (auth == null) return;
+    final (serverUrl, api) = auth;
 
     final storage = VaultController.instance.storage;
     final idxBytes = await storage.readEncryptedIndexBytes();
     if (idxBytes == null) return;
     final atcBytes = await storage.readEncryptedAttachmentBytes();
+    if (atcBytes == null) {
+      // atc.bin 自 createVault 起就存在；缺失说明本地状态异常，不能
+      // 只推 idx 并删掉远端 atc（那会丢掉整包附件）。
+      debugPrint('[VaultSync] atc.bin 缺失，跳过 push');
+      return;
+    }
 
-    try {
-      var memoName = await SettingsService.encBackupMemoName;
+    var memoName = await SettingsService.encBackupMemoNameFor(serverUrl);
+    if (memoName != null && !await _memoExists(api, memoName)) {
+      // 指针失效（换机/被删）：清除后走"扫描复用或新建"。
+      memoName = await _findExistingBackupMemo(api);
+      if (memoName == null) {
+        memoName = null;
+      }
+    }
 
-      // 记下旧附件，等新的关联成功后再删，避免中途失败把唯一副本删掉
-      final oldAttachmentNames = <String>[];
-      if (memoName != null) {
+    // 记下旧附件，等新的关联成功后再删，避免中途失败把唯一副本删掉
+    final oldAttachmentNames = <String>[];
+    if (memoName != null) {
+      try {
         final existing = await api.listMemoAttachments(memoName.split('/').last);
         oldAttachmentNames.addAll(existing.map((a) => a['name'] as String));
+      } catch (e) {
+        debugPrint('[VaultSync] 列旧附件失败（继续）：$e');
       }
+    } else {
+      final found = await _findExistingBackupMemo(api);
+      memoName = found;
+    }
 
-      if (memoName == null) {
-        final created = await api.createMemo(
-          content: _buildContent(),
-          visibility: 'PRIVATE',
-        );
-        memoName = created['name'] as String;
-        await SettingsService.setEncBackupMemoName(memoName);
-      }
-
-      // 上传新密文附件
-      final newNames = <String>[];
-      newNames.add(await _uploadBlob(api, memoName, _indexFilename, idxBytes));
-      if (atcBytes != null) {
-        newNames.add(await _uploadBlob(api, memoName, _packFilename, atcBytes));
-      }
-
-      // 全量替换关联（updateMemo 的默认行为会解绑，必须走这个接口）
-      await api.setMemoAttachments(
-        memoName: memoName,
-        attachmentNames: newNames,
-      );
-
-      // 正文时间戳更新时必须显式带上当前附件名，否则又会被解绑
-      await api.updateMemo(
-        name: memoName,
+    if (memoName == null) {
+      final created = await api.createMemo(
         content: _buildContent(),
         visibility: 'PRIVATE',
-        attachmentNames: newNames,
       );
+      memoName = created['name'] as String;
+    }
 
-      // 新的关联稳了，再删旧资源，避免孤儿文件无限积累
-      for (final old in oldAttachmentNames) {
-        if (newNames.contains(old)) continue;
-        try {
-          await api.deleteAttachment(old);
-        } catch (e) {
-          debugPrint('[VaultSync] 旧附件删除失败（忽略）：$old $e');
-        }
+    // 上传新密文附件——不传 memoName：上传即自动关联会形成"新+旧并存"
+    // 的中间态，崩溃后恢复下载按文件名取第一个可能拿到旧副本。
+    final newNames = <String>[];
+    newNames.add(await _uploadBlob(api, _indexFilename, idxBytes));
+    newNames.add(await _uploadBlob(api, _packFilename, atcBytes));
+
+    // 全量替换关联（updateMemo 的默认行为会解绑，必须走这个接口）
+    await api.setMemoAttachments(
+      memoName: memoName,
+      attachmentNames: newNames,
+    );
+
+    // 正文时间戳更新时必须显式带上当前附件名，否则又会被解绑
+    await api.updateMemo(
+      name: memoName,
+      content: _buildContent(),
+      visibility: 'PRIVATE',
+      attachmentNames: newNames,
+    );
+
+    await SettingsService.setEncBackupMemoName(serverUrl, memoName);
+
+    // 新的关联稳了，再删旧资源，避免孤儿文件无限积累
+    for (final old in oldAttachmentNames) {
+      if (newNames.contains(old)) continue;
+      try {
+        await api.deleteAttachment(old);
+      } catch (e) {
+        debugPrint('[VaultSync] 旧附件删除失败（忽略）：$old $e');
       }
-    } catch (e) {
-      debugPrint('[VaultSync] push 失败：$e');
-      // 失败时不推进 _lastPushedRevision（由 flushPush 负责），下次还会重试
-      rethrow;
     }
   }
 
   static Future<String> _uploadBlob(
     MemosApiService api,
-    String memoName,
     String filename,
     Uint8List bytes,
   ) async {
@@ -3310,7 +3500,7 @@ class VaultSync {
       final res = await api.uploadAttachment(
         file: tmpFile,
         filename: filename,
-        memoName: memoName,
+        // 故意不传 memoName，见 _doPush 注释。
       );
       return res['name'] as String;
     } finally {
@@ -3318,13 +3508,43 @@ class VaultSync {
     }
   }
 
+  static Future<bool> _memoExists(MemosApiService api, String memoName) async {
+    try {
+      await api.listMemoAttachments(memoName.split('/').last);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<String?> _findExistingBackupMemo(MemosApiService api) async {
+    try {
+      final memos = await api.listAllMemos();
+      for (final m in memos) {
+        if (isBackupMemoContent(m['content'] as String? ?? '')) {
+          return m['name'] as String?;
+        }
+      }
+    } catch (e) {
+      debugPrint('[VaultSync] 扫描备份 memo 失败：$e');
+    }
+    return null;
+  }
+
+  static Future<bool> hasRemoteBackup() async {
+    final auth = await _apiAndUrl();
+    if (auth == null) return false;
+    return await _findExistingBackupMemo(auth.$2) != null;
+  }
+
   // ── 拉取（本机已有 vault，解锁后比对 revision） ──────────────
 
   static Future<void> pullIfNewer() async {
     if (!VaultController.instance.isUnlocked) return;
-    final api = await _api();
-    if (api == null) return;
-    final memoName = await SettingsService.encBackupMemoName;
+    final auth = await _apiAndUrl();
+    if (auth == null) return;
+    final (serverUrl, api) = auth;
+    final memoName = await SettingsService.encBackupMemoNameFor(serverUrl);
     if (memoName == null) return;
 
     try {
@@ -3344,12 +3564,15 @@ class VaultSync {
         return;
       }
 
-      // 内部先验证后落盘
-      final ok = await storage.adoptRemoteIndexWithCurrentKey(idxBytes);
-      if (!ok) return;
-
+      // 两份文件都下载并验证后才提交；adoptRemotePairWithCurrentKey 内部
+      // 先写 atc 再写 idx，atc 失败不会推进 revision，保留重试机会。
       final atcBytes = await _downloadBlob(api, memoName, _packFilename);
-      if (atcBytes != null) await storage.adoptRemoteAttachments(atcBytes);
+      if (atcBytes == null) {
+        debugPrint('[VaultSync] 远端 atc.dat 缺失，不推进 idx，保留重试机会');
+        return;
+      }
+      final ok = await storage.adoptRemotePairWithCurrentKey(idxBytes, atcBytes);
+      if (!ok) return;
     } catch (e) {
       debugPrint('[VaultSync] pullIfNewer 失败：$e');
     }
@@ -3362,33 +3585,29 @@ class VaultSync {
   /// 任何一步失败都静默返回 false，不落盘、不提示——行为与普通搜索失败一致。
   static Future<bool> recoverFromRemote(String passphrase) async {
     if (VaultController.instance.isUnlocked) return false;
-    final api = await _api();
-    if (api == null) return false;
+    final auth = await _apiAndUrl();
+    if (auth == null) return false;
+    final (serverUrl, api) = auth;
 
     try {
-      final memos = await api.listAllMemos();
-      final backup = memos
-          .where((m) => isBackupMemoContent(m['content'] as String? ?? ''))
-          .firstOrNull;
-      if (backup == null) return false;
+      final memoName = await _findExistingBackupMemo(api);
+      if (memoName == null) return false;
 
-      final memoName = backup['name'] as String;
       final idxBytes = await _downloadBlob(api, memoName, _indexFilename);
       if (idxBytes == null) return false;
+      // atc 缺失或验证失败必须整体失败：一旦先落地 idx，本地 vault 就存在了，
+      // `?` 前缀失效且 revision 已推进，附件包永远不会再被重试。
+      final atcBytes = await _downloadBlob(api, memoName, _packFilename);
+      if (atcBytes == null) return false;
 
-      // 内存中验证口令，成功才落盘
-      final ok = await VaultController.instance.adoptRemoteIndex(
+      final ok = await VaultController.instance.adoptRemotePair(
         idxBytes,
+        atcBytes,
         passphrase,
       );
       if (!ok) return false;
 
-      await SettingsService.setEncBackupMemoName(memoName);
-
-      final atcBytes = await _downloadBlob(api, memoName, _packFilename);
-      if (atcBytes != null) {
-        await VaultController.instance.storage.adoptRemoteAttachments(atcBytes);
-      }
+      await SettingsService.setEncBackupMemoName(serverUrl, memoName);
       return true;
     } catch (e) {
       debugPrint('[VaultSync] recoverFromRemote 失败：$e');
@@ -3404,17 +3623,22 @@ class VaultSync {
     String filename,
   ) async {
     final attachments = await api.listMemoAttachments(memoName.split('/').last);
-    final target =
-        attachments.where((a) => a['filename'] == filename).firstOrNull;
+    Map<String, dynamic>? target;
+    for (final a in attachments) {
+      if (a['filename'] == filename) {
+        target = a;
+        break;
+      }
+    }
     if (target == null) return null;
     return api.downloadAttachmentBytes(target['name'] as String, filename);
   }
 }
 ```
 
-- [ ] **Step 5: VaultStorage 补两个 pullIfNewer 要用的方法**
+- [ ] **Step 5: VaultStorage 补同步要用的远端验证/提交方法**
 
-在 `lib/services/vault/vault_storage.dart` 里追加（复用已有的 `_atomicWrite`）：
+在 `lib/services/vault/vault_storage.dart` 里追加（复用已有的 `_atomicWrite`；Task 6 里已有的 `adoptRemoteIndex` / `adoptRemoteAttachments` 保留，供单测与内部复用）：
 
 ```dart
   /// 用当前会话的主密钥窥探远端 index 的 revision，不落盘、不改内存状态。
@@ -3431,45 +3655,98 @@ class VaultSync {
       if (plain == null) return null;
       final decoded = jsonDecode(utf8.decode(plain));
       if (decoded is! Map<String, dynamic>) return null;
-      return VaultBody.fromJson(decoded).revision;
+      final body = VaultBody.fromJson(decoded);
+      if (body.version != 1) return null;
+      return body.revision;
     } catch (_) {
       return null;
     }
   }
 
-  /// 已解锁状态下用远端 index 替换本地（先验证后落盘）。
-  /// 与 [adoptRemoteIndex] 的区别：这里用当前 MK，不需要重新输口令。
-  Future<bool> adoptRemoteIndexWithCurrentKey(Uint8List idxBytes) async {
+  /// 已解锁状态下整体采用远端 idx + atc（先验证，后提交）。
+  ///
+  /// 提交顺序：先 atc、后 idx（idx 是提交点）。任一文件在内存中验证失败就
+  /// 返回 false 且不落任何字节；如果先提交 idx 再拉 atc，atc 失败后 revision
+  /// 已经前进，之后永远不会重试，条目引用的附件字节就永久缺失。
+  Future<bool> adoptRemotePairWithCurrentKey(
+    Uint8List idxBytes,
+    Uint8List? atcBytes,
+  ) async {
     final mk = _masterKey;
     if (mk == null) return false;
     try {
-      if (idxBytes.length < _headerLength + _minBodyLength) return false;
-      final plain = await VaultCrypto.decryptBlob(
-        mk,
-        idxBytes.sublist(_headerLength),
-      );
-      if (plain == null) return false;
-      final decoded = jsonDecode(utf8.decode(plain));
-      if (decoded is! Map<String, dynamic>) return false;
-      final body = VaultBody.fromJson(decoded);
+      final idxPlain = await _decryptBodyForCurrentKey(idxBytes, mk);
+      if (idxPlain == null) return false;
+      final body = VaultBody.fromJson(idxPlain);
+      if (body.version != 1) return false;
+
+      List<VaultAttachment> attachments = _attachments;
+      if (atcBytes != null) {
+        final atcPlain = await VaultCrypto.decryptBlob(mk, atcBytes);
+        if (atcPlain == null) return false;
+        attachments = VaultContainerCodec.decodeAttachments(atcPlain);
+        await _atomicWrite(_atcFile, atcBytes);
+      }
 
       await _atomicWrite(_idxFile, idxBytes);
       _passwordSlot = idxBytes.sublist(0, _keyslotLength);
       _recoverySlot = idxBytes.sublist(_keyslotLength, _headerLength);
       _entries = body.entries;
       _revision = body.revision;
+      _attachments = attachments;
       return true;
     } catch (_) {
       return false;
     }
   }
+
+  /// 换机恢复：口令解 keyslot + 两份文件全部在内存验证通过后才落盘。
+  /// 同样先 atc 后 idx；atc 缺失/验证失败整体失败，不创建本地 vault——
+  /// 否则本地 vault 一存在，`?` 前缀失效且 revision 已推进，附件包再也不会重试。
+  Future<bool> adoptRemotePair(
+    Uint8List idxBytes,
+    Uint8List? atcBytes,
+    String passphrase,
+  ) async {
+    final loaded = await _tryLoadIndexFrom(idxBytes, passphrase);
+    if (loaded == null || atcBytes == null) return false;
+    try {
+      final atcPlain = await VaultCrypto.decryptBlob(loaded.mk, atcBytes);
+      if (atcPlain == null) return false;
+      final attachments = VaultContainerCodec.decodeAttachments(atcPlain);
+
+      if (!await dir.exists()) await dir.create(recursive: true);
+      await _atomicWrite(_atcFile, atcBytes);
+      await _atomicWrite(_idxFile, idxBytes);
+      _applyLoaded(loaded);
+      _attachments = attachments;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _decryptBodyForCurrentKey(
+    Uint8List idxBytes,
+    SecretKey mk,
+  ) async {
+    if (idxBytes.length < _headerLength + _minBodyLength) return null;
+    final plain = await VaultCrypto.decryptBlob(mk, idxBytes.sublist(_headerLength));
+    if (plain == null) return null;
+    final decoded = jsonDecode(utf8.decode(plain));
+    return decoded is Map<String, dynamic> ? decoded : null;
+  }
 ```
 
-在 `VaultController` 里加一个转发：
+在 `VaultController` 里加转发：
 
 ```dart
-  Future<bool> adoptRemoteIndex(Uint8List idxBytes, String passphrase) async {
-    final ok = await _storage.adoptRemoteIndex(idxBytes, passphrase);
+  Future<bool> adoptRemotePair(
+    Uint8List idxBytes,
+    Uint8List? atcBytes,
+    String passphrase,
+  ) async {
+    final ok = await _storage.adoptRemotePair(idxBytes, atcBytes, passphrase);
     if (ok) _isUnlocked.value = true;
     return ok;
   }
@@ -3487,11 +3764,7 @@ class VaultSync {
 
 注意传的是**当前 revision**，因为 `flushPush()` 可能在锁定之后才执行，那时已经读不到解密后的 revision 了。
 
-**解锁成功 → 拉取**（`tryUnlock` 成功分支）：
-
-```dart
-    unawaited(VaultSync.pullIfNewer());
-```
+**解锁成功 → 拉取**：`VaultController.tryUnlock` 里**不要**挂 unawaited pull——Task 10 的 `VaultEntryGate.handle` 在 `tryUnlock` 成功后、`_enterVault` 之前已经 `await VaultSync.pullIfNewer()`。unawaited 版本会让拉取与页面并发：页面展示旧 entries，远端替换内存后用户可能基于旧条目保存覆盖远端。
 
 **锁定 → 强制 flush**（`lock()` 开头，清状态之前）：
 
@@ -3543,7 +3816,7 @@ git commit -m "feat: 隐私空间同步与换机恢复，密文走附件、正�
 
 **Files:**
 - Create: `lib/services/vault/vault_screen_guard.dart`
-- Modify: `android/app/src/main/kotlin/.../MainActivity.kt`
+- Modify: `android/app/src/main/java/dyc/dev/isle_log/MainActivity.java`（本仓库 Android 侧是 **Java**，不是 Kotlin）
 - Modify: `ios/Runner/AppDelegate.swift`
 - Modify: `lib/features/vault/vault_page.dart`
 
@@ -3590,38 +3863,40 @@ class VaultScreenGuard {
 }
 ```
 
-- [ ] **Step 2: Android 侧**
+- [ ] **Step 2: Android 侧（Java）**
 
-在 `MainActivity.kt` 里（包名以实际文件为准）：
+在 `MainActivity.java` 里（保留原包名与类名，增加 `configureFlutterEngine` 覆盖；若已有覆盖则在其中追加 Channel 注册）：
 
-```kotlin
-import android.view.WindowManager
-import io.flutter.embedding.android.FlutterActivity
-import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
+```java
+import android.view.WindowManager;
+import io.flutter.embedding.android.FlutterActivity;
+import io.flutter.embedding.engine.FlutterEngine;
+import io.flutter.plugin.common.MethodChannel;
 
-class MainActivity : FlutterActivity() {
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
-        MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
+public class MainActivity extends FlutterActivity {
+    @Override
+    public void configureFlutterEngine(FlutterEngine flutterEngine) {
+        super.configureFlutterEngine(flutterEngine);
+        new MethodChannel(
+            flutterEngine.getDartExecutor().getBinaryMessenger(),
             "islelog/screen_guard"
-        ).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "enable" -> {
-                    window.setFlags(
+        ).setMethodCallHandler((call, result) -> {
+            switch (call.method) {
+                case "enable":
+                    getWindow().setFlags(
                         WindowManager.LayoutParams.FLAG_SECURE,
                         WindowManager.LayoutParams.FLAG_SECURE
-                    )
-                    result.success(null)
-                }
-                "disable" -> {
-                    window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-                    result.success(null)
-                }
-                else -> result.notImplemented()
+                    );
+                    result.success(null);
+                    break;
+                case "disable":
+                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+                    result.success(null);
+                    break;
+                default:
+                    result.notImplemented();
             }
-        }
+        });
     }
 }
 ```
@@ -3708,7 +3983,7 @@ import UIKit
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/services/vault/vault_screen_guard.dart lib/features/vault/vault_page.dart android/app/src/main/kotlin ios/Runner/AppDelegate.swift
+git add lib/services/vault/vault_screen_guard.dart lib/features/vault/vault_page.dart android/app/src/main/java/dyc/dev/isle_log/MainActivity.java ios/Runner/AppDelegate.swift
 git commit -m "feat: 隐私空间截屏与任务切换器防护"
 ```
 
@@ -3735,7 +4010,7 @@ git commit -m "feat: 隐私空间截屏与任务切换器防护"
   - `VaultMigrationResult` 在 Task 13 定义并在同任务的 UI 分支里穷举处理
   - `VaultSync.contentHeader` / `isBackupMemoContent` 是 public，Task 14 的 `sync_service.dart` 过滤直接调用，不重复硬编字符串
   - `VaultBody` 在 Task 4 定义，Task 6 的 `_flushIndex` / `_tryLoadIndexFrom` / `peekRemoteRevision` 一致引用
-- **唯一前向依赖**：Task 10 的 `vault_entry_gate.dart` 引用 `VaultSync.recoverFromRemote`，而 `vault_sync.dart` 在 Task 14 才完整实现。Task 10 要求先建一个返回 `false` 的桩，Task 14 填充——已在两处显式标注。
+- **唯一前向依赖**：Task 10 的 `vault_entry_gate.dart` 引用 `VaultSync.recoverFromRemote` / `VaultSync.pullIfNewer`，而 `vault_sync.dart` 在 Task 14 才完整实现。Task 10 要求先建两个桩（recover → false、pullIfNewer → no-op），Task 14 填充——已在两处显式标注。
 - **刻意未采纳的评审建议**（附理由，避免后续重复讨论）：
   1. **恢复不做「解锁失败后自动回退到远端」**：那会让无 vault 的设备上每次 ≥8 字符搜索失败都触发一次远端全量列表拉取，既慢又在网络层可观察。改用显式 `?` 前缀，并在创建时的恢复码弹窗里把这个用法一并告知用户。
   2. **锁定计时不纳入 `inactive` / `hidden`**：下拉通知栏、来电横幅、权限弹窗都会触发这两个状态，纳入会让正常操作频繁掉锁；而它们本要解决的任务切换器截图问题，已由 Task 15 的 `FLAG_SECURE` / iOS 盖屏从根上解决。

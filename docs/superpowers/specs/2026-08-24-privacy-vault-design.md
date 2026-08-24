@@ -63,7 +63,7 @@ atc.bin:
   [0   ..    )   AES-GCM(MK, TLV 附件容器)
 ```
 
-**没有任何明文头字节**。格式版本号、是否有恢复码这类元信息全部放进加密后的 body JSON（`{"v":1,"revision":N,"entries":[...]}`），不放在明文区——否则文件开头那几个固定字节就成了可识别特征，与"看上去是随机字节"的目标直接冲突。
+**没有任何明文头字节**。格式版本号、revision 等元信息全部放进加密后的 body JSON（`{"v":1,"revision":N,"entries":[...]}`），不放在明文区——否则文件开头那几个固定字节就成了可识别特征，与"看上去是随机字节"的目标直接冲突。加载时校验 `v`，不等于当前支持的版本一律视为"打不开"（返回 false），且**不得**回退到 `.bak` 的旧版本继续使用——那会在下一次保存时把新版本文件整体覆盖。
 
 **没有口令哈希**：磁盘上不留任何"待验证的秘密"。验证口令的唯一方式是用派生的 KEK 尝试解开 keyslot，GCM tag 校验通过即为正确。
 
@@ -77,7 +77,7 @@ atc.bin:
 3. rename(<target>.tmp → <target>)
 ```
 
-两次 rename 都是同文件系统内的原子操作。中间那个窗口（target 已改名、tmp 还没改名）里 `.bak` 持有完好数据，所以读取时的规则是：**target 不存在或解不开 → 回退读 `.bak`**。
+两次 rename 都是同文件系统内的原子操作。中间那个窗口（target 已改名、tmp 还没改名）里 `.bak` 持有完好数据，所以读取时的规则是：**target 不存在或解不开 → 回退读 `.bak`**。从 `.bak` 解锁成功后，立刻把 `.bak` 的内容原子写回主文件（治愈），避免随后 `addAttachment` 这类只写 `atc.bin` 的操作触发推送时，把损坏的主 `idx.bin` 原样传上云端。
 
 ### 损坏容忍
 
@@ -85,7 +85,7 @@ atc.bin:
 
 ### 内存卫生
 
-密钥和解密出的明文只在解锁期间常驻内存，锁定时清空引用（`Uint8List` 承载，不经过 `String`）。不做更复杂的防护（防 GC 复制、防 swap 等）——对应的威胁模型不在防御范围内。
+密钥和解密出的明文只在解锁期间常驻内存，锁定时清空引用。附件字节以 `Uint8List` 承载；JSON 解析产生的 `String`（正文）受 GC 管理、无法主动清零，不做更复杂的防护（防 GC 复制、防 swap 等）——对应的威胁模型不在防御范围内。
 
 ## 4. 入口与锁定
 
@@ -96,12 +96,14 @@ atc.bin:
 | 输入 | 条件 | 行为 |
 |---|---|---|
 | `+口令` | 本地无 vault，且口令为 ASCII 可打印、含大小写字母+数字、长度≥8、无空格 | 创建 vault |
-| `口令` | 本地有 vault，长度≥8、无空格 | 解锁 |
-| `?口令` | 本地无 vault，已配置服务端，长度≥8、无空格 | 从服务端恢复（换机用，见第 8 节） |
+| `口令` | 本地有 vault，长度≥8、无空格、ASCII 可打印 | 解锁 |
+| `?口令` | 本地无 vault，已配置服务端，长度≥8、无空格、ASCII 可打印 | 从服务端恢复（换机用，见第 8 节） |
 
 任何一条不满足，都**完全按普通搜索处理**——不弹提示、不报错、不给任何反馈。提示本身就会暴露"这里有个特殊入口"。
 
-`+` 的强度约束还顺带防误触：日常搜索凑巧输入一个 8 位以上、以 `+` 开头的词（比如 `+项目截止0824`）不会被误判成创建请求。解锁不加这个约束——解锁失败的代价只是一次静默的空搜索结果。
+`+` 的强度约束还顺带防误触：日常搜索凑巧输入一个 8 位以上、以 `+` 开头的词（比如 `+项目截止0824`）不会被误判成创建请求。解锁/恢复同样要求 ASCII 可打印——创建阶段已经强制 ASCII，所以这不会误伤合法口令，却能避免用户每次搜索 8 字以上的中文词都白跑一次 Argon2id。
+
+**创建前先查云端备份**：`+口令` 且已配置服务端时，在弹创建确认框之前先扫描远端是否有备份 memo；若已存在，阻止创建并提示改用 `?口令` 恢复。否则换机用户误用 `+` 会生成一把新 MK、创建空 vault，第一次推送就把云端旧备份整体覆盖，不可恢复。
 
 **恢复入口要让用户知道**：`?` 前缀不是能靠直觉猜到的，而它只在换新手机时用一次——正是最容易忘的场景。所以创建 vault 时的恢复码弹窗里一并写明"换新设备时，在搜索框输入 `?你的口令` 恢复"。这句话和恢复码一起被抄下来。
 
@@ -196,18 +198,22 @@ class VaultEntry {
 1. 读取正文 + 附件字节（本地文件缺失时先 `AttachmentService.downloadToLocal` 拉回）
    - **任何一个附件的字节拿不到就中止整个移入**，返回失败让用户重试。不能 `continue` 跳过——那是把"移入"变成"移入并静默丢掉几张照片"，和移出销毁附件是同一类问题。
 2. 写入 vault（`idx.bin` + `atc.bin`）
-3. 服务端：硬删除该 memo（含版本历史）+ 硬删除其附件资源
+3. 服务端：
+   - 若 `memo.memosName != null` 但服务端未配置/不可用 → **中止移入**，绝不单方面本地删除（那等于本地藏起来、远端明文还在）
+   - 先 `DELETE /api/v1/memos/:id?hard=true`——spec 第 11 节的语义已包含级联删除附件；远端 404 视为"已删除，继续"（崩溃恢复后重试的幂等要求）
+   - 再对该 memo 的旧附件资源做 best-effort `deleteAttachment` 清理
 4. 本地级联清理——**只删 `MemoEntry` 是不够的**：
    - 附件明文文件：逐个 `AttachmentService.deleteLocal(localPath)`，包括步骤 1 刚下载的那份副本
    - 评论：`getCommentsByMemoId(id)` → 逐个 `hardDeleteComment`。否则 `CommentEntry` 仍持有明文且能被主库搜索命中
    - 事件串：`removeMemoFromAllThreads(id)`。现有 `softDelete` 调了这个，`hardDelete` 没调，是既存缺口，vault 迁移路径必须自己补
+   - **TagStat 缓存**：本地标签统计缓存里可能仍保留被移入日记的敏感标签（主页抽屉优先读缓存）。移入成功后用 `DatabaseService.getAllTagCounts()` 重算并写回
    - 最后 `DatabaseService.hardDelete(memo.id)`
 
-远端删除失败时本地保持原样、可重试；本地清理放在远端删除成功之后。
+远端删除失败时本地保持原样、可重试；本地清理放在远端删除成功之后。整个移入函数内部异常一律包装成失败结果，不允许冒泡到 UI。
 
 ### 移出（vault → 普通日记）
 
-附件必须完整还原，不能静默销毁：解密字节 → 写临时文件 → `AttachmentService.saveLocally()` → 挂到新建的 `MemoEntry` → 删除临时文件。全部成功后才从 vault 删除条目。
+附件必须完整还原，不能静默销毁：解密字节 → 写临时文件 → `AttachmentService.saveLocally()` → 挂到新建的 `MemoEntry` → 删除临时文件。**任一条目引用的附件字节在 vault 中缺失时中止整个移出**（与移入同一原则，不能 `continue` 跳过）；全部成功后才从 vault 删除条目。
 
 不采用"弹窗告知附件将被删除"的做法——数据不该丢，这是日记应用的底线。
 
@@ -233,7 +239,7 @@ visibility: PRIVATE
 
 改成正文是一句人话、密文全部走附件之后：公版即使登录同账号，看到的也只是一条"📦 加密备份 / 更新于 …"的普通备忘录——**这正是封面故事本身**，不需要公版做任何特殊处理；版本历史里存的只是那行短文本；附件走对象存储，是二进制该待的地方。
 
-私版靠正文模板（`📦 加密备份` 开头）识别并在 `_applyRemoteMemo` 里跳过。这个字符串只存在于私版二进制中，且它本身也只是个无害的功能名。
+私版靠正文模板识别（第一行 `📦 加密备份` 且第二行以 `更新于 ` 开头，只匹配首行会误伤用户自己写的同开头 memo）并在 `_applyRemoteMemo` 里跳过。**过滤调用必须包在 `if (kVaultEnabled)` 里**：公版把备份 memo 当普通备忘录显示（封面故事的一部分），同时模板字符串随死代码一起从公版产物中消除——这正是第 9 节"编译产物层面不存在"的要求。如果过滤不 gate，公版 APK 里会残留 `📦 加密备份` 字符串，且公版会静默吞掉这条 memo，与封面故事自相矛盾。
 
 ### 更新时必须用 setMemoAttachments，不能用 updateMemo
 
@@ -241,10 +247,14 @@ visibility: PRIVATE
 
 正确顺序：
 
-1. 上传新的 `idx.dat` / `atc.dat` 得到新资源名
+1. 上传新的 `idx.dat` / `atc.dat` 得到新资源名，**上传时不要传 `memoName`**——上传即自动关联会产生"新+旧并存"的中间态，崩溃后恢复下载按文件名取第一个可能拿到旧副本；无主上传后由第 2 步一次性精确关联
 2. `PATCH /api/v1/memos/:id/attachments` 关联新附件（全量替换）
 3. 关联成功后删除旧附件资源，避免孤儿文件在服务端无限积累
 4. 正文那行时间戳用 `updateMemo` 更新时，**必须显式带上当前附件名列表**，否则同样会解绑
+
+**推送串行化**：3 分钟防抖的 `flushPush` 必须 single-flight——同一时刻最多一个 `_doPush` 在途，新到的 flush 排在后面；否则两个并发 push 的上传/关联/删旧序列会交错，旧附件集合可能覆盖新集合。失败不推进 `_lastPushedRevision`，下次 flush 重试。
+
+**备份指针按服务器隔离**：`enc_backup_memo_name` 存成 `{serverUrl: memoName}` 而不是单个全局值；换服务器/换账号后不会拿着旧 id 去 404。push 时若指针 memo 已不存在（404），清除该指针并回退为"扫描模板复用或新建"。
 
 ### 推送防抖：3 分钟
 
@@ -272,15 +282,20 @@ visibility: PRIVATE
 3. 列出该 memo 的附件，下载 `idx.dat` 字节到内存
 4. **在内存中**用输入的口令试解 keyslot
 5. 解不开 → 静默失败，不落盘、不提示（行为与普通搜索失败完全一致）
-6. 解开了 → 原子写入本地，下载 `atc.dat` 还原附件包，完成解锁
+6. 解开了 → 下载 `atc.dat` 并在内存中用同一 MK 验证；**atc 下载或验证失败 → 整体失败，不落 idx**（否则本地 vault 已存在后，`?` 前缀失效、revision 又已推进，附件包永远不会再被重试）
+7. 两份都验证通过 → 先原子写 `atc.bin`，再原子写 `idx.bin`（idx 是提交点），完成解锁
 
 恢复走**显式前缀**而非"解锁失败后自动尝试"，是为了避免每次长搜索词都触发一次远端全量列表拉取——那既慢又在网络层可观察。
 
-`vaultBackupMemoName` 这个 SharedPreferences key 改名为中性的 `enc_backup_memo_name`，与"加密备份"封面故事一致（key 名在备份出的 XML/plist 里是明文可读的）。它存的只是资源指针，本身不含秘密。
+`vaultBackupMemoName` 这个 SharedPreferences key 改名为中性的 `enc_backup_memo_name`，与"加密备份"封面故事一致（key 名在备份出的 XML/plist 里是明文可读的）。它存的是 `{serverUrl: memoName}` 的映射——指针按服务器隔离，换服务器/换账号不会拿着旧 id 去 404。本身不含秘密。
 
 ### 覆盖前必须先验证
 
 从远端拿回的数据，**必须先在内存中解密验证成功，才能原子替换本地文件**。原设计是先写盘再解密，远端损坏或口令不匹配时会把本地完好数据冲掉之后才抛异常。
+
+`pullIfNewer` 是两份文件的"小事务"：先下载并验证 `idx.dat` 和 `atc.dat` 两边的字节，然后**先写 atc、再写 idx（idx 是提交点）**；atc 失败时不推进 revision，保留重试机会。绝不能先 adopt idx 再拉 atc——atc 一旦失败，revision 已经前进，之后永远不再重试，条目引用的附件字节就永久缺失。
+
+**拉取要在进入页面之前完成**：解锁成功后 `await pullIfNewer()` 再 push `VaultPage`，不要让 unawaited 的拉取与页面并发——否则页面展示旧 entries，远端新 entries 替换内存后没有任何通知，用户基于旧条目保存会覆盖远端新内容。
 
 ### 封面故事
 
@@ -292,7 +307,7 @@ visibility: PRIVATE
 const bool kVaultEnabled = bool.fromEnvironment('VAULT_ENABLED', defaultValue: true);
 ```
 
-`main.dart` 的初始化、`home_view.dart` 的搜索框钩子都包一层 `if (kVaultEnabled)`。因为是编译期常量，release 编译器会把 `false` 分支连同其中专属引用的类一起做死代码消除——不是运行时隐藏。
+`main.dart` 的初始化、`home_view.dart` 的搜索框钩子、`sync_service.dart` 里对备份 memo 的过滤调用都包一层 `if (kVaultEnabled)`。因为是编译期常量，release 编译器会把 `false` 分支连同其中专属引用的类一起做死代码消除——不是运行时隐藏。公版因此不含 vault 代码与 `📦 加密备份` 模板字符串，备份 memo 在公版时间线上作为一条普通备忘录显示。
 
 - **自用包**：不传参数，默认 `true`
 - **分享包**：`flutter build apk --release --dart-define=VAULT_ENABLED=false --obfuscate --split-debug-info=build/symbols`
@@ -334,7 +349,7 @@ DELETE /api/v1/memos/:id?hard=true   [IsleLog 扩展，待新增]
 | `lib/services/api/memos_api_service.dart` | `deleteMemo` 加 `hard` 参数；新增按 memo 列附件的方法 |
 | `lib/services/settings/settings_service.dart` | 新增 `enc_backup_memo_name` |
 | `lib/main.dart` | 初始化包在 `kVaultEnabled` 内 |
-| `android/.../MainActivity.kt`、`ios/.../AppDelegate.swift` | 截屏防护 MethodChannel |
+| `android/app/src/main/java/dyc/dev/isle_log/MainActivity.java`、`ios/Runner/AppDelegate.swift` | 截屏防护 MethodChannel（本仓库 Android 侧是 Java，不是 Kotlin） |
 | 新增 `lib/shared/constants/build_flags.dart` | 编译期开关 |
 | 新增 `lib/services/vault/` | 加解密、原子读写、会话控制、迁移、同步 |
 | 新增 `lib/features/vault/` | 隐私空间页、独立精简编辑器、内存音频源 |
