@@ -32,7 +32,11 @@ class VaultEntryCard extends StatelessWidget {
           ListTile(
             onTap: onTap,
             onLongPress: onLongPress,
-            leading: const Icon(Icons.lock, size: 18, color: AppColors.primaryDark),
+            leading: const Icon(
+              Icons.lock,
+              size: 18,
+              color: AppColors.primaryDark,
+            ),
             title: Text(preview, maxLines: 3, overflow: TextOverflow.ellipsis),
             subtitle: Text(_formatTime(entry.createdAt)),
           ),
@@ -54,7 +58,9 @@ class VaultEntryCard extends StatelessWidget {
   List<String> get _imageIds => entry.attachmentIds
       .where(
         (id) =>
-            VaultController.instance.attachmentMimeType(id)?.startsWith('image/') ??
+            VaultController.instance
+                .attachmentMimeType(id)
+                ?.startsWith('image/') ??
             false,
       )
       .toList();
@@ -62,7 +68,9 @@ class VaultEntryCard extends StatelessWidget {
   List<String> get _audioIds => entry.attachmentIds
       .where(
         (id) =>
-            VaultController.instance.attachmentMimeType(id)?.startsWith('audio/') ??
+            VaultController.instance
+                .attachmentMimeType(id)
+                ?.startsWith('audio/') ??
             false,
       )
       .toList();
@@ -79,7 +87,12 @@ class VaultEntryCard extends StatelessWidget {
           if (bytes == null) return const SizedBox.shrink();
           return Padding(
             padding: const EdgeInsets.only(right: 6),
-            child: Image.memory(bytes, width: 64, height: 64, fit: BoxFit.cover),
+            child: Image.memory(
+              bytes,
+              width: 64,
+              height: 64,
+              fit: BoxFit.cover,
+            ),
           );
         }).toList(),
       ),

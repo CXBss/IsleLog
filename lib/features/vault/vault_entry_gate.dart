@@ -27,7 +27,9 @@ class VaultEntryGate {
     if (raw.startsWith('+')) {
       final passphrase = raw.substring(1);
       if (vaultExists) return VaultInputKind.none;
-      return _isStrong(passphrase) ? VaultInputKind.create : VaultInputKind.none;
+      return _isStrong(passphrase)
+          ? VaultInputKind.create
+          : VaultInputKind.none;
     }
     if (raw.startsWith('?')) {
       final passphrase = raw.substring(1);
@@ -121,9 +123,7 @@ class VaultEntryGate {
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text('检测到已有备份'),
-            content: const Text(
-              '云端已存在加密备份，本机无法直接新建。\n请在搜索框输入 ?你的口令 从云端恢复。',
-            ),
+            content: const Text('云端已存在加密备份，本机无法直接新建。\n请在搜索框输入 ?你的口令 从云端恢复。'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
@@ -184,8 +184,8 @@ class VaultEntryGate {
 
   static void _enterVault(BuildContext context) {
     Navigator.of(context).pop(); // 关闭搜索页
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const VaultPage()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const VaultPage()));
   }
 }

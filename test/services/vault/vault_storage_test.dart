@@ -105,9 +105,9 @@ void main() {
     storage.lock();
 
     // 把主文件写坏
-    await File('${tempDir.path}/idx.bin').writeAsBytes(
-      Uint8List.fromList(List.filled(200, 0)),
-    );
+    await File(
+      '${tempDir.path}/idx.bin',
+    ).writeAsBytes(Uint8List.fromList(List.filled(200, 0)));
 
     final ok = await storage.unlock('CorrectHorse1');
 
@@ -122,9 +122,9 @@ void main() {
     final storage = VaultStorage(dir: tempDir);
     await storage.createVault('CorrectHorse1');
     storage.lock();
-    await File('${tempDir.path}/idx.bin').writeAsBytes(
-      Uint8List.fromList([1, 2, 3]),
-    );
+    await File(
+      '${tempDir.path}/idx.bin',
+    ).writeAsBytes(Uint8List.fromList([1, 2, 3]));
     final bak = File('${tempDir.path}/idx.bin.bak');
     if (await bak.exists()) await bak.delete();
 
@@ -156,8 +156,7 @@ void main() {
     final ok = await local.adoptRemoteIndex(remoteBytes, 'CorrectHorse1');
 
     expect(ok, isFalse);
-    expect(local.entries.single.content, '本地珍贵数据',
-        reason: '验证失败必须在覆盖之前拦住');
+    expect(local.entries.single.content, '本地珍贵数据', reason: '验证失败必须在覆盖之前拦住');
 
     await otherDir.delete(recursive: true);
   });
@@ -185,11 +184,13 @@ void main() {
     final storage = VaultStorage(dir: tempDir);
     await storage.createVault('CorrectHorse1');
 
-    await storage.addAttachment(VaultAttachment(
-      id: 'a1',
-      mimeType: 'image/jpeg',
-      bytes: Uint8List.fromList([9, 8, 7]),
-    ));
+    await storage.addAttachment(
+      VaultAttachment(
+        id: 'a1',
+        mimeType: 'image/jpeg',
+        bytes: Uint8List.fromList([9, 8, 7]),
+      ),
+    );
 
     expect(storage.attachmentBytes('a1'), Uint8List.fromList([9, 8, 7]));
     expect(storage.attachmentMimeType('a1'), 'image/jpeg');
@@ -214,9 +215,15 @@ void main() {
 
     final fresh2Dir = await Directory.systemTemp.createTemp('vault_fresh2_');
     final fresh2 = VaultStorage(dir: fresh2Dir);
-    expect(await fresh2.adoptRemotePair(idxBytes, null, 'SharedPass4'), isFalse);
-    expect(await File('${fresh2Dir.path}/idx.bin').exists(), isFalse,
-        reason: 'atc 缺失必须整体失败，不能先落 idx');
+    expect(
+      await fresh2.adoptRemotePair(idxBytes, null, 'SharedPass4'),
+      isFalse,
+    );
+    expect(
+      await File('${fresh2Dir.path}/idx.bin').exists(),
+      isFalse,
+      reason: 'atc 缺失必须整体失败，不能先落 idx',
+    );
 
     await otherDir.delete(recursive: true);
     await fresh2Dir.delete(recursive: true);

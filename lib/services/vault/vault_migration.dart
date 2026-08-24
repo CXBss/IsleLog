@@ -41,7 +41,9 @@ class VaultMigration {
     return SyncService.runExclusive(() => _moveIntoVaultLocked(memo));
   }
 
-  static Future<VaultMigrationResult> _moveIntoVaultLocked(MemoEntry memo) async {
+  static Future<VaultMigrationResult> _moveIntoVaultLocked(
+    MemoEntry memo,
+  ) async {
     try {
       final url = await SettingsService.serverUrl;
       final token = await SettingsService.accessToken;
@@ -141,7 +143,8 @@ class VaultMigration {
     }
   }
 
-  static bool _isNotFound(Object e) => e is MemosApiException && e.statusCode == 404;
+  static bool _isNotFound(Object e) =>
+      e is MemosApiException && e.statusCode == 404;
 
   /// vault → 普通日记。附件字节完整还原，不静默销毁。
   static Future<VaultMigrationResult> moveOutOfVault(VaultEntry entry) async {

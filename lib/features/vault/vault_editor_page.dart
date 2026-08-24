@@ -73,7 +73,9 @@ class _VaultEditorPageState extends State<VaultEditorPage>
   void dispose() {
     _recorder.dispose();
     WidgetsBinding.instance.removeObserver(this);
-    VaultController.instance.isUnlockedListenable.removeListener(_onLockChanged);
+    VaultController.instance.isUnlockedListenable.removeListener(
+      _onLockChanged,
+    );
     _controller.dispose();
     super.dispose();
   }
@@ -99,8 +101,8 @@ class _VaultEditorPageState extends State<VaultEditorPage>
     final existing = widget.existing;
     final entry = existing != null
         ? (existing
-              ..content = _controller.text
-              ..attachmentIds = _mergedAttachmentIds())
+            ..content = _controller.text
+            ..attachmentIds = _mergedAttachmentIds())
         : VaultEntry(
             id: _workingId ??= const Uuid().v4(),
             content: _controller.text,
@@ -211,12 +213,17 @@ class _VaultEditorPageState extends State<VaultEditorPage>
             onPressed: _saving ? null : _pickImage,
           ),
           IconButton(
-            icon: Icon(_recording ? Icons.stop_circle_outlined : Icons.mic_none),
+            icon: Icon(
+              _recording ? Icons.stop_circle_outlined : Icons.mic_none,
+            ),
             tooltip: _recording ? '停止录音' : '录音',
             onPressed: _toggleRecording,
           ),
           if (widget.existing != null)
-            IconButton(icon: const Icon(Icons.delete_outline), onPressed: _delete),
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              onPressed: _delete,
+            ),
           IconButton(
             icon: _saving
                 ? const SizedBox(

@@ -34,24 +34,30 @@ void main() {
     });
 
     test('已有本地 vault 时 + 前缀失效 → none', () {
-      expect(_classify('+CorrectHorse1', vaultExists: true), VaultInputKind.none);
+      expect(
+        _classify('+CorrectHorse1', vaultExists: true),
+        VaultInputKind.none,
+      );
     });
   });
 
   group('解锁（无前缀）', () {
     test('有本地 vault、长度够 → unlock', () {
-      expect(_classify('correcthorse1', vaultExists: true), VaultInputKind.unlock);
+      expect(
+        _classify('correcthorse1', vaultExists: true),
+        VaultInputKind.unlock,
+      );
     });
 
     test('解锁不要求大小写+数字组合', () {
-      expect(_classify('alllowercase', vaultExists: true), VaultInputKind.unlock);
+      expect(
+        _classify('alllowercase', vaultExists: true),
+        VaultInputKind.unlock,
+      );
     });
 
     test('非 ASCII（中文搜索词）不触发 KDF', () {
-      expect(
-        _classify('今天天气怎么样啊', vaultExists: true),
-        VaultInputKind.none,
-      );
+      expect(_classify('今天天气怎么样啊', vaultExists: true), VaultInputKind.none);
     });
 
     test('无本地 vault → none', () {
@@ -63,7 +69,10 @@ void main() {
     });
 
     test('含空格 → none（正常的多词搜索不该触发 KDF）', () {
-      expect(_classify('tomorrow morning', vaultExists: true), VaultInputKind.none);
+      expect(
+        _classify('tomorrow morning', vaultExists: true),
+        VaultInputKind.none,
+      );
     });
   });
 

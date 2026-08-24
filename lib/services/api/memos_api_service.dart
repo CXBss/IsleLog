@@ -423,7 +423,9 @@ class MemosApiService {
     required List<String> attachmentNames,
   }) async {
     final memoId = memoName.split('/').last;
-    debugPrint('[API] setMemoAttachments $memoName ← ${attachmentNames.length} 个');
+    debugPrint(
+      '[API] setMemoAttachments $memoName ← ${attachmentNames.length} 个',
+    );
     try {
       await _dio.patch(
         '/api/v1/memos/$memoId/attachments',

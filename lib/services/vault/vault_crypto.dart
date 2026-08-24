@@ -74,7 +74,8 @@ class VaultCrypto {
     Uint8List keyslot76,
     String passphrase,
   ) async {
-    if (keyslot76.length != _saltLength + _nonceLength + _mkLength + _macLength) {
+    if (keyslot76.length !=
+        _saltLength + _nonceLength + _mkLength + _macLength) {
       return null;
     }
     final salt = keyslot76.sublist(0, _saltLength);

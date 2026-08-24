@@ -62,7 +62,9 @@ class _VaultPageState extends State<VaultPage> {
   @override
   void dispose() {
     VaultScreenGuard.disable();
-    VaultController.instance.isUnlockedListenable.removeListener(_onLockChanged);
+    VaultController.instance.isUnlockedListenable.removeListener(
+      _onLockChanged,
+    );
     VaultController.instance.lock(); // 离开页面即锁定
     super.dispose();
   }
@@ -93,17 +95,17 @@ class _VaultPageState extends State<VaultPage> {
         await _loadMain();
         setState(() {});
       case VaultMigrationResult.blockedPendingSync:
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('这条日记还有未同步的改动，请先完成同步')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('这条日记还有未同步的改动，请先完成同步')));
       case VaultMigrationResult.blockedConflict:
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('这条日记有冲突，请先在冲突页处理')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('这条日记有冲突，请先在冲突页处理')));
       case VaultMigrationResult.failed:
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('移入失败，请稍后重试')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('移入失败，请稍后重试')));
     }
   }
 
@@ -132,9 +134,9 @@ class _VaultPageState extends State<VaultPage> {
       await _loadMain();
       setState(() {});
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('移出失败，请稍后重试')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('移出失败，请稍后重试')));
     }
   }
 
@@ -156,7 +158,9 @@ class _VaultPageState extends State<VaultPage> {
         title: const Text('隐私空间'),
         actions: [
           IconButton(
-            icon: Icon(_vaultOnly ? Icons.filter_alt : Icons.filter_alt_outlined),
+            icon: Icon(
+              _vaultOnly ? Icons.filter_alt : Icons.filter_alt_outlined,
+            ),
             tooltip: _vaultOnly ? '显示全部' : '仅看隐私',
             onPressed: () => setState(() => _vaultOnly = !_vaultOnly),
           ),
@@ -195,9 +199,9 @@ class _VaultPageState extends State<VaultPage> {
             ),
       floatingActionButton: FloatingActionButton(
         onPressed: () async {
-          await Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const VaultEditorPage()),
-          );
+          await Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const VaultEditorPage()));
           setState(() {});
         },
         child: const Icon(Icons.add),

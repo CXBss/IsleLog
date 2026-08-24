@@ -8,9 +8,15 @@ void main() {
   group('VaultCrypto keyslot wrap/unwrap', () {
     test('正确口令能解开 keyslot', () async {
       final mk = await VaultCrypto.generateMasterKey();
-      final slot = await VaultCrypto.wrapMasterKey(mk, 'correct horse battery staple');
+      final slot = await VaultCrypto.wrapMasterKey(
+        mk,
+        'correct horse battery staple',
+      );
 
-      final unwrapped = await VaultCrypto.tryUnwrapMasterKey(slot, 'correct horse battery staple');
+      final unwrapped = await VaultCrypto.tryUnwrapMasterKey(
+        slot,
+        'correct horse battery staple',
+      );
 
       expect(unwrapped, isNotNull);
       final expectedBytes = await mk.extractBytes();
@@ -20,9 +26,15 @@ void main() {
 
     test('错误口令解不开 keyslot，返回 null', () async {
       final mk = await VaultCrypto.generateMasterKey();
-      final slot = await VaultCrypto.wrapMasterKey(mk, 'correct horse battery staple');
+      final slot = await VaultCrypto.wrapMasterKey(
+        mk,
+        'correct horse battery staple',
+      );
 
-      final unwrapped = await VaultCrypto.tryUnwrapMasterKey(slot, 'wrong password');
+      final unwrapped = await VaultCrypto.tryUnwrapMasterKey(
+        slot,
+        'wrong password',
+      );
 
       expect(unwrapped, isNull);
     });
@@ -60,7 +72,10 @@ void main() {
     test('用不同主密钥解密返回 null', () async {
       final mk1 = await VaultCrypto.generateMasterKey();
       final mk2 = await VaultCrypto.generateMasterKey();
-      final packed = await VaultCrypto.encryptBlob(mk1, Uint8List.fromList([1, 2, 3]));
+      final packed = await VaultCrypto.encryptBlob(
+        mk1,
+        Uint8List.fromList([1, 2, 3]),
+      );
 
       final decrypted = await VaultCrypto.decryptBlob(mk2, packed);
 
@@ -84,7 +99,10 @@ void main() {
     });
 
     test('恢复码本身满足 ASCII 可打印约束', () {
-      expect(VaultCrypto.isAsciiPrintable(VaultCrypto.generateRecoveryCode()), isTrue);
+      expect(
+        VaultCrypto.isAsciiPrintable(VaultCrypto.generateRecoveryCode()),
+        isTrue,
+      );
     });
   });
 

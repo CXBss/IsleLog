@@ -91,17 +91,21 @@ class VaultSync {
     final target = _pendingRevision;
     final future = _doPush();
     _pushInFlight = future;
-    return future.then((_) {
-      _lastPushedRevision = target;
-    }).catchError((Object e) {
-      // 不推进 _lastPushedRevision，下次 flush 仍会重试这次改动。
-      debugPrint('[VaultSync] flushPush 失败，保留待推状态：$e');
-    }).whenComplete(() {
-      _pushInFlight = null;
-      if (_pendingRevision >= 0 && _pendingRevision != _lastPushedRevision) {
-        unawaited(flushPush());
-      }
-    });
+    return future
+        .then((_) {
+          _lastPushedRevision = target;
+        })
+        .catchError((Object e) {
+          // 不推进 _lastPushedRevision，下次 flush 仍会重试这次改动。
+          debugPrint('[VaultSync] flushPush 失败，保留待推状态：$e');
+        })
+        .whenComplete(() {
+          _pushInFlight = null;
+          if (_pendingRevision >= 0 &&
+              _pendingRevision != _lastPushedRevision) {
+            unawaited(flushPush());
+          }
+        });
   }
 
   static Future<void> _doPush() async {
@@ -130,7 +134,9 @@ class VaultSync {
     final oldAttachmentNames = <String>[];
     if (memoName != null) {
       try {
-        final existing = await api.listMemoAttachments(memoName.split('/').last);
+        final existing = await api.listMemoAttachments(
+          memoName.split('/').last,
+        );
         oldAttachmentNames.addAll(existing.map((a) => a['name'] as String));
       } catch (e) {
         debugPrint('[VaultSync] 列旧附件失败（继续）：$e');
@@ -154,10 +160,7 @@ class VaultSync {
     newNames.add(await _uploadBlob(api, _packFilename, atcBytes));
 
     // 全量替换关联（updateMemo 的默认行为会解绑，必须走这个接口）。
-    await api.setMemoAttachments(
-      memoName: memoName,
-      attachmentNames: newNames,
-    );
+    await api.setMemoAttachments(memoName: memoName, attachmentNames: newNames);
 
     // 正文时间戳更新时必须显式带上当前附件名，否则又会被解绑。
     await api.updateMemo(
@@ -264,7 +267,10 @@ class VaultSync {
         debugPrint('[VaultSync] 远端 atc.dat 缺失，不推进 idx，保留重试机会');
         return;
       }
-      final ok = await storage.adoptRemotePairWithCurrentKey(idxBytes, atcBytes);
+      final ok = await storage.adoptRemotePairWithCurrentKey(
+        idxBytes,
+        atcBytes,
+      );
       if (!ok) {
         debugPrint('[VaultSync] 远端数据验证失败，保留本地');
       }

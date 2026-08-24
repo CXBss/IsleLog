@@ -60,7 +60,9 @@ class MyApp extends StatelessWidget {
     return ThemeData(
       colorScheme: colorScheme,
       useMaterial3: true,
-      scaffoldBackgroundColor: isDark ? const Color(0xFF121212) : const Color(0xFFF2F4F6),
+      scaffoldBackgroundColor: isDark
+          ? const Color(0xFF121212)
+          : const Color(0xFFF2F4F6),
       appBarTheme: AppBarTheme(
         backgroundColor: colorScheme.surface,
         foregroundColor: colorScheme.onSurface,

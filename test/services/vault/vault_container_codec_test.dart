@@ -40,7 +40,9 @@ void main() {
 
   test('截断的容器抛 FormatException（由调用方 catch）', () {
     expect(
-      () => VaultContainerCodec.decodeAttachments(Uint8List.fromList([0, 0, 0, 1, 0, 10])),
+      () => VaultContainerCodec.decodeAttachments(
+        Uint8List.fromList([0, 0, 0, 1, 0, 10]),
+      ),
       throwsFormatException,
     );
   });

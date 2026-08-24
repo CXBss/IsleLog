@@ -124,7 +124,10 @@ class VaultStorage {
       }
       if (mk == null) return null;
 
-      final plain = await VaultCrypto.decryptBlob(mk, raw.sublist(_headerLength));
+      final plain = await VaultCrypto.decryptBlob(
+        mk,
+        raw.sublist(_headerLength),
+      );
       if (plain == null) return null;
 
       final decoded = jsonDecode(utf8.decode(plain));
@@ -133,7 +136,12 @@ class VaultStorage {
       // 不支持未来版本。绝不回退 .bak 旧版继续用——那会在下次保存时覆盖新版本。
       if (body.version != 1) return null;
 
-      return _LoadedIndex(mk: mk, passwordSlot: pwSlot, recoverySlot: recSlot, body: body);
+      return _LoadedIndex(
+        mk: mk,
+        passwordSlot: pwSlot,
+        recoverySlot: recSlot,
+        body: body,
+      );
     } catch (_) {
       return null; // 格式损坏一律当"打不开"，不区分原因
     }
@@ -153,7 +161,10 @@ class VaultStorage {
     for (final file in [_atcFile, _atcBak]) {
       if (!await file.exists()) continue;
       try {
-        final plain = await VaultCrypto.decryptBlob(mk, await file.readAsBytes());
+        final plain = await VaultCrypto.decryptBlob(
+          mk,
+          await file.readAsBytes(),
+        );
         if (plain == null) continue;
         _attachments = VaultContainerCodec.decodeAttachments(plain);
         // 与 idx 同理：从 bak 恢复时治愈主文件，且不破坏好 bak。
@@ -320,8 +331,10 @@ class VaultStorage {
   static VaultEntry? _findEntry(List<VaultEntry> list, String id) =>
       _firstWhereOrNull(list, (e) => e.id == id);
 
-  static VaultAttachment? _findAttachment(List<VaultAttachment> list, String id) =>
-      _firstWhereOrNull(list, (a) => a.id == id);
+  static VaultAttachment? _findAttachment(
+    List<VaultAttachment> list,
+    String id,
+  ) => _firstWhereOrNull(list, (a) => a.id == id);
 
   Uint8List? attachmentBytes(String id) =>
       _findAttachment(_attachments, id)?.bytes;

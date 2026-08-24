@@ -16,7 +16,9 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(body: VaultEntryCard(entry: entry, onTap: () {})),
+        home: Scaffold(
+          body: VaultEntryCard(entry: entry, onTap: () {}),
+        ),
       ),
     );
 
