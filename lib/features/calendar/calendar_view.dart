@@ -471,17 +471,17 @@ class _DayCell extends StatelessWidget {
       dayColor = Colors.white;
       lunarColor = Colors.white70;
     } else if (isToday) {
-      bg = AppColors.primaryLight;
-      dayColor = AppColors.primaryDark;
-      lunarColor = AppColors.primary;
+      bg = AppColors.primarySoft(context);
+      dayColor = AppColors.onPrimarySoft(context);
+      lunarColor = AppColors.onPrimarySoft(context).withValues(alpha: 0.75);
     } else if (hasEvents) {
-      bg = AppColors.primaryLighter;
-      dayColor = Colors.black87;
-      lunarColor = Colors.grey[500]!;
+      bg = AppColors.primarySofter(context);
+      dayColor = AppColors.textPrimary(context);
+      lunarColor = AppColors.textSecondary(context);
     } else {
       bg = Colors.transparent;
-      dayColor = Colors.black87;
-      lunarColor = Colors.grey[400]!;
+      dayColor = AppColors.textPrimary(context);
+      lunarColor = AppColors.textSecondary(context).withValues(alpha: 0.7);
     }
 
     // 根据行高自适应字号，保持格子内内容比例协调

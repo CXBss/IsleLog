@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:isle_log/features/memo_detail/widgets/thread_nav_bar.dart';
+import 'package:isle_log/shared/constants/app_constants.dart';
 
 Future<void> _pump(
   WidgetTester tester,
@@ -143,5 +144,52 @@ void main() {
     expect(previous, isTrue);
     expect(next, isTrue);
     expect(opened, isTrue);
+  });
+
+  testWidgets('深色模式下不使用浅色主题的硬编码绿', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: AppColors.primary,
+            brightness: Brightness.dark,
+          ),
+        ),
+        home: const Scaffold(
+          bottomNavigationBar: ThreadNavBar(
+            data: ThreadNavData(
+              threadTitle: '工位蛐蛐',
+              position: 1,
+              total: 2,
+              hasPrevious: false,
+              hasNext: true,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final container = tester.widget<Container>(
+      find
+          .ancestor(
+            of: find.text('「工位蛐蛐」1/2'),
+            matching: find.byType(Container),
+          )
+          .last,
+    );
+    final background = (container.decoration! as BoxDecoration).color;
+
+    expect(
+      background,
+      isNot(AppColors.primaryLighter),
+      reason: '深色模式下不应回落到浅色的 primaryLighter',
+    );
+
+    final label = tester.widget<Text>(find.text('「工位蛐蛐」1/2'));
+    expect(
+      label.style!.color,
+      isNot(AppColors.primaryDark),
+      reason: '深绿字压在深色容器上几乎不可见',
+    );
   });
 }

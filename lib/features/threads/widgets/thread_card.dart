@@ -72,7 +72,7 @@ class ThreadCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             _spanText(),
-            style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+            style: TextStyle(fontSize: 12, color: AppColors.textSecondary(context)),
           ),
         ],
       ),

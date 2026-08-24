@@ -184,7 +184,7 @@ class _FileChipWidgetState extends State<FileChipWidget> {
         margin: const EdgeInsets.only(top: 4, right: 4),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
         decoration: BoxDecoration(
-          color: _downloading ? AppColors.primaryLighter : Colors.grey[100],
+          color: _downloading ? AppColors.primarySofter(context) : AppColors.codeSurface(context),
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
             color: _downloading ? AppColors.primary : Colors.grey[300]!,
@@ -202,7 +202,7 @@ class _FileChipWidgetState extends State<FileChipWidget> {
                 attachment.filename,
                 style: TextStyle(
                   fontSize: 12,
-                  color: _downloading ? AppColors.primaryDark : Colors.grey[700],
+                  color: _downloading ? AppColors.onPrimarySoft(context) : Colors.grey[700],
                 ),
                 overflow: TextOverflow.ellipsis,
               ),

@@ -164,10 +164,10 @@ class _SectionTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       title,
-      style: const TextStyle(
+      style: TextStyle(
         fontSize: 15,
         fontWeight: FontWeight.w600,
-        color: AppColors.primaryDark,
+        color: AppColors.onPrimarySoft(context),
       ),
     );
   }
@@ -204,10 +204,10 @@ class _YearStepper extends StatelessWidget {
           child: Text(
             '$year',
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w600,
-              color: AppColors.primaryDark,
+              color: AppColors.onPrimarySoft(context),
             ),
           ),
         ),

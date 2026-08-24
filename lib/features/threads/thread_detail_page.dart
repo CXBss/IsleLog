@@ -162,7 +162,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
             child: Text(
               '${_members.length} 篇${resolved ? ' · 已完结' : ''}',
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              style: TextStyle(fontSize: 12, color: AppColors.textSecondary(context)),
             ),
           ),
           if (_members.isEmpty)

@@ -217,14 +217,14 @@ class _TagLabel extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
-        color: AppColors.primaryLight,
+        color: AppColors.primarySoft(context),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Text(
         '#$tag',
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 11,
-          color: AppColors.primaryDark,
+          color: AppColors.onPrimarySoft(context),
           fontWeight: FontWeight.w500,
         ),
       ),

@@ -61,6 +61,7 @@ class ConflictOverviewPage extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               children: [
                 _buildSection(
+                  context: context,
                   title: '内容变更',
                   child: _buildContentDiff(context),
                 ),
@@ -118,21 +119,25 @@ class ConflictOverviewPage extends StatelessWidget {
     );
   }
 
-  Widget _buildSection({required String title, required Widget child}) {
+  Widget _buildSection({
+    required BuildContext context,
+    required String title,
+    required Widget child,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           decoration: BoxDecoration(
-            color: AppColors.primaryLight,
+            color: AppColors.primarySoft(context),
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(title,
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
-                  color: AppColors.primaryDark)),
+                  color: AppColors.onPrimarySoft(context))),
         ),
         const SizedBox(height: 8),
         Card(

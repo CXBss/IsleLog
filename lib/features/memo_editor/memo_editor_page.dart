@@ -1990,8 +1990,8 @@ class _AttachmentBar extends StatelessWidget {
       height: 80,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.grey[50],
-        border: Border(top: BorderSide(color: Colors.grey[200]!)),
+        color: AppColors.subtleSurface(context),
+        border: Border(top: BorderSide(color: AppColors.subtleBorder(context))),
       ),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
@@ -2173,9 +2173,9 @@ class _TagSuggestionPanel extends StatelessWidget {
                         Expanded(
                           child: Text(
                             '#${tag.name}',
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 13,
-                              color: AppColors.primaryDark,
+                              color: AppColors.onPrimarySoft(context),
                               fontWeight: FontWeight.w500,
                             ),
                             overflow: TextOverflow.ellipsis,
@@ -2823,14 +2823,14 @@ class _WeatherSheetState extends State<_WeatherSheet> {
                             vertical: 6,
                           ),
                           decoration: BoxDecoration(
-                            color: AppColors.primaryLight,
+                            color: AppColors.primarySoft(context),
                             borderRadius: BorderRadius.circular(16),
                           ),
                           child: Text(
                             city,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 13,
-                              color: AppColors.primaryDark,
+                              color: AppColors.onPrimarySoft(context),
                             ),
                           ),
                         ),
@@ -2873,8 +2873,8 @@ class _WeatherSheetState extends State<_WeatherSheet> {
                             padding: const EdgeInsets.symmetric(horizontal: 12),
                             decoration: BoxDecoration(
                               color: selected
-                                  ? AppColors.primaryLight
-                                  : Colors.grey[100],
+                                  ? AppColors.primarySoft(context)
+                                  : AppColors.codeSurface(context),
                               borderRadius: BorderRadius.circular(16),
                               border: selected
                                   ? Border.all(
@@ -2889,7 +2889,7 @@ class _WeatherSheetState extends State<_WeatherSheet> {
                               style: TextStyle(
                                 fontSize: 13,
                                 color: selected
-                                    ? AppColors.primaryDark
+                                    ? AppColors.onPrimarySoft(context)
                                     : Colors.grey[700],
                                 fontWeight: selected
                                     ? FontWeight.w600
@@ -2987,8 +2987,8 @@ class _MoodPickerSheet extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
                       color: selected
-                          ? AppColors.primaryLight
-                          : Colors.grey[100],
+                          ? AppColors.primarySoft(context)
+                          : AppColors.codeSurface(context),
                       borderRadius: BorderRadius.circular(18),
                       border: selected
                           ? Border.all(color: AppColors.primary, width: 1.5)
@@ -3010,7 +3010,7 @@ class _MoodPickerSheet extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 13,
                             color: selected
-                                ? AppColors.primaryDark
+                                ? AppColors.onPrimarySoft(context)
                                 : Colors.grey[700],
                             fontWeight: selected
                                 ? FontWeight.w600

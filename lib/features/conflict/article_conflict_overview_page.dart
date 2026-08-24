@@ -63,6 +63,7 @@ class ArticleConflictOverviewPage extends StatelessWidget {
               children: [
                 if (_hasTitleDiff) ...[
                   _buildSection(
+                  context: context,
                     title: '标题变更',
                     child: _buildFieldDiff(context,
                         base: article.originalTitle ?? '',
@@ -72,6 +73,7 @@ class ArticleConflictOverviewPage extends StatelessWidget {
                   const SizedBox(height: 16),
                 ],
                 _buildSection(
+                  context: context,
                   title: '内容变更',
                   child: _buildFieldDiff(context,
                       base: article.originalContent ?? '',
@@ -134,21 +136,25 @@ class ArticleConflictOverviewPage extends StatelessWidget {
     return article.title != base || remoteTitle != base;
   }
 
-  Widget _buildSection({required String title, required Widget child}) {
+  Widget _buildSection({
+    required BuildContext context,
+    required String title,
+    required Widget child,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           decoration: BoxDecoration(
-            color: AppColors.primaryLight,
+            color: AppColors.primarySoft(context),
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(title,
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
-                  color: AppColors.primaryDark)),
+                  color: AppColors.onPrimarySoft(context))),
         ),
         const SizedBox(height: 8),
         Card(

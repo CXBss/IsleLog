@@ -215,14 +215,14 @@ class _Chip extends StatelessWidget {
         duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         decoration: BoxDecoration(
-          color: selected ? AppColors.primary : AppColors.primaryLight,
+          color: selected ? AppColors.primary : AppColors.primarySoft(context),
           borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
           label,
           style: TextStyle(
             fontSize: 13,
-            color: selected ? Colors.white : AppColors.primaryDark,
+            color: selected ? Colors.white : AppColors.onPrimarySoft(context),
             fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
           ),
         ),
@@ -296,8 +296,8 @@ class _TodoCard extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                       decoration: BoxDecoration(
                         color: pendingCount == 0
-                            ? AppColors.primaryLight
-                            : AppColors.primaryLighter,
+                            ? AppColors.primarySoft(context)
+                            : AppColors.primarySofter(context),
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Text(
@@ -307,7 +307,7 @@ class _TodoCard extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 11,
                           color: pendingCount == 0
-                              ? AppColors.primaryDark
+                              ? AppColors.onPrimarySoft(context)
                               : AppColors.primary,
                           fontWeight: FontWeight.w500,
                         ),

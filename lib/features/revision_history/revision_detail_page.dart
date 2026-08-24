@@ -146,15 +146,15 @@ class _RevisionDetailPageState extends State<RevisionDetailPage> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: AppColors.primaryLight,
+                color: AppColors.primarySoft(context),
                 borderRadius: BorderRadius.circular(4),
               ),
               child: Text(
                 _fieldLabel(field.fieldName),
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
-                    color: AppColors.primaryDark),
+                    color: AppColors.onPrimarySoft(context)),
               ),
             ),
             const SizedBox(height: 8),

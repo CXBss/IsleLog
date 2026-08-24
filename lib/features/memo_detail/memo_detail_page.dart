@@ -322,9 +322,12 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
         blockquoteDecoration: BoxDecoration(
           border: Border(left: BorderSide(color: Colors.grey[300]!, width: 3)),
         ),
-        code: TextStyle(fontSize: 13, backgroundColor: Colors.grey[100]),
+        code: TextStyle(
+          fontSize: 13,
+          backgroundColor: AppColors.codeSurface(context),
+        ),
         codeblockDecoration: BoxDecoration(
-          color: Colors.grey[100],
+          color: AppColors.codeSurface(context),
           borderRadius: BorderRadius.circular(6),
         ),
       );
@@ -389,7 +392,7 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                   for (final thread in _threads.take(2))
                     ActionChip(
                       avatar: const Icon(Icons.timeline, size: 14),
-                      backgroundColor: AppColors.primaryLight,
+                      backgroundColor: AppColors.primarySoft(context),
                       label: Text(
                         thread.title,
                         style: const TextStyle(fontSize: 12),
@@ -404,7 +407,7 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                   if (_threads.length > 2)
                     Chip(
                       label: Text('+${_threads.length - 2}'),
-                      backgroundColor: AppColors.primaryLight,
+                      backgroundColor: AppColors.primarySoft(context),
                     ),
                 ],
               ),
@@ -740,14 +743,14 @@ class _DetailTagChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.primaryLight,
+        color: AppColors.primarySoft(context),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Text(
         '#$tag',
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 13,
-          color: AppColors.primaryDark,
+          color: AppColors.onPrimarySoft(context),
           fontWeight: FontWeight.w500,
         ),
       ),
@@ -1084,7 +1087,7 @@ class _CommentTile extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppColors.surface(context),
           borderRadius: BorderRadius.circular(8),
           boxShadow: [
             BoxShadow(
@@ -1142,7 +1145,7 @@ class _CommentTile extends StatelessWidget {
                 ),
                 code: TextStyle(
                   fontSize: 13,
-                  backgroundColor: Colors.grey[100],
+                  backgroundColor: AppColors.codeSurface(context),
                 ),
               ),
             ),
@@ -1231,8 +1234,8 @@ class _CommentInputBar extends StatelessWidget {
       top: false,
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border(top: BorderSide(color: Colors.grey[200]!)),
+          color: AppColors.elevatedSurface(context),
+          border: Border(top: BorderSide(color: AppColors.subtleBorder(context))),
         ),
         padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
         child: Column(

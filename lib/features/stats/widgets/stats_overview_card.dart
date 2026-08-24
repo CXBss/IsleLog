@@ -102,7 +102,7 @@ class _StatCell extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: accent ? AppColors.primaryLight.withAlpha(200) : AppColors.primaryLight,
+        color: accent ? AppColors.primarySoft(context).withAlpha(200) : AppColors.primarySoft(context),
         borderRadius: BorderRadius.circular(AppDimens.cardRadius),
         border: accent
             ? Border.all(color: AppColors.primary.withAlpha(60), width: 1)
@@ -123,10 +123,10 @@ class _StatCell extends StatelessWidget {
             children: [
               Text(
                 value,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
-                  color: AppColors.primaryDark,
+                  color: AppColors.onPrimarySoft(context),
                 ),
               ),
               const SizedBox(width: 3),

@@ -715,14 +715,14 @@ class _TagChip extends StatelessWidget {
     final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: AppColors.primaryLight,
+        color: AppColors.primarySoft(context),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
         '#$tag',
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 12,
-          color: AppColors.primaryDark,
+          color: AppColors.onPrimarySoft(context),
           fontWeight: FontWeight.w500,
         ),
       ),
@@ -1089,12 +1089,12 @@ class _NetImgState extends State<_NetImg> {
   }
 
   Widget _placeholder() => Container(
-      color: Colors.grey[100],
+      color: AppColors.codeSurface(context),
       child: const Center(
           child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)));
 
   Widget _errorWidget() => Container(
-      color: Colors.grey[100],
+      color: AppColors.codeSurface(context),
       child: Center(child: Icon(Icons.broken_image_outlined,
           size: 24, color: Colors.grey[400])));
 }

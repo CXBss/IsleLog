@@ -547,8 +547,8 @@ class _HomeViewState extends State<HomeView> {
                             ),
                             decoration: BoxDecoration(
                               color: isSelected
-                                  ? AppColors.primaryLight
-                                  : Colors.grey[100],
+                                  ? AppColors.primarySoft(context)
+                                  : AppColors.codeSurface(context),
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: Text(
@@ -556,13 +556,13 @@ class _HomeViewState extends State<HomeView> {
                               style: TextStyle(
                                 fontSize: 12,
                                 color: isSelected
-                                    ? AppColors.primaryDark
+                                    ? AppColors.onPrimarySoft(context)
                                     : Colors.grey[500],
                               ),
                             ),
                           ),
                           selected: isSelected,
-                          selectedTileColor: AppColors.primaryLighter,
+                          selectedTileColor: AppColors.primarySofter(context),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8),
                           ),
@@ -756,7 +756,7 @@ class _SelectedTagChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
       decoration: BoxDecoration(
-        color: AppColors.primaryLight,
+        color: AppColors.primarySoft(context),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: AppColors.primary.withValues(alpha: 0.4)),
       ),
@@ -765,19 +765,19 @@ class _SelectedTagChip extends StatelessWidget {
         children: [
           Text(
             '#$tag',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
-              color: AppColors.primaryDark,
+              color: AppColors.onPrimarySoft(context),
               fontWeight: FontWeight.w500,
             ),
           ),
           const SizedBox(width: 4),
           GestureDetector(
             onTap: onRemove,
-            child: const Icon(
+            child: Icon(
               Icons.close,
               size: 14,
-              color: AppColors.primaryDark,
+              color: AppColors.onPrimarySoft(context),
             ),
           ),
         ],
@@ -956,12 +956,12 @@ class _PinnedSection extends StatelessWidget {
                     color: AppColors.primary,
                   ),
                   const SizedBox(width: 6),
-                  const Text(
+                  Text(
                     '置顶',
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
-                      color: AppColors.primaryDark,
+                      color: AppColors.onPrimarySoft(context),
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -971,14 +971,14 @@ class _PinnedSection extends StatelessWidget {
                       vertical: 1,
                     ),
                     decoration: BoxDecoration(
-                      color: AppColors.primaryLight,
+                      color: AppColors.primarySoft(context),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
                       '${memos.length}',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
-                        color: AppColors.primaryDark,
+                        color: AppColors.onPrimarySoft(context),
                       ),
                     ),
                   ),
@@ -1304,7 +1304,7 @@ class _CommentSearchCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: AppColors.surface(context),
           borderRadius: BorderRadius.circular(AppDimens.cardRadius),
-          border: Border.all(color: AppColors.primaryLight, width: 1),
+          border: Border.all(color: AppColors.primarySoft(context), width: 1),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.06),
@@ -1327,14 +1327,14 @@ class _CommentSearchCard extends StatelessWidget {
                       vertical: 1,
                     ),
                     decoration: BoxDecoration(
-                      color: AppColors.primaryLight,
+                      color: AppColors.primarySoft(context),
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: const Text(
+                    child: Text(
                       '评论',
                       style: TextStyle(
                         fontSize: 10,
-                        color: AppColors.primaryDark,
+                        color: AppColors.onPrimarySoft(context),
                         fontWeight: FontWeight.w600,
                       ),
                     ),

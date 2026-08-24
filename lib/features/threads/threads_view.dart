@@ -128,7 +128,7 @@ class _Header extends StatelessWidget {
       style: TextStyle(
         fontWeight: FontWeight.bold,
         fontSize: 13,
-        color: Colors.grey[600],
+        color: AppColors.textSecondary(context),
       ),
     ),
   );

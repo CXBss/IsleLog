@@ -33,8 +33,8 @@ class ThreadNavBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     decoration: BoxDecoration(
-      color: AppColors.primaryLighter,
-      border: Border(top: BorderSide(color: Colors.grey[300]!)),
+      color: AppColors.primarySofter(context),
+      border: Border(top: BorderSide(color: AppColors.subtleBorder(context))),
     ),
     child: Row(
       children: [
@@ -55,8 +55,8 @@ class ThreadNavBar extends StatelessWidget {
                 textAlign: TextAlign.center,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.primaryDark,
+                style: TextStyle(
+                  color: AppColors.onPrimarySoft(context),
                   fontSize: 13,
                 ),
               ),

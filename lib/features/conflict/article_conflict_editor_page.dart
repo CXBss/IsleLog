@@ -196,14 +196,14 @@ class _ArticleConflictEditorPageState extends State<ArticleConflictEditorPage> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
-                    color: AppColors.primaryLight,
+                    color: AppColors.primarySoft(context),
                     borderRadius: BorderRadius.circular(3),
                   ),
-                  child: const Text('本地修改预览',
+                  child: Text('本地修改预览',
                       style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.bold,
-                          color: AppColors.primaryDark)),
+                          color: AppColors.onPrimarySoft(context))),
                 ),
                 const SizedBox(width: 8),
                 Text('（绿色=新增，红色=删除，相对于远端）',

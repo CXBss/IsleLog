@@ -132,13 +132,13 @@ class _RevisionHistoryPageState extends State<RevisionHistoryPage> {
         final rev = _revisions![i];
         return ListTile(
           leading: CircleAvatar(
-            backgroundColor: AppColors.primaryLight,
+            backgroundColor: AppColors.primarySoft(context),
             child: Text(
               'v${rev.version}',
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.bold,
-                  color: AppColors.primaryDark),
+                  color: AppColors.onPrimarySoft(context)),
             ),
           ),
           title: Text(_fmt(rev.createTime)),
@@ -191,11 +191,11 @@ class _FieldChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
-        color: AppColors.primaryLight,
+        color: AppColors.primarySoft(context),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(label,
-          style: const TextStyle(fontSize: 11, color: AppColors.primaryDark)),
+          style: TextStyle(fontSize: 11, color: AppColors.onPrimarySoft(context))),
     );
   }
 }

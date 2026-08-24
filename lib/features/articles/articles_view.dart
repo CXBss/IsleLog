@@ -250,7 +250,7 @@ class _ArticlesViewState extends State<ArticlesView> {
                     : null,
                 isDense: true,
                 filled: true,
-                fillColor: AppColors.primaryLight,
+                fillColor: AppColors.primarySoft(context),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(20),
                   borderSide: BorderSide.none,
@@ -311,7 +311,7 @@ class _ArticlesViewState extends State<ArticlesView> {
                           ? FontWeight.w600
                           : FontWeight.normal,
                       color: i == _breadcrumbs.length - 1
-                          ? AppColors.primaryDark
+                          ? AppColors.onPrimarySoft(context)
                           : Colors.grey[600],
                     ),
                   ),
@@ -686,17 +686,17 @@ class _FolderRow extends StatelessWidget {
           children: [
             Icon(
               expanded ? Icons.folder_open : Icons.folder,
-              color: AppColors.primaryDark,
+              color: AppColors.onPrimarySoft(context),
               size: 20,
             ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 folder.title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.primaryDark,
+                  color: AppColors.onPrimarySoft(context),
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,

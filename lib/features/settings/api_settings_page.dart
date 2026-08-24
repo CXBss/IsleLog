@@ -148,7 +148,7 @@ class _ApiSettingsPageState extends State<ApiSettingsPage> {
                 label: Text(city, style: const TextStyle(fontSize: 13)),
                 deleteIcon: const Icon(Icons.close, size: 14),
                 onDeleted: () => setState(() => _favCities.remove(city)),
-                backgroundColor: AppColors.primaryLight,
+                backgroundColor: AppColors.primarySoft(context),
                 side: BorderSide.none,
                 visualDensity: VisualDensity.compact,
               )).toList(),

@@ -101,6 +101,17 @@ abstract final class AppColors {
         ? theme.colorScheme.primaryContainer.withValues(alpha: 0.62)
         : primaryLighter;
   }
+
+  /// 叠在 [primarySoft] / [primarySofter] 之上的文字与图标颜色
+  ///
+  /// 浅色下沿用深绿；深色下必须跟随 primaryContainer 的前景色，
+  /// 否则深绿字压在深色容器上几乎看不见。
+  static Color onPrimarySoft(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.brightness == Brightness.dark
+        ? theme.colorScheme.onPrimaryContainer
+        : primaryDark;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

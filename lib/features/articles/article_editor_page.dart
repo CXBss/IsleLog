@@ -597,18 +597,18 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
           if (_selectedFolder != null)
             Container(
               width: double.infinity,
-              color: AppColors.primaryLight,
+              color: AppColors.primarySoft(context),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Row(
                 children: [
-                  const Icon(Icons.folder, size: 14, color: AppColors.primaryDark),
+                  Icon(Icons.folder, size: 14, color: AppColors.onPrimarySoft(context)),
                   const SizedBox(width: 4),
                   Text(_selectedFolder!.title,
-                      style: const TextStyle(fontSize: 12, color: AppColors.primaryDark)),
+                      style: TextStyle(fontSize: 12, color: AppColors.onPrimarySoft(context))),
                   const Spacer(),
                   GestureDetector(
                     onTap: () => setState(() => _selectedFolder = null),
-                    child: const Icon(Icons.close, size: 14, color: AppColors.primaryDark),
+                    child: Icon(Icons.close, size: 14, color: AppColors.onPrimarySoft(context)),
                   ),
                 ],
               ),
@@ -771,7 +771,7 @@ class _AttachmentBar extends StatelessWidget {
       height: 80,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.grey[50],
+        color: AppColors.subtleSurface(context),
         border: Border(top: BorderSide(color: Colors.grey[200]!)),
       ),
       child: ListView.separated(

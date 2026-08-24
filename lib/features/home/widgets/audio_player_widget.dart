@@ -109,13 +109,13 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: AppColors.primaryLighter,
+        color: AppColors.primarySofter(context),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         children: [
           // 音乐图标
-          Icon(Icons.music_note, size: 18, color: AppColors.primaryDark),
+          Icon(Icons.music_note, size: 18, color: AppColors.onPrimarySoft(context)),
           const SizedBox(width: 6),
 
           // 文件名 + 进度条
@@ -126,9 +126,9 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
               children: [
                 Text(
                   widget.attachment.filename,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
-                    color: AppColors.primaryDark,
+                    color: AppColors.onPrimarySoft(context),
                     fontWeight: FontWeight.w500,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -215,7 +215,7 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.grey[100],
+        color: AppColors.codeSurface(context),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
