@@ -27,7 +27,7 @@
 - 锁定只由 `AppLifecycleState.paused` 计时触发，**不**纳入 `inactive` / `hidden`（下拉通知栏、来电横幅会误触发）。任务切换器截图问题由 Task 15 的截屏防护独立解决，不靠调计时器。
 - 存储层写方法禁止裸 `!` 断言，锁定状态下调用一律抛明确的 `StateError`。
 - vault 相关新代码放在 `lib/services/vault/` 和 `lib/features/vault/`；不改动 Isar `@collection` 模型，不需要跑 `build_runner`。
-- 与本仓库现有的静态 service 类风格（`DatabaseService`/`SettingsService`）不同：`VaultStorage` 设计为可实例化的普通类（构造时注入 `Directory`），因为它涉及文件 IO + 加密，需要在单元测试中注入临时目录——这是刻意的风格偏离，理由见 Task 5。
+- 与本仓库现有的静态 service 类风格（`DatabaseService`/`SettingsService`）不同：`VaultStorage` 设计为可实例化的普通类（构造时注入 `Directory`），因为它涉及文件 IO + 加密，需要在单元测试中注入临时目录——这是刻意的风格偏离，理由见 Task 6。
 - Task 11（服务端硬删除）客户端改动可以完成，但**依赖服务端新增接口**，服务端代码不在本仓库，不在本计划实现范围内；该任务的定义是"客户端准备好调用它"，不是"端到端验证硬删除生效"。
 - 同步模型是**单设备写 + 换机恢复**，不支持多设备并行编辑；`revision` 计数器只提供整体先后取舍，后推送的整体覆盖先推送的。
 
@@ -64,7 +64,57 @@ git commit -m "chore: 添加 cryptography 依赖，为隐私空间做准备"
 
 ---
 
-### Task 2: VaultCrypto —— 密钥派生与加解密（纯函数）
+### Task 2: 编译期开关 —— 分享版不含隐私空间
+
+**Files:**
+- Create: `lib/shared/constants/build_flags.dart`
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `const bool kVaultEnabled`
+
+**为什么放在最前面**：后续每个往现有文件里加 vault 代码的任务（Task 7 的 `main.dart`、Task 10 的 `home_view.dart`）都要在写入的同时就套上这个判断，而不是全做完再回头补——回头补容易漏，且中间那些提交里存在未被 gate 的入口。
+
+**为什么不只是运行时隐藏**：让分享出去的安装包在编译产物层面就不含这部分代码，这样即使有人拿这个包去反编译翻找，也翻不出"这个 App 曾经有隐私空间功能"这件事本身。
+
+- [ ] **Step 1: 新增开关文件**
+
+```dart
+// lib/shared/constants/build_flags.dart
+
+/// 编译期开关：控制隐私空间功能是否编译进最终产物。
+///
+/// 默认 true（日常自用构建不用额外传参）。要分享给他人的构建，显式传 false：
+///
+///   flutter build apk --release --dart-define=VAULT_ENABLED=false \
+///     --obfuscate --split-debug-info=build/symbols
+///
+/// 因为这是编译期常量，`if (kVaultEnabled)` 为 false 的分支在 release 编译时
+/// 会被当作死代码消除，连同其中只被这个分支引用的类一起被 tree-shake 掉，
+/// 不是运行时判断隐藏。`--obfuscate` 是顺手加的免费加固，不是本开关必需。
+const bool kVaultEnabled = bool.fromEnvironment(
+  'VAULT_ENABLED',
+  defaultValue: true,
+);
+```
+
+- [ ] **Step 2: 确认能编译**
+
+Run: `flutter analyze lib/shared/constants/build_flags.dart`
+Expected: 无 error。这一步只引入一个常量，还没有代码使用它。
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add lib/shared/constants/build_flags.dart
+git commit -m "chore: 新增 kVaultEnabled 编译期开关"
+```
+
+> **后续任务的义务**：Task 7 往 `main.dart` 加初始化、Task 10 往 `home_view.dart` 加搜索钩子时，都必须在同一次提交里把代码包进 `if (kVaultEnabled)`。两个构建的最终验收放在 Task 15 之后（见文末「全量验收」）。
+
+---
+
+### Task 3: VaultCrypto —— 密钥派生与加解密（纯函数）
 
 **Files:**
 - Create: `lib/services/vault/vault_crypto.dart`
@@ -149,6 +199,28 @@ void main() {
       expect(code.length, 24);
       expect(code.contains(RegExp(r'[0O1IL]')), isFalse);
     });
+
+    test('恢复码本身满足 ASCII 可打印约束', () {
+      expect(VaultCrypto.isAsciiPrintable(VaultCrypto.generateRecoveryCode()), isTrue);
+    });
+  });
+
+  group('VaultCrypto.isAsciiPrintable', () {
+    test('纯 ASCII 口令通过', () {
+      expect(VaultCrypto.isAsciiPrintable('CorrectHorse1'), isTrue);
+    });
+
+    test('含中文的口令不通过', () {
+      expect(VaultCrypto.isAsciiPrintable('口令Abc123'), isFalse);
+    });
+
+    test('含空格不通过（0x20 在可打印范围之外）', () {
+      expect(VaultCrypto.isAsciiPrintable('Correct Horse1'), isFalse);
+    });
+
+    test('含 emoji 不通过', () {
+      expect(VaultCrypto.isAsciiPrintable('Abc123🙂'), isFalse);
+    });
   });
 }
 ```
@@ -208,6 +280,19 @@ class VaultCrypto {
       nonce: salt,
     );
   }
+
+  /// 口令是否只含 ASCII 可打印字符（0x21–0x7E）。
+  ///
+  /// 创建时强制这一条，从根上消掉 Unicode 归一化问题：非 ASCII 口令
+  /// （中文、带重音的拉丁字母、emoji）在不同输入法/系统版本下会产生不同的
+  /// Unicode 组合形式，同一个口令在新手机上可能派生出不同的密钥、解不开数据
+  /// ——换机恢复场景下这是致命的。
+  ///
+  /// 选择"限制字符集"而不是"引入 NFC 归一化库"：创建口令本来就要求
+  /// 大小写字母 + 数字，本身已经强烈指向 ASCII；为一个用户几乎不会踩、
+  /// 且踩到就是数据丢失的边界情况引入一个额外依赖不划算。
+  static bool isAsciiPrintable(String s) =>
+      s.isNotEmpty && s.codeUnits.every((c) => c >= 0x21 && c <= 0x7E);
 
   static Future<Uint8List> wrapMasterKey(
     SecretKey masterKey,
@@ -271,10 +356,13 @@ class VaultCrypto {
 
   static const _recoveryAlphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
+  /// 恢复码长度。解锁时据此判断"要不要试恢复码槽"，见 VaultStorage。
+  static const recoveryCodeLength = 24;
+
   static String generateRecoveryCode() {
     final rnd = Random.secure();
     return List.generate(
-      24,
+      recoveryCodeLength,
       (_) => _recoveryAlphabet[rnd.nextInt(_recoveryAlphabet.length)],
     ).join();
   }
@@ -295,7 +383,7 @@ git commit -m "feat: 新增 VaultCrypto，隐私空间密钥派生与加解密"
 
 ---
 
-### Task 3: VaultEntry / VaultAttachment 数据模型
+### Task 4: VaultEntry / VaultAttachment 数据模型
 
 **Files:**
 - Create: `lib/data/models/vault_entry.dart`
@@ -307,7 +395,7 @@ git commit -m "feat: 新增 VaultCrypto，隐私空间密钥派生与加解密"
   - `class VaultEntry { String id; String content; DateTime createdAt; DateTime updatedAt; List<String> tags; List<String> attachmentIds; String? memosName; String? movedFromMemosName; }`
   - `VaultEntry.toJson() -> Map<String, dynamic>` / `VaultEntry.fromJson(Map<String, dynamic>)`
   - `class VaultBody { int version; int revision; List<VaultEntry> entries; }` + `toJson` / `fromJson`（加密 body 的顶层结构，承载版本号和同步用的 revision——这两个字段放进密文里，不放明文头）
-  - `class VaultAttachment { String id; String mimeType; Uint8List bytes; }`（供 Task 4 的编解码器使用，本任务只定义类，不做 TLV 编解码）
+  - `class VaultAttachment { String id; String mimeType; Uint8List bytes; }`（供 Task 5 的编解码器使用，本任务只定义类，不做 TLV 编解码）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -508,7 +596,7 @@ git commit -m "feat: 新增 VaultEntry/VaultAttachment 数据模型"
 
 ---
 
-### Task 4: 附件容器编解码（TLV）
+### Task 5: 附件容器编解码（TLV）
 
 **Files:**
 - Create: `lib/services/vault/vault_container_codec.dart`
@@ -653,7 +741,7 @@ git commit -m "feat: 新增附件容器 TLV 编解码"
 
 ---
 
-### Task 5: VaultStorage —— 原子文件读写
+### Task 6: VaultStorage —— 原子文件读写
 
 **Files:**
 - Create: `lib/services/vault/vault_storage.dart`
@@ -676,7 +764,7 @@ git commit -m "feat: 新增附件容器 TLV 编解码"
   - `Future<bool> adoptRemoteIndex(Uint8List idxBytes, String passphrase)` — 换机恢复：内存验证通过才落盘
   - `Future<bool> adoptRemoteAttachments(Uint8List atcBytes)` — 已解锁状态下同上
 
-这个类是**可实例化的普通类**而非静态 service（见 Global Constraints），构造时注入 `Directory`，测试用临时目录，生产环境由 Task 6 的 `VaultController` 传入 `Application Support/blob/`。
+这个类是**可实例化的普通类**而非静态 service（见 Global Constraints），构造时注入 `Directory`，测试用临时目录，生产环境由 Task 7 的 `VaultController` 传入 `Application Support/blob/`。
 
 **文件格式（无任何明文头字节）**：
 
@@ -1006,7 +1094,12 @@ class VaultStorage {
       final recSlot = raw.sublist(_keyslotLength, _headerLength);
 
       var mk = await VaultCrypto.tryUnwrapMasterKey(pwSlot, credential);
-      mk ??= await VaultCrypto.tryUnwrapMasterKey(recSlot, credential);
+      // 恢复码槽只在候选长度恰为 24 时才试——恢复码是固定 24 位、固定字母表
+      // 生成的，长度不符的输入不可能是恢复码。少了这个判断，每次口令输错都要
+      // 白跑第二次 32MB 的 Argon2id。
+      if (mk == null && credential.length == VaultCrypto.recoveryCodeLength) {
+        mk = await VaultCrypto.tryUnwrapMasterKey(recSlot, credential);
+      }
       if (mk == null) return null;
 
       final plain = await VaultCrypto.decryptBlob(mk, raw.sublist(_headerLength));
@@ -1200,7 +1293,7 @@ git commit -m "feat: 新增 VaultStorage，原子写入 + 损坏回退 + 换机�
 
 ---
 
-### Task 6: VaultController —— 会话状态与锁定广播
+### Task 7: VaultController —— 会话状态与锁定广播
 
 **Files:**
 - Create: `lib/services/vault/vault_controller.dart`
@@ -1430,7 +1523,7 @@ Expected: PASS（5 个测试全绿）。
 
 - [ ] **Step 5: 接入 main.dart**
 
-在 `lib/main.dart` 的 `WidgetsFlutterBinding.ensureInitialized();` 之后加（Task 14 会给它包上 `kVaultEnabled` 判断）：
+在 `lib/main.dart` 的 `WidgetsFlutterBinding.ensureInitialized();` 之后加（**同一次提交里就要包上 Task 2 的 `kVaultEnabled` 判断**）：
 
 ```dart
   await VaultController.init();
@@ -1448,7 +1541,431 @@ git commit -m "feat: 新增 VaultController，会话状态与锁定广播"
 
 ---
 
-### Task 7: 搜索框口令钩子（仅回车触发）
+### Task 8: VaultEditorPage —— 精简编辑器（不写草稿）
+
+**Files:**
+- Create: `lib/features/vault/vault_editor_page.dart`
+
+**Interfaces:**
+- Consumes: `VaultController.instance`（Task 6）、`VaultEntry`（Task 3）
+- Produces: `class VaultEditorPage extends StatefulWidget { const VaultEditorPage({VaultEntry? existing}); }`
+
+**为什么不复用 `MemoEditorPage`**：那个文件 3000+ 行，耦合了 AI 润色、天气、位置、网络附件上传队列等一整套与"离线优先同步引擎"绑定的逻辑，且草稿自动保存分散在多处调用点（`memo_editor_page.dart:513/514/524/526/1382`）。把隐私属性塞进去意味着要在一个巨大、复杂、非隐私设计的文件里逐处审计"这条路径会不会碰草稿/网络"，审计面远大于收益。新写一个精简编辑器，安全性质从"没有调用草稿 API"这一行代码就能看出来。
+
+- [ ] **Step 1: 实现（无预写测试——纯 UI 交互页面，手动验证见 Step 2，遵循 Task 7/8 的既有先例）**
+
+```dart
+// lib/features/vault/vault_editor_page.dart
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
+
+import '../../data/models/vault_entry.dart';
+import '../../services/vault/vault_controller.dart';
+
+class VaultEditorPage extends StatefulWidget {
+  final VaultEntry? existing;
+
+  const VaultEditorPage({super.key, this.existing});
+
+  @override
+  State<VaultEditorPage> createState() => _VaultEditorPageState();
+}
+
+class _VaultEditorPageState extends State<VaultEditorPage>
+    with WidgetsBindingObserver {
+  late final TextEditingController _controller;
+  bool _saving = false;
+
+  /// 新建条目在首次写入（可能是自动保存）时定下的 id / 创建时间，
+  /// 后续所有写入都复用，避免重复建条目。
+  String? _workingId;
+  DateTime? _workingCreatedAt;
+
+  @override
+  void initState() {
+    super.initState();
+    // 有意不读取/写入 SettingsService 的草稿字段——这是隐私空间编辑器
+    // 与 MemoEditorPage 的核心区别，绝不能让内容明文落进 SharedPreferences。
+    _controller = TextEditingController(text: widget.existing?.content ?? '');
+    VaultController.instance.isUnlockedListenable.addListener(_onLockChanged);
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// 进后台立刻加密保存当前内容。
+  ///
+  /// 只靠"锁定时清空输入框"会造成另一种数据丢失：正在写的一段话，切出去
+  /// 超过 60 秒回来就没了。这里的保存发生在 60 秒锁定**之前**，密钥还在，
+  /// 所以之后的锁定是无损的。
+  ///
+  /// 不能改成"锁定那一刻抢救保存"——lock() 是先清密钥再广播，那时已经写不进去了。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.paused) return;
+    if (!VaultController.instance.isUnlocked) return;
+    if (_controller.text.trim().isEmpty) return;
+    unawaited(_persist());
+  }
+
+  /// 后台超时锁定时，清空输入框并退出。
+  ///
+  /// 不做这件事的后果：编辑器仍持有明文，且此时点保存会走到已经没有主密钥的
+  /// 存储层（Task 6 的 `_requireKey()` 会抛 StateError）。
+  void _onLockChanged() {
+    if (!VaultController.instance.isUnlocked && mounted) {
+      _controller.clear();
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    VaultController.instance.isUnlockedListenable.removeListener(_onLockChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  /// 实际写入 vault。被手动保存和进后台自动保存共用。
+  ///
+  /// [_workingId] 保证两条路径写的是同一个条目——否则"自动保存一次、
+  /// 回来再点保存一次"会产生两条重复日记。
+  Future<void> _persist() async {
+    final now = DateTime.now();
+    final existing = widget.existing;
+    final entry = existing != null
+        ? (existing..content = _controller.text)
+        : VaultEntry(
+            id: _workingId ??= const Uuid().v4(),
+            content: _controller.text,
+            createdAt: _workingCreatedAt ??= now,
+            updatedAt: now,
+            tags: const [],
+            attachmentIds: const [],
+          );
+    await VaultController.instance.saveEntry(entry);
+  }
+
+  Future<void> _save() async {
+    if (!VaultController.instance.isUnlocked) {
+      // 保存过程中刚好被后台超时锁掉：直接退出，不尝试写入。
+      if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+      return;
+    }
+    if (_controller.text.trim().isEmpty) {
+      Navigator.of(context).pop();
+      return;
+    }
+    setState(() => _saving = true);
+    await _persist();
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  Future<void> _delete() async {
+    final existing = widget.existing;
+    if (existing == null) return;
+    await VaultController.instance.deleteEntry(existing.id);
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.existing == null ? '新建隐私日记' : '编辑'),
+        actions: [
+          if (widget.existing != null)
+            IconButton(icon: const Icon(Icons.delete_outline), onPressed: _delete),
+          IconButton(
+            icon: _saving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check),
+            onPressed: _saving ? null : _save,
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: TextField(
+          controller: _controller,
+          maxLines: null,
+          expands: true,
+          autofocus: widget.existing == null,
+          // 隐私内容不进系统输入法的学习词库和联想候选
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: const InputDecoration(
+            border: InputBorder.none,
+            hintText: '写点什么…',
+          ),
+        ),
+      ),
+    );
+  }
+}
+```
+
+- [ ] **Step 2: 手动验证**
+
+1. `flutter run`，进入隐私空间，点右下角 `+`
+2. 输入文字，点右上角勾 → 应返回列表并看到新条目
+3. 重启 App，用同一口令重新进入隐私空间 → 内容应仍在（验证持久化）
+4. 打开条目编辑，点删除图标 → 应从列表消失
+5. 检查 `SharedPreferences`（真机上可用 `flutter run` 日志或临时加一行 `debugPrint` 验证）在整个操作过程中 `draft_content` key 从未被写入
+6. **锁定退出验证**：把 `VaultController._backgroundLockTimeout` 临时改成 3 秒 → 打开编辑器输入一些文字 → 切到后台等 5 秒 → 切回 → 应自动弹回主页，且不崩溃；此时再进隐私空间需重新输口令
+7. **自动保存验证**：接上一步，重新解锁进入隐私空间 → 刚才切后台前输入的那段文字应已作为一条日记存在（不是丢失），且只有**一条**不是两条。验证完把超时改回 60 秒
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add lib/features/vault/vault_editor_page.dart
+git commit -m "feat: 新增隐私空间精简编辑器，不写草稿"
+```
+
+---
+
+### Task 9: VaultPage —— 合并时间线
+
+**Files:**
+- Create: `lib/features/vault/vault_page.dart`
+- Create: `lib/features/vault/widgets/vault_entry_card.dart`
+- Test: `test/features/vault/widgets/vault_entry_card_test.dart`
+
+**Interfaces:**
+- Consumes: `VaultController.instance`（Task 6）、`DatabaseService.getAllMemos()`（现有）
+- Produces: `class VaultPage extends StatefulWidget`、`class VaultEntryCard extends StatelessWidget`
+
+- [ ] **Step 1: 写 VaultEntryCard 的失败测试**
+
+```dart
+// test/features/vault/widgets/vault_entry_card_test.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:isle_log/data/models/vault_entry.dart';
+import 'package:isle_log/features/vault/widgets/vault_entry_card.dart';
+
+void main() {
+  testWidgets('展示 vault 条目的正文摘要和锁标记', (tester) async {
+    final entry = VaultEntry(
+      id: 'e1',
+      content: '这是一条隐私日记',
+      createdAt: DateTime(2026, 8, 24, 9, 0),
+      updatedAt: DateTime(2026, 8, 24, 9, 0),
+      tags: const [],
+      attachmentIds: const [],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: VaultEntryCard(entry: entry, onTap: () {})),
+      ),
+    );
+
+    expect(find.textContaining('这是一条隐私日记'), findsOneWidget);
+    expect(find.byIcon(Icons.lock), findsOneWidget);
+  });
+}
+```
+
+- [ ] **Step 2: 运行确认失败**
+
+Run: `flutter test test/features/vault/widgets/vault_entry_card_test.dart`
+Expected: FAIL，找不到 `lib/features/vault/widgets/vault_entry_card.dart`。
+
+- [ ] **Step 3: 实现 VaultEntryCard**
+
+```dart
+// lib/features/vault/widgets/vault_entry_card.dart
+import 'package:flutter/material.dart';
+
+import '../../../data/models/vault_entry.dart';
+import '../../../shared/constants/app_constants.dart';
+
+class VaultEntryCard extends StatelessWidget {
+  final VaultEntry entry;
+  final VoidCallback onTap;
+
+  const VaultEntryCard({super.key, required this.entry, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final preview = entry.content.length > 80
+        ? '${entry.content.substring(0, 80)}…'
+        : entry.content;
+    return Card(
+      color: AppColors.surfaceWhite,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: ListTile(
+        onTap: onTap,
+        leading: const Icon(Icons.lock, size: 18, color: AppColors.primaryDark),
+        title: Text(preview, maxLines: 3, overflow: TextOverflow.ellipsis),
+        subtitle: Text(_formatTime(entry.createdAt)),
+      ),
+    );
+  }
+
+  String _formatTime(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+}
+```
+
+- [ ] **Step 4: 运行确认通过**
+
+Run: `flutter test test/features/vault/widgets/vault_entry_card_test.dart`
+Expected: PASS。
+
+- [ ] **Step 5: 实现 VaultPage（合并时间线，不单独写测试——理由同 Task 8：本代码库的页面级组件普遍靠手动验证，子组件才写单测）**
+
+```dart
+// lib/features/vault/vault_page.dart
+import 'package:flutter/material.dart';
+
+import '../../data/database/database_service.dart';
+import '../../data/models/memo_entry.dart';
+import '../../data/models/vault_entry.dart';
+import '../../services/vault/vault_controller.dart';
+import 'vault_editor_page.dart';
+import 'widgets/vault_entry_card.dart';
+
+sealed class _TimelineItem {
+  DateTime get time;
+}
+
+class _MainItem extends _TimelineItem {
+  final MemoEntry memo;
+  _MainItem(this.memo);
+  @override
+  DateTime get time => memo.createdAt;
+}
+
+class _VaultItem extends _TimelineItem {
+  final VaultEntry entry;
+  _VaultItem(this.entry);
+  @override
+  DateTime get time => entry.createdAt;
+}
+
+class VaultPage extends StatefulWidget {
+  const VaultPage({super.key});
+
+  @override
+  State<VaultPage> createState() => _VaultPageState();
+}
+
+class _VaultPageState extends State<VaultPage> {
+  bool _vaultOnly = false;
+  List<MemoEntry> _mainMemos = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMain();
+    // 后台超时锁定时必须把页面主动弹掉——否则会停在一个已经没有密钥、
+    // 却仍在展示已解密内容的页面上。
+    VaultController.instance.isUnlockedListenable.addListener(_onLockChanged);
+  }
+
+  void _onLockChanged() {
+    if (!VaultController.instance.isUnlocked && mounted) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
+  }
+
+  Future<void> _loadMain() async {
+    final memos = await DatabaseService.getAllMemos();
+    if (mounted) setState(() => _mainMemos = memos);
+  }
+
+  @override
+  void dispose() {
+    VaultController.instance.isUnlockedListenable.removeListener(_onLockChanged);
+    VaultController.instance.lock(); // 离开页面即锁定
+    super.dispose();
+  }
+
+  List<_TimelineItem> _mergedItems() {
+    final vaultEntries = VaultController.instance.entries;
+    final items = <_TimelineItem>[
+      if (!_vaultOnly) ..._mainMemos.map(_MainItem.new),
+      ...vaultEntries.map(_VaultItem.new),
+    ];
+    items.sort((a, b) => b.time.compareTo(a.time));
+    return items;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _mergedItems();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('隐私空间'),
+        actions: [
+          IconButton(
+            icon: Icon(_vaultOnly ? Icons.filter_alt : Icons.filter_alt_outlined),
+            tooltip: _vaultOnly ? '显示全部' : '仅看隐私',
+            onPressed: () => setState(() => _vaultOnly = !_vaultOnly),
+          ),
+        ],
+      ),
+      body: items.isEmpty
+          ? const Center(child: Text('还没有条目'))
+          : ListView.builder(
+              itemCount: items.length,
+              itemBuilder: (ctx, i) {
+                final item = items[i];
+                return switch (item) {
+                  _VaultItem(:final entry) => VaultEntryCard(
+                    entry: entry,
+                    onTap: () async {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => VaultEditorPage(existing: entry),
+                        ),
+                      );
+                      setState(() {});
+                    },
+                  ),
+                  _MainItem(:final memo) => ListTile(
+                    title: Text(
+                      memo.content,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: const Text('（普通日记，可从这里移入隐私空间）'),
+                  ),
+                };
+              },
+            ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          await Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const VaultEditorPage()),
+          );
+          setState(() {});
+        },
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add lib/features/vault/vault_page.dart lib/features/vault/widgets/vault_entry_card.dart test/features/vault/widgets/vault_entry_card_test.dart
+git commit -m "feat: 新增隐私空间合并时间线页面"
+```
+
+---
+
+### Task 10: 搜索框口令钩子（仅回车触发）
 
 **Files:**
 - Create: `lib/features/vault/vault_entry_gate.dart`
@@ -1622,12 +2139,16 @@ class VaultEntryGate {
   /// 失败的代价只是一次静默的空搜索结果。
   static bool _isPlausible(String s) => s.length >= 8 && !s.contains(' ');
 
-  /// 创建的门槛：额外要求大小写字母 + 数字。
+  /// 创建的门槛：ASCII 可打印 + 大小写字母 + 数字。
   ///
   /// 防止日常搜索里凑巧输入一个 8 位以上、以 '+' 开头的词（如 "+项目截止0824"）
   /// 被误判成创建请求；顺带保证真口令有基本强度。
+  ///
+  /// ASCII 限制是为了消掉 Unicode 归一化问题（见 VaultCrypto.isAsciiPrintable）——
+  /// 非 ASCII 口令在新设备上可能派生出不同密钥，换机时解不开数据。
   static bool _isStrong(String s) =>
       _isPlausible(s) &&
+      VaultCrypto.isAsciiPrintable(s) &&
       s.contains(RegExp(r'[a-z]')) &&
       s.contains(RegExp(r'[A-Z]')) &&
       s.contains(RegExp(r'[0-9]'));
@@ -1709,7 +2230,8 @@ class VaultEntryGate {
         title: const Text('恢复码'),
         content: Text(
           '忘记口令时可用此码解锁：\n\n$code\n\n'
-          '请抄下并妥善保管，此码只显示这一次。',
+          '请抄下并妥善保管，此码只显示这一次。\n\n'
+          '换新设备时，在搜索框输入 ?你的口令 即可恢复。',
         ),
         actions: [
           TextButton(
@@ -1747,6 +2269,12 @@ Expected: PASS（14 个测试全绿）。
 修改 `_MemoSearchDelegate`（约第 1145 行）：
 
 ```dart
+class _MemoSearchDelegate extends SearchDelegate<void> {
+  // 口令是从这个搜索框输入的，不能让它进系统输入法的学习词库和联想候选。
+  // SearchDelegate 的这两个参数会透传给内部 TextField（SDK search.dart:645-646）。
+  // 副作用是普通日记搜索也没有自动更正了——对搜索场景基本无损。
+  _MemoSearchDelegate() : super(autocorrect: false, enableSuggestions: false);
+
   @override
   Widget buildResults(BuildContext context) =>
       _SearchResults(query: query, submitted: true);
@@ -1756,6 +2284,8 @@ Expected: PASS（14 个测试全绿）。
       ? const SizedBox()
       : _SearchResults(query: query, submitted: false);
 ```
+
+（`_MemoSearchDelegate` 原本没有显式构造函数，需要新增；其余 override 保持不变。）
 
 修改 `_SearchResults`（约第 1166 行）：
 
@@ -1793,417 +2323,48 @@ class _SearchResults extends StatefulWidget {
 
 ```dart
 import '../vault/vault_entry_gate.dart';
+import '../../shared/constants/build_flags.dart';
 ```
 
-（Task 14 会给这个调用包上 `kVaultEnabled` 判断。）
+- [ ] **Step 6: 搜索日志脱敏**
 
-- [ ] **Step 6: 手动验证**
+`DatabaseService.searchMemos`（`database_service.dart:458`）和 `searchComments`（`:815`）目前把原始查询串打进日志：
+
+```dart
+    debugPrint('[DB] searchMemos "$query" → ${result.length} 条');
+```
+
+口令输错时会落到普通搜索路径，于是口令明文进了日志（`debugPrint` 在 release 构建里同样会输出）。两处都改成只打长度：
+
+```dart
+    debugPrint('[DB] searchMemos len=${query.length} → ${result.length} 条');
+```
+
+```dart
+    debugPrint('[DB] searchComments len=${query.length} → ${result.length} 条');
+```
+
+- [ ] **Step 7: 手动验证**
 
 1. `flutter run`
 2. 搜索框输入 `+testpass123`（全小写+数字，强度不够）回车 → 表现为普通搜索，**不**弹创建框
-3. 输入 `+Testpass123` 回车 → 弹出创建确认框
-4. 确认后看到恢复码弹窗，关闭后进入隐私空间页
-5. 返回主页，输入 `Testpass123` 回车 → 直接进入隐私空间页
-6. **关键**：输入一个 12 位以上的普通词（如 `internationalization`），观察逐个字符输入过程**不卡顿**；回车后才会有一次短暂延迟，随后正常显示"没有找到"
+3. 输入 `+口令Abc123`（含中文，不满足 ASCII 约束）回车 → 同样表现为普通搜索
+4. 输入 `+Testpass123` 回车 → 弹出创建确认框
+5. 确认后看到恢复码弹窗（含"换新设备时输 ?你的口令"提示），关闭后进入隐私空间页
+6. 返回主页，输入 `Testpass123` 回车 → 直接进入隐私空间页
+7. **性能关键**：输入一个 12 位以上的普通词（如 `internationalization`），观察逐个字符输入过程**不卡顿**；回车后才会有一次短暂延迟，随后正常显示"没有找到"。再输一次同样的词，应立即返回（命中失败候选缓存）
+8. **日志关键**：`flutter run` 控制台里搜索 `searchMemos`，应只看到 `len=NN`，看不到任何输入过的口令原文
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add lib/features/vault/vault_entry_gate.dart test/features/vault/vault_entry_gate_test.dart lib/features/home/home_view.dart
-git commit -m "feat: 搜索框口令钩子，仅回车触发，含创建/解锁/恢复三种前缀"
+git add lib/features/vault/vault_entry_gate.dart test/features/vault/vault_entry_gate_test.dart lib/features/home/home_view.dart lib/data/database/database_service.dart
+git commit -m "feat: 搜索框口令钩子，仅回车触发；搜索日志脱敏"
 ```
 
 ---
 
-### Task 8: VaultPage —— 合并时间线
-
-**Files:**
-- Create: `lib/features/vault/vault_page.dart`
-- Create: `lib/features/vault/widgets/vault_entry_card.dart`
-- Test: `test/features/vault/widgets/vault_entry_card_test.dart`
-
-**Interfaces:**
-- Consumes: `VaultController.instance`（Task 6）、`DatabaseService.getAllMemos()`（现有）
-- Produces: `class VaultPage extends StatefulWidget`、`class VaultEntryCard extends StatelessWidget`
-
-- [ ] **Step 1: 写 VaultEntryCard 的失败测试**
-
-```dart
-// test/features/vault/widgets/vault_entry_card_test.dart
-import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:isle_log/data/models/vault_entry.dart';
-import 'package:isle_log/features/vault/widgets/vault_entry_card.dart';
-
-void main() {
-  testWidgets('展示 vault 条目的正文摘要和锁标记', (tester) async {
-    final entry = VaultEntry(
-      id: 'e1',
-      content: '这是一条隐私日记',
-      createdAt: DateTime(2026, 8, 24, 9, 0),
-      updatedAt: DateTime(2026, 8, 24, 9, 0),
-      tags: const [],
-      attachmentIds: const [],
-    );
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: VaultEntryCard(entry: entry, onTap: () {})),
-      ),
-    );
-
-    expect(find.textContaining('这是一条隐私日记'), findsOneWidget);
-    expect(find.byIcon(Icons.lock), findsOneWidget);
-  });
-}
-```
-
-- [ ] **Step 2: 运行确认失败**
-
-Run: `flutter test test/features/vault/widgets/vault_entry_card_test.dart`
-Expected: FAIL，找不到 `lib/features/vault/widgets/vault_entry_card.dart`。
-
-- [ ] **Step 3: 实现 VaultEntryCard**
-
-```dart
-// lib/features/vault/widgets/vault_entry_card.dart
-import 'package:flutter/material.dart';
-
-import '../../../data/models/vault_entry.dart';
-import '../../../shared/constants/app_constants.dart';
-
-class VaultEntryCard extends StatelessWidget {
-  final VaultEntry entry;
-  final VoidCallback onTap;
-
-  const VaultEntryCard({super.key, required this.entry, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final preview = entry.content.length > 80
-        ? '${entry.content.substring(0, 80)}…'
-        : entry.content;
-    return Card(
-      color: AppColors.surfaceWhite,
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: ListTile(
-        onTap: onTap,
-        leading: const Icon(Icons.lock, size: 18, color: AppColors.primaryDark),
-        title: Text(preview, maxLines: 3, overflow: TextOverflow.ellipsis),
-        subtitle: Text(_formatTime(entry.createdAt)),
-      ),
-    );
-  }
-
-  String _formatTime(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
-      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-}
-```
-
-- [ ] **Step 4: 运行确认通过**
-
-Run: `flutter test test/features/vault/widgets/vault_entry_card_test.dart`
-Expected: PASS。
-
-- [ ] **Step 5: 实现 VaultPage（合并时间线，不单独写测试——理由同 Task 7 Step 2：本代码库的页面级组件普遍靠手动验证，子组件才写单测）**
-
-```dart
-// lib/features/vault/vault_page.dart
-import 'package:flutter/material.dart';
-
-import '../../data/database/database_service.dart';
-import '../../data/models/memo_entry.dart';
-import '../../data/models/vault_entry.dart';
-import '../../services/vault/vault_controller.dart';
-import 'vault_editor_page.dart';
-import 'widgets/vault_entry_card.dart';
-
-sealed class _TimelineItem {
-  DateTime get time;
-}
-
-class _MainItem extends _TimelineItem {
-  final MemoEntry memo;
-  _MainItem(this.memo);
-  @override
-  DateTime get time => memo.createdAt;
-}
-
-class _VaultItem extends _TimelineItem {
-  final VaultEntry entry;
-  _VaultItem(this.entry);
-  @override
-  DateTime get time => entry.createdAt;
-}
-
-class VaultPage extends StatefulWidget {
-  const VaultPage({super.key});
-
-  @override
-  State<VaultPage> createState() => _VaultPageState();
-}
-
-class _VaultPageState extends State<VaultPage> {
-  bool _vaultOnly = false;
-  List<MemoEntry> _mainMemos = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadMain();
-    // 后台超时锁定时必须把页面主动弹掉——否则会停在一个已经没有密钥、
-    // 却仍在展示已解密内容的页面上。
-    VaultController.instance.isUnlockedListenable.addListener(_onLockChanged);
-  }
-
-  void _onLockChanged() {
-    if (!VaultController.instance.isUnlocked && mounted) {
-      Navigator.of(context).popUntil((route) => route.isFirst);
-    }
-  }
-
-  Future<void> _loadMain() async {
-    final memos = await DatabaseService.getAllMemos();
-    if (mounted) setState(() => _mainMemos = memos);
-  }
-
-  @override
-  void dispose() {
-    VaultController.instance.isUnlockedListenable.removeListener(_onLockChanged);
-    VaultController.instance.lock(); // 离开页面即锁定
-    super.dispose();
-  }
-
-  List<_TimelineItem> _mergedItems() {
-    final vaultEntries = VaultController.instance.entries;
-    final items = <_TimelineItem>[
-      if (!_vaultOnly) ..._mainMemos.map(_MainItem.new),
-      ...vaultEntries.map(_VaultItem.new),
-    ];
-    items.sort((a, b) => b.time.compareTo(a.time));
-    return items;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final items = _mergedItems();
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('隐私空间'),
-        actions: [
-          IconButton(
-            icon: Icon(_vaultOnly ? Icons.filter_alt : Icons.filter_alt_outlined),
-            tooltip: _vaultOnly ? '显示全部' : '仅看隐私',
-            onPressed: () => setState(() => _vaultOnly = !_vaultOnly),
-          ),
-        ],
-      ),
-      body: items.isEmpty
-          ? const Center(child: Text('还没有条目'))
-          : ListView.builder(
-              itemCount: items.length,
-              itemBuilder: (ctx, i) {
-                final item = items[i];
-                return switch (item) {
-                  _VaultItem(:final entry) => VaultEntryCard(
-                    entry: entry,
-                    onTap: () async {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => VaultEditorPage(existing: entry),
-                        ),
-                      );
-                      setState(() {});
-                    },
-                  ),
-                  _MainItem(:final memo) => ListTile(
-                    title: Text(
-                      memo.content,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: const Text('（普通日记，可从这里移入隐私空间）'),
-                  ),
-                };
-              },
-            ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () async {
-          await Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const VaultEditorPage()),
-          );
-          setState(() {});
-        },
-        child: const Icon(Icons.add),
-      ),
-    );
-  }
-}
-```
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add lib/features/vault/vault_page.dart lib/features/vault/widgets/vault_entry_card.dart test/features/vault/widgets/vault_entry_card_test.dart
-git commit -m "feat: 新增隐私空间合并时间线页面"
-```
-
----
-
-### Task 9: VaultEditorPage —— 精简编辑器（不写草稿）
-
-**Files:**
-- Create: `lib/features/vault/vault_editor_page.dart`
-
-**Interfaces:**
-- Consumes: `VaultController.instance`（Task 6）、`VaultEntry`（Task 3）
-- Produces: `class VaultEditorPage extends StatefulWidget { const VaultEditorPage({VaultEntry? existing}); }`
-
-**为什么不复用 `MemoEditorPage`**：那个文件 3000+ 行，耦合了 AI 润色、天气、位置、网络附件上传队列等一整套与"离线优先同步引擎"绑定的逻辑，且草稿自动保存分散在多处调用点（`memo_editor_page.dart:513/514/524/526/1382`）。把隐私属性塞进去意味着要在一个巨大、复杂、非隐私设计的文件里逐处审计"这条路径会不会碰草稿/网络"，审计面远大于收益。新写一个精简编辑器，安全性质从"没有调用草稿 API"这一行代码就能看出来。
-
-- [ ] **Step 1: 实现（无预写测试——纯 UI 交互页面，手动验证见 Step 2，遵循 Task 7/8 的既有先例）**
-
-```dart
-// lib/features/vault/vault_editor_page.dart
-import 'dart:io';
-
-import 'package:flutter/material.dart';
-import 'package:uuid/uuid.dart';
-
-import '../../data/models/vault_entry.dart';
-import '../../services/vault/vault_controller.dart';
-
-class VaultEditorPage extends StatefulWidget {
-  final VaultEntry? existing;
-
-  const VaultEditorPage({super.key, this.existing});
-
-  @override
-  State<VaultEditorPage> createState() => _VaultEditorPageState();
-}
-
-class _VaultEditorPageState extends State<VaultEditorPage> {
-  late final TextEditingController _controller;
-  bool _saving = false;
-
-  @override
-  void initState() {
-    super.initState();
-    // 有意不读取/写入 SettingsService 的草稿字段——这是隐私空间编辑器
-    // 与 MemoEditorPage 的核心区别，绝不能让内容明文落进 SharedPreferences。
-    _controller = TextEditingController(text: widget.existing?.content ?? '');
-    VaultController.instance.isUnlockedListenable.addListener(_onLockChanged);
-  }
-
-  /// 后台超时锁定时，清空输入框并退出。
-  ///
-  /// 不做这件事的后果：编辑器仍持有明文，且此时点保存会走到已经没有主密钥的
-  /// 存储层（Task 5 的 `_requireKey()` 会抛 StateError）。
-  void _onLockChanged() {
-    if (!VaultController.instance.isUnlocked && mounted) {
-      _controller.clear();
-      Navigator.of(context).popUntil((route) => route.isFirst);
-    }
-  }
-
-  @override
-  void dispose() {
-    VaultController.instance.isUnlockedListenable.removeListener(_onLockChanged);
-    _controller.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    if (!VaultController.instance.isUnlocked) {
-      // 保存过程中刚好被后台超时锁掉：直接退出，不尝试写入。
-      if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
-      return;
-    }
-    if (_controller.text.trim().isEmpty) {
-      Navigator.of(context).pop();
-      return;
-    }
-    setState(() => _saving = true);
-    final now = DateTime.now();
-    final entry = widget.existing != null
-        ? (widget.existing!..content = _controller.text)
-        : VaultEntry(
-            id: const Uuid().v4(),
-            content: _controller.text,
-            createdAt: now,
-            updatedAt: now,
-            tags: const [],
-            attachmentIds: const [],
-          );
-    await VaultController.instance.saveEntry(entry);
-    if (mounted) Navigator.of(context).pop();
-  }
-
-  Future<void> _delete() async {
-    final existing = widget.existing;
-    if (existing == null) return;
-    await VaultController.instance.deleteEntry(existing.id);
-    if (mounted) Navigator.of(context).pop();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.existing == null ? '新建隐私日记' : '编辑'),
-        actions: [
-          if (widget.existing != null)
-            IconButton(icon: const Icon(Icons.delete_outline), onPressed: _delete),
-          IconButton(
-            icon: _saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.check),
-            onPressed: _saving ? null : _save,
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: TextField(
-          controller: _controller,
-          maxLines: null,
-          expands: true,
-          autofocus: widget.existing == null,
-          decoration: const InputDecoration(
-            border: InputBorder.none,
-            hintText: '写点什么…',
-          ),
-        ),
-      ),
-    );
-  }
-}
-```
-
-- [ ] **Step 2: 手动验证**
-
-1. `flutter run`，进入隐私空间，点右下角 `+`
-2. 输入文字，点右上角勾 → 应返回列表并看到新条目
-3. 重启 App，用同一口令重新进入隐私空间 → 内容应仍在（验证持久化）
-4. 打开条目编辑，点删除图标 → 应从列表消失
-5. 检查 `SharedPreferences`（真机上可用 `flutter run` 日志或临时加一行 `debugPrint` 验证）在整个操作过程中 `draft_content` key 从未被写入
-6. **锁定退出验证**：把 `VaultController._backgroundLockTimeout` 临时改成 3 秒 → 打开编辑器输入一些文字 → 切到后台等 5 秒 → 切回 → 应自动弹回主页，且不崩溃；此时再进隐私空间需重新输口令。验证完把超时改回 60 秒
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add lib/features/vault/vault_editor_page.dart
-git commit -m "feat: 新增隐私空间精简编辑器，不写草稿"
-```
-
----
-
-### Task 10: 附件捕获与内存内查看
+### Task 11: 附件捕获与内存内查看
 
 **Files:**
 - Create: `lib/features/vault/vault_audio_source.dart`
@@ -2398,7 +2559,7 @@ import '../../data/models/vault_entry.dart';
 
 在 UI 里的 `AppBar.actions` 加两个按钮触发 `_pickImage` / `_toggleRecording`（拍照按钮同理可加 `ImageSource.camera`，此处不重复列出，与 `_pickImage` 写法一致，仅 `source` 参数不同）。
 
-在 `VaultController`（Task 6 的类）里补一个方法：
+在 `VaultController`（Task 7 的类）里补一个方法：
 
 ```dart
   Future<void> addAttachment(VaultAttachment attachment) =>
@@ -2453,7 +2614,7 @@ git commit -m "feat: 隐私空间支持图片/录音附件，查看播放不落�
 
 ---
 
-### Task 11: API 补齐 —— 硬删除 + 按 memo 列附件 + 下载字节
+### Task 12: API 补齐 —— 硬删除 + 按 memo 列附件 + 下载字节
 
 **Files:**
 - Modify: `lib/services/api/memos_api_service.dart`
@@ -2465,11 +2626,11 @@ git commit -m "feat: 隐私空间支持图片/录音附件，查看播放不落�
   - `Future<List<Map<String, dynamic>>> MemosApiService.listMemoAttachments(String memoId)`
   - `Future<Uint8List?> MemosApiService.downloadAttachmentBytes(String resName, String filename)`
 
-后两个是 Task 13 换机恢复要用的：拉回 `backup.dat`（即 `atc.bin` 密文）需要先列出封面 memo 的附件，再按资源名下载字节。现有 `AttachmentService.downloadToLocal` 会把文件写到本地磁盘，vault 场景不能用——附件密文必须直接进内存。
+后两个是 Task 14 同步/换机恢复要用的：拉回 `idx.dat` / `atc.dat`（两份密文）需要先列出封面 memo 的附件，再按资源名下载字节。现有 `AttachmentService.downloadToLocal` 会把文件写到本地磁盘，vault 场景不能用——附件密文必须直接进内存。
 
 对应文档：`server-API.md` 的「列出 Memo 的附件」`GET /api/v1/memos/:id/attachments`（响应 `{"attachments":[...]}`）和「下载附件」`GET /file/attachments/:id/:filename`。
 
-**⚠️ 阻塞说明**：`?hard=true` 需要服务端新增对应处理逻辑（物理删除 memo 行 + 其版本历史表记录），服务端代码不在本仓库，需要在 islelog-server 项目里单独实现和部署。在服务端就绪前，Task 12 的移入功能调用这个接口时，效果等同于当前的软删除——明文仍留在服务端数据库，这是已知的、暂时无法在客户端侧解决的缺口（已在 spec 第 11 节标注）。另两个接口服务端已存在，不阻塞。
+**⚠️ 阻塞说明**：`?hard=true` 需要服务端新增对应处理逻辑（物理删除 memo 行 + 其版本历史表记录），服务端代码不在本仓库，需要在 islelog-server 项目里单独实现和部署。在服务端就绪前，Task 13 的移入功能调用这个接口时，效果等同于当前的软删除——明文仍留在服务端数据库，这是已知的、暂时无法在客户端侧解决的缺口（已在 spec 第 11 节标注）。另两个接口服务端已存在，不阻塞。
 
 - [ ] **Step 1: 找到现有实现**
 
@@ -2560,7 +2721,7 @@ git commit -m "feat: API 补齐硬删除参数、按 memo 列附件、下载附�
 
 ---
 
-### Task 12: 移入 / 移出（含级联清理）
+### Task 13: 移入 / 移出（含级联清理）
 
 **Files:**
 - Create: `lib/services/vault/vault_migration.dart`
@@ -2580,13 +2741,27 @@ git commit -m "feat: API 补齐硬删除参数、按 memo 列附件、下载附�
 | 本地附件明文文件 | `attachmentsJson` 里的 `localPath` 指向应用附件目录里的明文文件，包括刚 `downloadToLocal` 拉回的那份副本 | `AttachmentService.deleteLocal(localPath)` |
 | 评论 | `CommentEntry.memoId` 仍指向已删 memo，`searchComments` 仍能搜到其明文内容 | `getCommentsByMemoId(id)` → 逐个 `hardDeleteComment` |
 | 事件串成员引用 | `ThreadEntry.memberLocalIds` 仍含该 memo id。现有 `softDelete`（`database_service.dart:166`）调了清理，`hardDelete`（:172）**没调**——这是既存缺口 | `removeMemoFromAllThreads(id)`（`database_service.dart:1451`） |
-| 同步竞态 | 后台 `pushPendingBackground()` 可能正在推这条 memo，导致"远端删完又被重建" | 前置检查 `syncStatus == pending` 时拒绝，不引入"暂停同步引擎"这种重机制 |
+| 同步竞态 A | 后台 `pushPendingBackground()` 只推 pending 条目，可能正在推这条 memo | 前置检查 `syncStatus == pending` 时拒绝 |
+| 同步竞态 B | 一次 `syncAll()` 可能**已经拉到**远端列表，此时我远端硬删 + 本地硬删，随后 `_applyRemoteMemo` 拿着旧列表又把它建回来。前置检查关不掉这个窗口 | 整个移入过程走 `SyncService` 已有的任务队列（`sync_service.dart:76` 的 `_taskQueue`）串行化 |
 
-**移出必须还原附件**，不能静默销毁——`deleteEntry` 会连带把 `atc.bin` 里的附件字节删掉（Task 5 的实现），照片/录音就永久没了。做法是解密字节 → 临时文件 → `AttachmentService.saveLocally()` → 挂到新 `MemoEntry` → 删临时文件。不采用"弹窗告知附件将被删除"的替代方案：数据不该丢。
+**移出必须还原附件**，不能静默销毁——`deleteEntry` 会连带把 `atc.bin` 里的附件字节删掉（Task 6 的实现），照片/录音就永久没了。做法是解密字节 → 临时文件 → `AttachmentService.saveLocally()` → 挂到新 `MemoEntry` → 删临时文件。不采用"弹窗告知附件将被删除"的替代方案：数据不该丢。
 
-- [ ] **Step 1: 实现**
+- [ ] **Step 1: SyncService 暴露串行化入口**
 
-无预写单测——依赖真实网络 IO 和 Isar，与 `sync_service.dart` 里同类集成函数的现状一致（那些函数也没有直接单测，只有其内部纯逻辑被抽成 `*_policy.dart` 单测）。验证靠 Step 3 的手动流程。
+`sync_service.dart:76` 已有 `static final SyncTaskQueue _taskQueue = SyncTaskQueue();`，`syncAll` / `syncFull` / `pushPendingBackground` 都走它。加一个 public 入口，让移入过程能排进同一条队列：
+
+```dart
+  /// 在同步任务队列里独占执行 [task]，与 syncAll / pushPendingBackground 互斥。
+  ///
+  /// 供隐私空间移入使用：移入要远端硬删 + 本地硬删，若与一次正在进行的
+  /// syncAll 交错，可能出现"删完又被 _applyRemoteMemo 用旧列表重建"。
+  static Future<T> runExclusive<T>(Future<T> Function() task) =>
+      _taskQueue.run(task);
+```
+
+- [ ] **Step 2: 实现迁移**
+
+无预写单测——依赖真实网络 IO 和 Isar，与 `sync_service.dart` 里同类集成函数的现状一致（那些函数也没有直接单测，只有其内部纯逻辑被抽成 `*_policy.dart` 单测）。验证靠手动流程。
 
 ```dart
 // lib/services/vault/vault_migration.dart
@@ -2603,6 +2778,7 @@ import '../../data/models/vault_entry.dart';
 import '../api/memos_api_service.dart';
 import '../attachment/attachment_service.dart';
 import '../settings/settings_service.dart';
+import '../sync/sync_service.dart';
 import 'vault_controller.dart';
 
 enum VaultMigrationResult { ok, blockedPendingSync, failed }
@@ -2613,9 +2789,11 @@ class VaultMigration {
 
   /// 普通日记 → vault。
   ///
-  /// 前置拒绝 pending：移入过程要删远端条目，而后台 pushPendingBackground()
-  /// 可能正在推送这条 memo，会导致"远端删完又被重建"。用前置条件关掉这个
-  /// 竞态窗口，比引入暂停同步引擎的机制简单可靠。
+  /// 两道并发防护：
+  /// 1. 前置拒绝 pending——后台 pushPendingBackground() 只推 pending 条目；
+  /// 2. 整个过程走 SyncService 的任务队列串行化——关掉第 1 条关不掉的窗口：
+  ///    一次 syncAll() 可能已拉到远端列表，我这边远端硬删+本地硬删之后，
+  ///    _applyRemoteMemo 拿着旧列表又会把它建回来。
   static Future<VaultMigrationResult> moveIntoVault(MemoEntry memo) async {
     if (memo.syncStatus == SyncStatus.pending) {
       return VaultMigrationResult.blockedPendingSync;
@@ -2623,7 +2801,10 @@ class VaultMigration {
     if (!VaultController.instance.isUnlocked) {
       return VaultMigrationResult.failed;
     }
+    return SyncService.runExclusive(() => _moveIntoVaultLocked(memo));
+  }
 
+  static Future<VaultMigrationResult> _moveIntoVaultLocked(MemoEntry memo) async {
     final url = await SettingsService.serverUrl;
     final token = await SettingsService.accessToken;
     final api = (url != null && url.isNotEmpty && token != null && token.isNotEmpty)
@@ -2631,6 +2812,9 @@ class VaultMigration {
         : null;
 
     // ── 1. 收集附件字节，写进 vault ──
+    //
+    // 任何一个附件取不到字节就中止整个移入。不能 continue 跳过——那是把
+    // "移入"变成"移入并静默丢掉几张照片"，和移出销毁附件是同一类数据丢失。
     final attachmentIds = <String>[];
     final resolved = <AttachmentInfo>[];
     for (final att in memo.attachments) {
@@ -2640,9 +2824,13 @@ class VaultMigration {
       if (missing && url != null && token != null) {
         local = await AttachmentService.downloadToLocal(att, url, token);
       }
-      if (local.localPath == null) {
-        debugPrint('[VaultMigration] 附件无法取得字节，跳过：${local.filename}');
-        continue;
+      if (local.localPath == null || !File(local.localPath!).existsSync()) {
+        debugPrint('[VaultMigration] 附件字节取不到，中止移入：${local.filename}');
+        // 已写进 vault 的附件回滚掉，避免留下孤儿字节占空间
+        for (final id in attachmentIds) {
+          await VaultController.instance.storage.removeAttachment(id);
+        }
+        return VaultMigrationResult.failed;
       }
       final bytes = await File(local.localPath!).readAsBytes();
       final id = const Uuid().v4();
@@ -2761,7 +2949,7 @@ class VaultMigration {
 }
 ```
 
-- [ ] **Step 2: 在 VaultPage 加入口**
+- [ ] **Step 3: 在 VaultPage 加入口**
 
 `_MainItem` 分支的 `ListTile` 加 `onLongPress`：
 
@@ -2815,46 +3003,73 @@ class VaultMigration {
 
 文件顶部加 `import '../../services/vault/vault_migration.dart';`。
 
-- [ ] **Step 3: 手动验证**
+- [ ] **Step 4: 手动验证**
 
 1. 在隐私空间页长按一条**已同步**的普通日记 → 确认后应从普通分组消失，出现在带锁标记的条目里
 2. 返回主页时间线 → 该日记应完全不见；主页搜索它的正文和**它的评论内容** → 都应搜不到
 3. 长按一条**有未同步改动**的日记 → 应提示"请先完成同步"，不执行移入
 4. 移入一条带图片的日记后，检查应用附件目录（`Application Documents/attachments/`）→ 对应的明文图片文件应已被删除
 5. 把刚才那条移出 vault → 图片应重新出现在主库日记里且能正常显示
-6. 若已配置服务端：登录后台确认该 memo 已被删除（软删或硬删取决于服务端是否已支持 `?hard=true`，见 Task 11）
+6. **附件取不到时中止**：断网 + 手动删掉某条日记的本地附件文件后长按移入 → 应提示失败，且该日记**仍在**主时间线上（不是"移入了但少了张图"）
+6. 若已配置服务端：登录后台确认该 memo 已被删除（软删或硬删取决于服务端是否已支持 `?hard=true`，见 Task 12）
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add lib/services/vault/vault_migration.dart lib/features/vault/vault_page.dart
-git commit -m "feat: 隐私空间移入/移出，含评论/事件串/附件文件级联清理"
+git add lib/services/vault/vault_migration.dart lib/features/vault/vault_page.dart lib/services/sync/sync_service.dart
+git commit -m "feat: 隐私空间移入/移出，含级联清理与同步队列串行化"
 ```
 
 ---
 
-### Task 13: 同步 —— 封面故事 memo + 换机恢复
+### Task 14: 同步 —— 封面备份 memo + 换机恢复
 
 **Files:**
-- Create: `lib/services/vault/vault_sync.dart`（Task 7 若已创建桩文件，此处填充完整实现）
+- Create: `lib/services/vault/vault_sync.dart`（Task 10 若已创建桩文件，此处填充完整实现）
+- Modify: `lib/services/vault/vault_storage.dart`
+- Modify: `lib/services/vault/vault_controller.dart`
 - Modify: `lib/services/sync/sync_service.dart`
 - Modify: `lib/services/settings/settings_service.dart`
 
 **Interfaces:**
-- Consumes: `VaultController`（Task 6）、`MemosApiService`（Task 11）
+- Consumes: `VaultController`（Task 7）、`MemosApiService`（Task 12）
 - Produces:
+  - `static const String VaultSync.contentHeader`
   - `Future<void> VaultSync.push()`
   - `Future<void> VaultSync.pullIfNewer()`
-  - `Future<bool> VaultSync.recoverFromRemote(String passphrase)` — Task 7 的 `?` 前缀调用
-  - `SyncService._applyRemoteMemo` 新增前缀过滤
+  - `Future<bool> VaultSync.recoverFromRemote(String passphrase)`
+  - `bool VaultSync.isBackupMemoContent(String content)` — 供 `_applyRemoteMemo` 过滤
+  - `SyncService._applyRemoteMemo` 新增过滤
 
-**同步模型：单设备写 + 换机恢复**
+#### 密文一律走附件，正文保持人话
 
-v1 不支持多设备并行编辑。`revision`（Task 3 的 `VaultBody` 字段）提供整体先后取舍：远端 revision 更高就整体采用远端，否则保留本地。两台设备各自离线编辑后先后推送，**后推送的整体覆盖先推送的，没有合并**。
+```
+content:    "📦 加密备份\n更新于 2026-08-24 21:03"
+visibility: PRIVATE
+附件:        idx.dat（idx.bin 密文）、atc.dat（atc.bin 密文）
+```
 
-**换机恢复为什么能成立**：MK 是随机生成的、属于 vault 而非设备，keyslot 跟着 `idx.bin` 走（Task 5 的文件格式）。所以新设备只要拿到远端的 `idx.bin`，用同一口令就能解开——**前提是它不能先自己 `createVault`**（那会生成一把无关的新 MK）。这就是为什么恢复要走独立的 `?` 前缀，而不是"解锁失败后自动尝试"。
+早先设计是把 `idx.bin` base64 塞进 `content`、前缀 `IsleLog-Backup/1`。三个问题：
 
-走显式前缀的另一个原因：避免每次长搜索词失败都触发一次远端全量列表拉取——那既慢又在网络层可观察。
+1. **服务端版本历史会被撑爆**。每次保存 vault 都要把整个 vault 的 base64 作为新正文 PATCH 上去，而服务端存 memo 正文的版本历史（`server-API.md` 的「Memo 版本历史」）——写 10 条日记就在版本表里留 10 份多 MB 的副本，永久保留。
+2. **公版包会显示成一坨乱码**。`kVaultEnabled=false` 的包不含任何 vault 代码，也就不含跳过逻辑；若它登录同一账号，时间线上会出现一条 base64 天书。要让公版能跳过，就得把识别字符串编译进公版——那等于在分享包里留下"这个 App 有隐私功能"的证据，与 Task 2 的目标直接冲突。
+3. `content` 本来就不是放二进制的地方，尺寸上限取决于服务端实现。
+
+改成正文一句人话、密文全走附件之后：公版即使登录同账号，看到的也只是一条"📦 加密备份 / 更新于 …"的普通备忘录——**这正是封面故事本身**，公版不需要任何特殊处理；版本历史里只存那行短文本；附件走对象存储，是二进制该待的地方。
+
+私版靠正文模板识别并在 `_applyRemoteMemo` 里跳过。这个字符串只存在于私版二进制中，且它本身也只是个无害的功能名。
+
+#### ⚠️ 更新时不能用 updateMemo 的默认行为
+
+`MemosApiService.updateMemo` **无条件**发送 `attachments` 字段（`memos_api_service.dart:209`），而 `attachmentNames` 默认是空列表；`server-API.md` 明确 PATCH 附件是**全量替换**。所以直接调 `updateMemo(name:, content:)` 会把已挂的 `idx.dat` / `atc.dat` 全部解绑，下次恢复就找不到密文了。
+
+正确顺序：先传新附件 → `setMemoAttachments` 全量关联新的 → 删旧附件资源 → 更新正文时显式带上当前附件名列表。
+
+#### 同步模型：单设备写 + 换机恢复
+
+v1 不支持多设备并行编辑。`revision`（Task 4 的 `VaultBody` 字段）提供整体先后取舍：远端 revision 更高就整体采用远端，否则保留本地。两台设备各自离线编辑后先后推送，**后推送的整体覆盖先推送的，没有合并**。
+
+**换机恢复为什么能成立**：MK 是随机生成的、属于 vault 而非设备，keyslot 跟着 `idx.bin` 走（Task 6 的文件格式）。新设备只要拿到远端的 `idx.dat`，用同一口令就能解开——**前提是它不能先自己 `createVault`**（那会生成一把无关的新 MK）。这就是恢复要走独立 `?` 前缀、而不是"解锁失败后自动尝试"的原因：后者会让无 vault 设备上每次长搜索失败都触发一次远端全量列表拉取，既慢又在网络层可观察。
 
 - [ ] **Step 1: SettingsService 加中性命名的资源指针**
 
@@ -2871,9 +3086,38 @@ v1 不支持多设备并行编辑。`revision`（Task 3 的 `VaultBody` 字段�
   }
 ```
 
-key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPreferences 的 key 名在系统备份导出的 XML/plist 里是明文可读的，`vault` 这个词本身就是线索。它存的只是资源指针，不含秘密，与"加密云备份"的封面故事一致。
+key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPreferences 的 key 名在系统备份导出的 XML/plist 里明文可读，`vault` 这个词本身就是线索。它存的只是资源指针，不含秘密，与"加密云备份"的封面故事一致。
 
-- [ ] **Step 2: sync_service.dart 加前缀过滤**
+- [ ] **Step 2: MemosApiService 加 setMemoAttachments**
+
+在 `lib/services/api/memos_api_service.dart` 里，`listMemoAttachments` 之后追加（对应 `server-API.md` 的「设置 Memo 的附件」）：
+
+```dart
+  /// 全量替换 memo 关联的附件列表
+  ///
+  /// [memoName]：形如 "memos/123"
+  /// [attachmentNames]：形如 ["attachments/456"]，传空列表则解除全部关联
+  Future<void> setMemoAttachments({
+    required String memoName,
+    required List<String> attachmentNames,
+  }) async {
+    final memoId = memoName.split('/').last;
+    debugPrint('[API] setMemoAttachments $memoName ← ${attachmentNames.length} 个');
+    try {
+      await _dio.patch(
+        '/api/v1/memos/$memoId/attachments',
+        data: {
+          'name': memoName,
+          'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+        },
+      );
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+```
+
+- [ ] **Step 3: sync_service.dart 加过滤**
 
 在 `_applyRemoteMemo`（约第 913 行）开头插入：
 
@@ -2883,9 +3127,8 @@ key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPre
     String baseUrl, {
     required bool archived,
   }) async {
-    final content = data['content'] as String? ?? '';
-    if (content.startsWith(VaultSync.contentPrefix)) {
-      return 0; // 隐私空间封面故事 memo：不写入主库、不渲染
+    if (VaultSync.isBackupMemoContent(data['content'] as String? ?? '')) {
+      return 0; // 隐私空间的封面备份 memo：不写入主库、不渲染
     }
 
     final remoteName = data['name'] as String;
@@ -2894,11 +3137,12 @@ key 名刻意取中性的 `enc_backup_memo_name` 而非 `vault_*`——SharedPre
 
 顶部加 `import '../vault/vault_sync.dart';`。
 
-- [ ] **Step 3: 实现 VaultSync**
+> 这段过滤本身不需要 `kVaultEnabled` 判断：公版编译时 `vault_sync.dart` 里除 `contentHeader`/`isBackupMemoContent` 外都会被 tree-shake；即使这行留着，公版最多是不显示那条备忘录，不会暴露任何东西。若希望公版连这个字符串都不含，把这段也包进 `if (kVaultEnabled)`——公版就会把它当普通备忘录显示出来，效果同样可接受。二选一，实现时取前者（更少的公版行为差异）。
+
+- [ ] **Step 4: 实现 VaultSync**
 
 ```dart
 // lib/services/vault/vault_sync.dart
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -2909,15 +3153,27 @@ import '../api/memos_api_service.dart';
 import '../settings/settings_service.dart';
 import 'vault_controller.dart';
 
-/// 隐私空间同步：加密后的 idx.bin 作为一条"加密备份" memo 的正文上传，
-/// atc.bin 作为该 memo 的附件上传。只在解锁期间进行。
+/// 隐私空间同步。
 ///
-/// 对应的前缀过滤见 sync_service.dart 的 _applyRemoteMemo。
+/// 正文是一句人话（封面故事），两份密文作为附件上传。只在解锁期间进行。
 class VaultSync {
   VaultSync._();
 
-  static const contentPrefix = 'IsleLog-Backup/1';
-  static const _attachmentFilename = 'backup.dat';
+  /// 封面 memo 的正文首行。私版据此识别并跳过渲染。
+  static const contentHeader = '📦 加密备份';
+
+  static const _indexFilename = 'idx.dat';
+  static const _packFilename = 'atc.dat';
+
+  static bool isBackupMemoContent(String content) =>
+      content.startsWith(contentHeader);
+
+  static String _buildContent() {
+    final now = DateTime.now();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '$contentHeader\n更新于 ${now.year}-${two(now.month)}-${two(now.day)} '
+        '${two(now.hour)}:${two(now.minute)}';
+  }
 
   static Future<MemosApiService?> _api() async {
     final url = await SettingsService.serverUrl;
@@ -2938,49 +3194,78 @@ class VaultSync {
     final storage = VaultController.instance.storage;
     final idxBytes = await storage.readEncryptedIndexBytes();
     if (idxBytes == null) return;
-
-    final content = '$contentPrefix\n${base64Encode(idxBytes)}';
-    final existingName = await SettingsService.encBackupMemoName;
+    final atcBytes = await storage.readEncryptedAttachmentBytes();
 
     try {
-      String memoName;
-      if (existingName != null) {
-        await api.updateMemo(
-          name: existingName,
-          content: content,
-          visibility: 'PRIVATE',
-        );
-        memoName = existingName;
-      } else {
+      var memoName = await SettingsService.encBackupMemoName;
+
+      // 记下旧附件，等新的关联成功后再删，避免中途失败把唯一副本删掉
+      final oldAttachmentNames = <String>[];
+      if (memoName != null) {
+        final existing = await api.listMemoAttachments(memoName.split('/').last);
+        oldAttachmentNames.addAll(existing.map((a) => a['name'] as String));
+      }
+
+      if (memoName == null) {
         final created = await api.createMemo(
-          content: content,
+          content: _buildContent(),
           visibility: 'PRIVATE',
         );
         memoName = created['name'] as String;
         await SettingsService.setEncBackupMemoName(memoName);
       }
 
-      final atcBytes = await storage.readEncryptedAttachmentBytes();
-      if (atcBytes != null) await _uploadAttachmentPack(api, memoName, atcBytes);
+      // 上传新密文附件
+      final newNames = <String>[];
+      newNames.add(await _uploadBlob(api, memoName, _indexFilename, idxBytes));
+      if (atcBytes != null) {
+        newNames.add(await _uploadBlob(api, memoName, _packFilename, atcBytes));
+      }
+
+      // 全量替换关联（updateMemo 的默认行为会解绑，必须走这个接口）
+      await api.setMemoAttachments(
+        memoName: memoName,
+        attachmentNames: newNames,
+      );
+
+      // 正文时间戳更新时必须显式带上当前附件名，否则又会被解绑
+      await api.updateMemo(
+        name: memoName,
+        content: _buildContent(),
+        visibility: 'PRIVATE',
+        attachmentNames: newNames,
+      );
+
+      // 新的关联稳了，再删旧资源，避免孤儿文件无限积累
+      for (final old in oldAttachmentNames) {
+        if (newNames.contains(old)) continue;
+        try {
+          await api.deleteAttachment(old);
+        } catch (e) {
+          debugPrint('[VaultSync] 旧附件删除失败（忽略）：$old $e');
+        }
+      }
     } catch (e) {
       debugPrint('[VaultSync] push 失败：$e');
     }
   }
 
-  static Future<void> _uploadAttachmentPack(
+  static Future<String> _uploadBlob(
     MemosApiService api,
     String memoName,
-    Uint8List atcBytes,
+    String filename,
+    Uint8List bytes,
   ) async {
     final tmpDir = await Directory.systemTemp.createTemp('vault_sync_');
     try {
-      final tmpFile = File(p.join(tmpDir.path, _attachmentFilename));
-      await tmpFile.writeAsBytes(atcBytes, flush: true);
-      await api.uploadAttachment(
+      final tmpFile = File(p.join(tmpDir.path, filename));
+      await tmpFile.writeAsBytes(bytes, flush: true);
+      final res = await api.uploadAttachment(
         file: tmpFile,
-        filename: _attachmentFilename,
+        filename: filename,
         memoName: memoName,
       );
+      return res['name'] as String;
     } finally {
       await tmpDir.delete(recursive: true);
     }
@@ -2992,23 +3277,23 @@ class VaultSync {
     if (!VaultController.instance.isUnlocked) return;
     final api = await _api();
     if (api == null) return;
-    final existingName = await SettingsService.encBackupMemoName;
-    if (existingName == null) return;
+    final memoName = await SettingsService.encBackupMemoName;
+    if (memoName == null) return;
 
     try {
-      final remote = await api.getMemo(existingName.split('/').last);
-      final idxBytes = _decodeIndexFrom(remote);
+      final idxBytes = await _downloadBlob(api, memoName, _indexFilename);
       if (idxBytes == null) return;
 
-      // 用当前会话已知可用的凭证去试解远端——解不开说明远端是另一个
-      // vault（或损坏），保留本地不动。adoptRemoteIndex 内部先验证后落盘。
       final storage = VaultController.instance.storage;
-      final localRevision = storage.revision;
-      final probe = await storage.peekRemoteRevision(idxBytes);
-      if (probe == null || probe <= localRevision) return;
+      final remoteRevision = await storage.peekRemoteRevision(idxBytes);
+      if (remoteRevision == null || remoteRevision <= storage.revision) return;
 
-      await storage.adoptRemoteIndexWithCurrentKey(idxBytes);
-      await _pullAttachmentPack(api, remote);
+      // 内部先验证后落盘
+      final ok = await storage.adoptRemoteIndexWithCurrentKey(idxBytes);
+      if (!ok) return;
+
+      final atcBytes = await _downloadBlob(api, memoName, _packFilename);
+      if (atcBytes != null) await storage.adoptRemoteAttachments(atcBytes);
     } catch (e) {
       debugPrint('[VaultSync] pullIfNewer 失败：$e');
     }
@@ -3016,10 +3301,9 @@ class VaultSync {
 
   // ── 换机恢复（本机无 vault，用输入的口令解远端） ──────────────
 
-  /// Task 7 的 `?口令` 入口调用。
+  /// Task 10 的 `?口令` 入口调用。
   ///
-  /// 流程：拉远端 memo 列表 → 按前缀找到备份条目 → 内存中用口令试解 keyslot
-  /// → 成功才落盘并解锁。任何一步失败都静默返回 false，不落盘、不提示。
+  /// 任何一步失败都静默返回 false，不落盘、不提示——行为与普通搜索失败一致。
   static Future<bool> recoverFromRemote(String passphrase) async {
     if (VaultController.instance.isUnlocked) return false;
     final api = await _api();
@@ -3027,23 +3311,28 @@ class VaultSync {
 
     try {
       final memos = await api.listAllMemos();
-      final backup = memos.where((m) {
-        final c = m['content'] as String? ?? '';
-        return c.startsWith(contentPrefix);
-      }).firstOrNull;
+      final backup = memos
+          .where((m) => isBackupMemoContent(m['content'] as String? ?? ''))
+          .firstOrNull;
       if (backup == null) return false;
 
-      final idxBytes = _decodeIndexFrom(backup);
+      final memoName = backup['name'] as String;
+      final idxBytes = await _downloadBlob(api, memoName, _indexFilename);
       if (idxBytes == null) return false;
 
+      // 内存中验证口令，成功才落盘
       final ok = await VaultController.instance.adoptRemoteIndex(
         idxBytes,
         passphrase,
       );
       if (!ok) return false;
 
-      await SettingsService.setEncBackupMemoName(backup['name'] as String);
-      await _pullAttachmentPack(api, backup);
+      await SettingsService.setEncBackupMemoName(memoName);
+
+      final atcBytes = await _downloadBlob(api, memoName, _packFilename);
+      if (atcBytes != null) {
+        await VaultController.instance.storage.adoptRemoteAttachments(atcBytes);
+      }
       return true;
     } catch (e) {
       debugPrint('[VaultSync] recoverFromRemote 失败：$e');
@@ -3053,45 +3342,27 @@ class VaultSync {
 
   // ── 共用 ──────────────────────────────────────────────────────
 
-  static Uint8List? _decodeIndexFrom(Map<String, dynamic> memo) {
-    final content = memo['content'] as String? ?? '';
-    if (!content.startsWith(contentPrefix)) return null;
-    try {
-      return base64Decode(content.substring(contentPrefix.length).trim());
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static Future<void> _pullAttachmentPack(
+  static Future<Uint8List?> _downloadBlob(
     MemosApiService api,
-    Map<String, dynamic> memo,
+    String memoName,
+    String filename,
   ) async {
-    final memoId = (memo['name'] as String).split('/').last;
-    final attachments = await api.listMemoAttachments(memoId);
-    final pack = attachments
-        .where((a) => a['filename'] == _attachmentFilename)
-        .firstOrNull;
-    if (pack == null) return;
-
-    final bytes = await api.downloadAttachmentBytes(
-      pack['name'] as String,
-      _attachmentFilename,
-    );
-    if (bytes == null) return;
-    // 内部先解密验证，成功才原子替换本地 atc.bin
-    await VaultController.instance.storage.adoptRemoteAttachments(bytes);
+    final attachments = await api.listMemoAttachments(memoName.split('/').last);
+    final target =
+        attachments.where((a) => a['filename'] == filename).firstOrNull;
+    if (target == null) return null;
+    return api.downloadAttachmentBytes(target['name'] as String, filename);
   }
 }
 ```
 
-- [ ] **Step 4: VaultStorage 补两个 pullIfNewer 要用的方法**
+- [ ] **Step 5: VaultStorage 补两个 pullIfNewer 要用的方法**
 
-在 `lib/services/vault/vault_storage.dart` 里追加（复用已有的 `_tryLoadIndexFrom` / `_atomicWrite` / `_applyLoaded`）：
+在 `lib/services/vault/vault_storage.dart` 里追加（复用已有的 `_atomicWrite`）：
 
 ```dart
   /// 用当前会话的主密钥窥探远端 index 的 revision，不落盘、不改内存状态。
-  /// 解不开（另一个 vault 或已损坏）返回 null。
+  /// 解不开（是另一个 vault，或已损坏）返回 null。
   Future<int?> peekRemoteRevision(Uint8List idxBytes) async {
     final mk = _masterKey;
     if (mk == null) return null;
@@ -3148,102 +3419,25 @@ class VaultSync {
   }
 ```
 
-- [ ] **Step 5: 接入调用点**
+- [ ] **Step 6: 接入调用点**
 
 `vault_controller.dart` 的 `saveEntry` / `deleteEntry` / `addAttachment` 末尾各加 `unawaited(VaultSync.push());`；`tryUnlock` 成功分支加 `unawaited(VaultSync.pullIfNewer());`。顶部加 `import 'dart:async';` 和 `import 'vault_sync.dart';`。
 
-- [ ] **Step 6: 手动验证**
+- [ ] **Step 7: 手动验证**
 
 1. 配置服务端 → 创建隐私空间 → 写一条日记带一张图
-2. 服务端后台确认出现一条 `IsleLog-Backup/1` 开头、`visibility=PRIVATE` 的 memo，且挂着一个 `backup.dat` 附件
-3. 换一台已登录同一服务端、**从未创建过隐私空间**的设备 → 主时间线不应出现任何异常内容（验证前缀过滤生效）
-4. **换机恢复**：在该设备搜索框输入 `?同一口令` 回车 → 应进入隐私空间并看到第 1 步写的日记和图片
-5. 在该设备输入 `?错误口令` → 应表现为普通搜索失败，本地不应产生 `blob/idx.bin`
+2. 服务端后台确认出现一条正文为「📦 加密备份 / 更新于 …」、`visibility=PRIVATE` 的 memo，挂着 `idx.dat` 和 `atc.dat` 两个附件
+3. **附件不被解绑**：再写一条隐私日记触发第二次 push → 后台确认该 memo 仍然挂着两个附件（不是 0 个），且旧附件资源已被清掉（没有越积越多）
+4. **版本历史不膨胀**：查看该 memo 的版本历史 → 每个版本的正文都只是那两行短文本
+5. 换一台已登录同一服务端、**从未创建过隐私空间**的设备 → 时间线上最多出现一条普通的"📦 加密备份"备忘录，无乱码、无崩溃
+6. **换机恢复**：在该设备搜索框输入 `?同一口令` 回车 → 应进入隐私空间并看到第 1 步写的日记和图片
+7. 输入 `?错误口令` → 应表现为普通搜索失败，本地不应产生 `blob/idx.bin`
 
-- [ ] **Step 7: Commit**
-
-```bash
-git add lib/services/vault/vault_sync.dart lib/services/vault/vault_storage.dart lib/services/vault/vault_controller.dart lib/services/sync/sync_service.dart lib/services/settings/settings_service.dart
-git commit -m "feat: 隐私空间同步与换机恢复"
-```
-
----
-
-### Task 14: 编译期开关 —— 分享版不含隐私空间
-
-**Files:**
-- Create: `lib/shared/constants/build_flags.dart`
-- Modify: `lib/main.dart`
-- Modify: `lib/features/home/home_view.dart`
-
-**Interfaces:**
-- Consumes: 无
-- Produces: `const bool kVaultEnabled`
-
-**为什么**：不只是运行时不显示入口，而是让分享出去的安装包在编译产物层面就不含这部分代码——这样即使有人拿这个包去反编译翻找，也翻不出"这个 App 曾经有隐私空间功能"这件事本身。
-
-- [ ] **Step 1: 新增开关文件**
-
-```dart
-// lib/shared/constants/build_flags.dart
-
-/// 编译期开关：控制隐私空间功能是否编译进最终产物。
-///
-/// 默认 true（日常自用构建不用额外传参）。要分享给他人的构建，显式传 false：
-///
-///   flutter build apk --release --dart-define=VAULT_ENABLED=false \
-///     --obfuscate --split-debug-info=build/symbols
-///
-/// 因为这是编译期常量，`if (kVaultEnabled)` 为 false 的分支在 release 编译时
-/// 会被当作死代码消除，连同其中只被这个分支引用的类一起被 tree-shake 掉，
-/// 不是运行时判断隐藏。`--obfuscate` 是顺手加的免费加固，不是本开关必需。
-const bool kVaultEnabled = bool.fromEnvironment(
-  'VAULT_ENABLED',
-  defaultValue: true,
-);
-```
-
-- [ ] **Step 2: main.dart 接入**
-
-把 Task 6 Step 5 加的两行包一层判断：
-
-```dart
-  if (kVaultEnabled) {
-    await VaultController.init();
-    VaultController.instance.attachLifecycleObserver();
-  }
-```
-
-文件顶部加 `import 'shared/constants/build_flags.dart';`。
-
-- [ ] **Step 3: home_view.dart 接入**
-
-把 Task 7 Step 1 加的钩子调用包一层判断：
-
-```dart
-    if (kVaultEnabled && _looksLikeVaultPassphrase(q)) {
-      final handled = await _tryHandleVaultInput(q);
-      if (handled) return;
-    }
-```
-
-文件顶部加 `import '../../shared/constants/build_flags.dart';`。
-
-- [ ] **Step 4: 验证两种构建都能跑**
-
-Run: `flutter build apk --debug`
-Expected: 成功（默认 `kVaultEnabled=true`）。
-
-Run: `flutter build apk --debug --dart-define=VAULT_ENABLED=false`
-Expected: 成功；安装运行后，搜索框输入任何长度≥8 的口令都只表现为普通搜索，无论内容是否满足大小写+数字，都不触发任何 vault 相关弹窗或跳转。
-
-这一步不做字节级反编译验证（超出常规开发流程的工具链，且对应的"不懂技术"威胁模型不需要这个强度的证明）——用"功能在运行时完全不可触发"作为验收标准。
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add lib/shared/constants/build_flags.dart lib/main.dart lib/features/home/home_view.dart
-git commit -m "feat: 新增隐私空间编译期开关，支持构建不含该功能的分享版"
+git add lib/services/vault/vault_sync.dart lib/services/vault/vault_storage.dart lib/services/vault/vault_controller.dart lib/services/sync/sync_service.dart lib/services/settings/settings_service.dart lib/services/api/memos_api_service.dart
+git commit -m "feat: 隐私空间同步与换机恢复，密文走附件、正文保持封面故事"
 ```
 
 ---
@@ -3423,14 +3617,30 @@ git commit -m "feat: 隐私空间截屏与任务切换器防护"
 
 ---
 
+## 全量验收（Task 15 完成后执行一次）
+
+- [ ] **私版构建**：`flutter build apk --release` → 安装后三种前缀（`+` / 无 / `?`）全部按 spec 第 4 节表现
+- [ ] **公版构建**：`flutter build apk --release --dart-define=VAULT_ENABLED=false --obfuscate --split-debug-info=build/symbols` → 安装后输入任何长度 ≥8 的串（含正确口令）都只表现为普通搜索，不触发任何弹窗或跳转
+- [ ] **公版字符串检查**：对公版产物跑 `strings` 或 `flutter build apk --analyze-size`，确认不含「隐私空间」「加密备份」「📦」等 vault 识别字符串。若有残留，说明某处 `kVaultEnabled` 分支没被 tree-shake，回头定位
+- [ ] **公版登录同账号**：时间线上最多出现一条普通的「📦 加密备份」备忘录，无乱码、无崩溃
+
+---
+
 ## Self-Review 记录
 
-- **Spec 覆盖**：第 3 节（密钥/文件格式/原子写/损坏容忍）→ Task 2/5；第 4 节（三种前缀入口、仅回车触发、锁定广播、截屏防护）→ Task 7/6/8/9/15；第 5 节（数据视图 + VaultBody）→ Task 3/8；第 6 节（附件）→ Task 4/10；第 7 节（移入移出 + 级联清理）→ Task 12；第 8 节（同步 + 换机恢复 + 先验证后覆盖）→ Task 13；第 9 节（编译期开关）→ Task 14；第 10 节（存储位置）→ Task 6；第 11 节（硬删除接口）→ Task 11；第 12 节（改动清单）→ 对应各任务。全部覆盖。
-- **占位符扫描**：已消除上一版 Task 13 里"pull 附件下载留白"的问题——`listMemoAttachments` / `downloadAttachmentBytes` 在 Task 11 补齐，Task 13 的 `_pullAttachmentPack` 是完整实现。全文无 TBD/TODO。
+- **Spec 覆盖**：spec §3（密钥/文件格式/原子写/损坏容忍/ASCII 约束）→ Task 3/6；§4（三种前缀、仅回车触发、锁定广播、自动保存、输入法与日志脱敏、截屏防护）→ Task 8/9/10/15；§5（数据视图 + VaultBody）→ Task 4/9；§6（附件）→ Task 5/11；§7（移入移出 + 级联清理 + 两道并发防护）→ Task 13；§8（密文走附件 + setMemoAttachments + 换机恢复 + 先验证后覆盖）→ Task 14；§9（编译期开关）→ Task 2；§10（存储位置）→ Task 7；§11（服务端硬删除语义）→ Task 12；§12（改动清单）→ 对应各任务。全部覆盖。
+- **任务顺序**：已按依赖重排，**每个提交都能独立编译**。编辑器（8）→ 页面（9）→ 入口（10）的顺序保证被引用者先存在；编译期开关提前到 Task 2，后续每个碰现有文件的任务在同一次提交里就套上 `kVaultEnabled`，不留未 gate 的中间状态。
+- **占位符扫描**：全文无 TBD/TODO。上一版 Task 13 的"pull 附件下载留白"已消除——`listMemoAttachments` / `downloadAttachmentBytes` / `setMemoAttachments` 都在 Task 12 补齐，Task 14 的 `_downloadBlob` 是完整实现。
 - **类型一致性**：
-  - `VaultController.instance.storage`（旧名 `storageForSyncAndMigration` 已全部替换）在 Task 12/13 统一使用
-  - `attachmentBytes` / `attachmentMimeType` 在 Task 5 定义、Task 6 转发、Task 10/12 使用，签名一致
-  - `VaultMigrationResult` 在 Task 12 定义并在同任务的 UI 分支里穷举处理
-  - `VaultSync.contentPrefix` 是 public 常量，Task 13 的 `sync_service.dart` 过滤直接引用它，不重复硬编字符串
-  - `VaultBody` 在 Task 3 定义，Task 5 的 `_flushIndex`/`_tryLoadIndexFrom`/`peekRemoteRevision` 一致引用
-- **已知前向依赖**：Task 7 的 `vault_entry_gate.dart` 引用 `VaultSync.recoverFromRemote`，而 `vault_sync.dart` 在 Task 13 才完整实现。Task 7 Step 3 的说明里要求先建一个返回 `false` 的桩，Task 13 再填充——这是全计划唯一一处跨任务前向依赖，已显式标注。
+  - `VaultController.instance.storage` 在 Task 13/14 统一使用（旧名 `storageForSyncAndMigration` 已全部替换）
+  - `attachmentBytes` / `attachmentMimeType` 在 Task 6 定义、Task 7 转发、Task 11/13 使用，签名一致
+  - `VaultCrypto.recoveryCodeLength` / `isAsciiPrintable` 在 Task 3 定义，Task 6（恢复码槽长度判断）与 Task 10（创建强度校验）引用
+  - `VaultMigrationResult` 在 Task 13 定义并在同任务的 UI 分支里穷举处理
+  - `VaultSync.contentHeader` / `isBackupMemoContent` 是 public，Task 14 的 `sync_service.dart` 过滤直接调用，不重复硬编字符串
+  - `VaultBody` 在 Task 4 定义，Task 6 的 `_flushIndex` / `_tryLoadIndexFrom` / `peekRemoteRevision` 一致引用
+- **唯一前向依赖**：Task 10 的 `vault_entry_gate.dart` 引用 `VaultSync.recoverFromRemote`，而 `vault_sync.dart` 在 Task 14 才完整实现。Task 10 要求先建一个返回 `false` 的桩，Task 14 填充——已在两处显式标注。
+- **刻意未采纳的评审建议**（附理由，避免后续重复讨论）：
+  1. **恢复不做「解锁失败后自动回退到远端」**：那会让无 vault 的设备上每次 ≥8 字符搜索失败都触发一次远端全量列表拉取，既慢又在网络层可观察。改用显式 `?` 前缀，并在创建时的恢复码弹窗里把这个用法一并告知用户。
+  2. **锁定计时不纳入 `inactive` / `hidden`**：下拉通知栏、来电横幅、权限弹窗都会触发这两个状态，纳入会让正常操作频繁掉锁；而它们本要解决的任务切换器截图问题，已由 Task 15 的 `FLAG_SECURE` / iOS 盖屏从根上解决。
+  3. **不调用平台 API 把 vault 文件排除出系统备份**：密文文件在备份里和在实机上暴露的信息量完全相同（都只是一个不明二进制）；而排除备份会让「换新手机走系统备份恢复」失效，在用户没配服务端同步时造成真实的数据丢失。
+  4. **不引入 NFC 归一化库**：改为在创建口令时强制 ASCII 可打印字符，从根上消掉 Unicode 组合形式差异导致「同一口令在新设备解不开」的问题。创建本就要求大小写字母 + 数字，已强烈指向 ASCII。

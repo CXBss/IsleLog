@@ -2,7 +2,7 @@
 
 日期：2026-08-24（2026-08-24 修订：评审后重做密钥恢复链路、落盘可靠性、迁移级联清理）
 分支：`server-feat`（客户端） / 服务端（islelog-server，参考 `server-API.md`）
-涉及仓库：本仓库（Flutter 客户端）；服务端需配合新增一个接口（见第 10 节）
+涉及仓库：本仓库（Flutter 客户端）；服务端需配合新增一个接口（见第 11 节）
 
 ---
 
@@ -26,7 +26,7 @@
 - **存储**：两个不透明密文文件（`idx.bin` 文字索引 / `atc.bin` 附件包），从第 0 字节起就是均匀随机字节，没有明文头、没有 schema、没有 magic。
 - **视图**：隐私空间内是主库日记 + vault 日记的合并时间线，可筛选"仅隐私"。主库完全不知道 vault 的存在。
 - **移入/移出**：可以把一篇普通日记连同附件转入 vault（原条目及其关联数据被级联物理删除），也可以完整移出（附件字节还原成正常附件）。
-- **同步**：vault 内容伪装成一条"加密备份"memo 上传。**单设备写 + 换机恢复**模型，不支持多设备并行编辑。
+- **同步**：vault 的两份密文作为附件挂在一条正文为「📦 加密备份」的 memo 上。**单设备写 + 换机恢复**模型，不支持多设备并行编辑。
 - **编译期开关**：分享版从编译产物层面不含此功能。
 
 ## 3. 密钥与加密
@@ -41,7 +41,13 @@ KEK(凭证)   = Argon2id(凭证, salt, m=32MB, t=2, p=1) → 32 字节
 keyslot     = salt(16B) ‖ AES-GCM(KEK, MK)  →  固定 76 字节
 ```
 
+**创建口令时强制 ASCII 可打印字符**（0x21–0x7E）。非 ASCII 口令（中文、带重音的拉丁字母、emoji）在不同输入法/系统版本下会产生不同的 Unicode 组合形式，同一个口令在新手机上可能派生出不同的密钥、解不开数据——换机恢复场景下这是致命的。
+
+选择"限制字符集"而不是"引入 NFC 归一化库"：创建口令本来就要求大小写字母 + 数字，已强烈指向 ASCII；为一个用户几乎不会踩、踩到就是数据丢失的边界情况多引一个依赖不划算。恢复码本身就是 ASCII 字母表生成的，天然满足。
+
 文件头固定放**两个** keyslot：口令槽 + 恢复码槽。因此恢复码在本设计里是**必选**的，不是可选项——两个槽位恒定存在，文件布局在任何情况下完全一致，不会因为"有没有启用恢复码"而出现可区分的差异。
+
+**恢复码槽只在候选长度恰为 24 时才尝试**。恢复码是固定 24 位、固定字母表生成的（第 3 节），长度不符的输入不可能是恢复码。不加这个判断的话，每次口令输错都要白跑两次 32MB 的 Argon2id。
 
 依赖：[`cryptography`](https://pub.dev/packages/cryptography) ^2.9.0（纯 Dart，Argon2id + AES-GCM，全平台，无原生绑定）。
 
@@ -89,13 +95,19 @@ atc.bin:
 
 | 输入 | 条件 | 行为 |
 |---|---|---|
-| `+口令` | 本地无 vault，且口令含大小写字母+数字、长度≥8、无空格 | 创建 vault |
+| `+口令` | 本地无 vault，且口令为 ASCII 可打印、含大小写字母+数字、长度≥8、无空格 | 创建 vault |
 | `口令` | 本地有 vault，长度≥8、无空格 | 解锁 |
 | `?口令` | 本地无 vault，已配置服务端，长度≥8、无空格 | 从服务端恢复（换机用，见第 8 节） |
 
 任何一条不满足，都**完全按普通搜索处理**——不弹提示、不报错、不给任何反馈。提示本身就会暴露"这里有个特殊入口"。
 
 `+` 的强度约束还顺带防误触：日常搜索凑巧输入一个 8 位以上、以 `+` 开头的词（比如 `+项目截止0824`）不会被误判成创建请求。解锁不加这个约束——解锁失败的代价只是一次静默的空搜索结果。
+
+**恢复入口要让用户知道**：`?` 前缀不是能靠直觉猜到的，而它只在换新手机时用一次——正是最容易忘的场景。所以创建 vault 时的恢复码弹窗里一并写明"换新设备时，在搜索框输入 `?你的口令` 恢复"。这句话和恢复码一起被抄下来。
+
+**输入法不记忆口令**：`SearchDelegate` 构造函数支持 `autocorrect: false` / `enableSuggestions: false`（Flutter SDK `search.dart:158-161`，直接透传给内部 TextField），给 `_MemoSearchDelegate` 设上，避免口令进入系统输入法的学习词库和联想候选。副作用是普通日记搜索也没有自动更正了——对搜索场景基本无损。
+
+**日志不能带原文**：`DatabaseService.searchMemos` / `searchComments` 目前会 `debugPrint` 原始查询串（`database_service.dart:458` / `:815`）。口令输错时会走到普通搜索路径，于是口令明文进日志。改成只打印长度和命中数。
 
 ### 为什么只在回车时判定
 
@@ -112,6 +124,8 @@ Flutter 的 `SearchDelegate` 里，逐键输入走 `buildSuggestions`，回车�
 只盯 `paused`，不把 `inactive` / `hidden` 拉进计时器——下拉通知栏、来电横幅、权限弹窗都会触发那两个状态，纳入计时会导致正常操作频繁掉锁，且对下面要解决的截屏问题毫无帮助。
 
 **锁定必须驱动 UI**：`VaultController` 通过 `isUnlockedListenable` 广播状态。`VaultPage` / `VaultEditorPage` 监听到锁定后，立即清空输入框内容并弹回根页面。否则会出现"计时器已锁定、编辑器还开着并持有明文、此时点保存直接空指针崩溃"。存储层的写方法同步加防御检查，锁定状态下调用抛明确的 `StateError` 而非裸断言。
+
+**编辑器进后台即自动保存**：光靠"锁定时清空输入框"会造成另一种数据丢失——正在写的一段话，切出去超过 60 秒回来就没了。所以编辑器收到 `paused` 时先把当前内容加密存进 vault（这发生在 60 秒锁定之前，密钥还在），之后的锁定就是无损的。不采用"锁定那一刻再抢救保存"：`lock()` 是先清密钥再广播，那时候已经写不进去了。
 
 ### 截屏与任务切换器
 
@@ -172,11 +186,15 @@ class VaultEntry {
 
 ### 移入（普通日记 → vault）
 
-前置检查：`memo.syncStatus == pending` 时**拒绝移入**并提示"请先完成同步"。原因是移入过程要删远端条目，而后台 `pushPendingBackground()` 可能正在推送这条 memo，导致"远端删完又被重建"。用前置条件把这个竞态窗口关掉，比引入"暂停同步引擎"这种重机制更简单可靠。
+**两道并发防护，缺一不可**：
+
+1. 前置检查 `memo.syncStatus == pending` 时拒绝移入并提示"请先完成同步"——后台 `pushPendingBackground()` 只推 pending 条目，这条检查把它排除掉。
+2. 整个移入过程通过 `SyncService` 的任务队列串行化（`sync_service.dart:76` 的 `_taskQueue`，需新增一个 `runExclusive` 入口暴露出来）。这关掉的是第 1 条关不掉的另一个窗口：一次 `syncAll()` 可能已经拉到了远端列表，此时我把条目远端硬删 + 本地硬删，随后 `_applyRemoteMemo` 拿着旧列表又把它建回来。
 
 步骤：
 
 1. 读取正文 + 附件字节（本地文件缺失时先 `AttachmentService.downloadToLocal` 拉回）
+   - **任何一个附件的字节拿不到就中止整个移入**，返回失败让用户重试。不能 `continue` 跳过——那是把"移入"变成"移入并静默丢掉几张照片"，和移出销毁附件是同一类问题。
 2. 写入 vault（`idx.bin` + `atc.bin`）
 3. 服务端：硬删除该 memo（含版本历史）+ 硬删除其附件资源
 4. 本地级联清理——**只删 `MemoEntry` 是不够的**：
@@ -184,6 +202,8 @@ class VaultEntry {
    - 评论：`getCommentsByMemoId(id)` → 逐个 `hardDeleteComment`。否则 `CommentEntry` 仍持有明文且能被主库搜索命中
    - 事件串：`removeMemoFromAllThreads(id)`。现有 `softDelete` 调了这个，`hardDelete` 没调，是既存缺口，vault 迁移路径必须自己补
    - 最后 `DatabaseService.hardDelete(memo.id)`
+
+远端删除失败时本地保持原样、可重试；本地清理放在远端删除成功之后。
 
 ### 移出（vault → 普通日记）
 
@@ -197,15 +217,34 @@ class VaultEntry {
 
 v1 **不支持多设备并行编辑**。加密 body 里的 `revision` 计数器提供基本的先后取舍：拉取时 remote revision 更高则采用远端，否则保留本地并推送。若两台设备各自离线编辑后先后推送，**后推送的整体覆盖先推送的，没有合并**。真正的并行编辑需要在密文体内做条目级 revision 和冲突策略，另立一期。
 
-### 上传格式
+### 上传格式：密文一律走附件，正文保持人话
 
 ```
-content:    "IsleLog-Backup/1\n<base64(idx.bin)>"
+content:    "📦 加密备份\n更新于 2026-08-24 21:03"      ← 随每次 push 更新时间
 visibility: PRIVATE
-附件:        atc.bin 密文作为普通附件上传（文件名 backup.dat）
+附件:        idx.dat（idx.bin 密文）、atc.dat（atc.bin 密文）
 ```
 
-复用现有 `AttachmentService` 的上传通道，不新建传输路径。客户端 `SyncService._applyRemoteMemo` 识别 `IsleLog-Backup/1` 前缀后直接跳过，因此在未设置过口令的设备上，这条 memo 只是静默存在。
+早先的设计是把 `idx.bin` base64 塞进 `content`，前缀 `IsleLog-Backup/1`。三个问题，都不轻：
+
+1. **服务端版本历史会被撑爆**。每次保存 vault 都要把整个 vault 的 base64 作为新的 memo 正文 PATCH 上去，而服务端对 memo 正文有版本历史——写 10 条日记就在版本表里留下 10 份多 MB 的副本，且永久保留。
+2. **公版包会显示成一坨乱码**。分享出去的包（`kVaultEnabled=false`）不含任何 vault 代码，也就不含跳过逻辑；若它登录同一账号，时间线上会直接出现一条 base64 天书。要让公版能跳过，就得把识别字符串编译进公版——那等于在分享包里留下"这个 App 有隐私功能"的证据，和第 9 节的目标直接冲突。
+3. `content` 字段本来就不是放二进制的地方，尺寸上限取决于服务端实现。
+
+改成正文是一句人话、密文全部走附件之后：公版即使登录同账号，看到的也只是一条"📦 加密备份 / 更新于 …"的普通备忘录——**这正是封面故事本身**，不需要公版做任何特殊处理；版本历史里存的只是那行短文本；附件走对象存储，是二进制该待的地方。
+
+私版靠正文模板（`📦 加密备份` 开头）识别并在 `_applyRemoteMemo` 里跳过。这个字符串只存在于私版二进制中，且它本身也只是个无害的功能名。
+
+### 更新时必须用 setMemoAttachments，不能用 updateMemo
+
+`MemosApiService.updateMemo` 无条件发送 `attachments` 字段（`memos_api_service.dart:209`），而 `attachmentNames` 默认是空列表；`server-API.md` 明确 PATCH 附件是**全量替换**。所以直接调 `updateMemo(name:, content:)` 会把已挂的 `idx.dat` / `atc.dat` 全部解绑。
+
+正确顺序：
+
+1. 上传新的 `idx.dat` / `atc.dat` 得到新资源名
+2. `PATCH /api/v1/memos/:id/attachments` 关联新附件（全量替换）
+3. 关联成功后删除旧附件资源，避免孤儿文件在服务端无限积累
+4. 正文那行时间戳用 `updateMemo` 更新时，**必须显式带上当前附件名列表**，否则同样会解绑
 
 ### 换机恢复协议
 
@@ -214,10 +253,11 @@ visibility: PRIVATE
 新设备输入 `?口令` 触发：
 
 1. 检查本地无 vault、服务端已配置（否则按普通搜索处理）
-2. 拉取远端 memo 列表，按 `IsleLog-Backup/1` 前缀找到备份条目
-3. 解 base64 得到 `idx.bin` 字节，**在内存中**用输入的口令试解 keyslot
-4. 解不开 → 静默失败，不落盘、不提示
-5. 解开了 → 原子写入本地，下载 `backup.dat` 还原 `atc.bin`，完成解锁
+2. 拉取远端 memo 列表，按正文模板找到备份条目
+3. 列出该 memo 的附件，下载 `idx.dat` 字节到内存
+4. **在内存中**用输入的口令试解 keyslot
+5. 解不开 → 静默失败，不落盘、不提示（行为与普通搜索失败完全一致）
+6. 解开了 → 原子写入本地，下载 `atc.dat` 还原附件包，完成解锁
 
 恢复走**显式前缀**而非"解锁失败后自动尝试"，是为了避免每次长搜索词都触发一次远端全量列表拉取——那既慢又在网络层可观察。
 
@@ -229,7 +269,7 @@ visibility: PRIVATE
 
 ### 封面故事
 
-这条 memo 在服务端后台看起来就是一条"加密备份"记录，且客户端设置页有一个真实存在的"加密云备份"开关与之对应——不是编造的伪装，是一个确实生效的功能点，经得起对方在 App 内核对。
+这条 memo 无论从服务端后台看、还是从公版 App 的时间线看，都是一条"加密备份"记录，且客户端设置页有一个真实存在的"加密云备份"开关与之对应——不是编造的伪装，是一个确实生效的功能点，经得起对方在 App 内核对。
 
 ## 9. 编译期开关——分享版不含隐私空间
 
@@ -258,7 +298,15 @@ const bool kVaultEnabled = bool.fromEnvironment('VAULT_ENABLED', defaultValue: t
 DELETE /api/v1/memos/:id?hard=true   [IsleLog 扩展，待新增]
 ```
 
-物理删除该 memo 行及其在版本历史表中的所有记录（而非现有 `DELETE` 的软删除 `row_status=DELETED`）。附件同理需要硬删除路径。
+语义必须是**级联物理删除**，而非现有 `DELETE` 的软删除（`row_status=DELETED`）。要清的至少有：
+
+- memo 行本身
+- 该 memo 的全部版本历史记录（`server-API.md` 的「Memo 版本历史」）
+- 该 memo 的全部评论（评论正文同样是明文）
+- 关联的附件记录 **及对象存储上的实际文件**
+- 变更日志/活动记录中携带该 memo 正文的条目（如果服务端有存正文快照）
+
+漏掉任何一项，"移入隐私空间"就只是把明文换了个地方藏，没有真正清除。附件同理需要一个硬删除路径。
 
 这一步客户端单独做不到——现有软删除会让"移入前的明文"永久留在服务端数据库和版本历史里。服务端代码不在本仓库，需在 islelog-server 项目单独实现。**在服务端配合之前，移入功能应视为不完整**（明文在服务端只是被隐藏，未被清除）。
 
@@ -267,7 +315,7 @@ DELETE /api/v1/memos/:id?hard=true   [IsleLog 扩展，待新增]
 | 文件 | 改动 |
 |---|---|
 | `lib/features/home/home_view.dart` | `_MemoSearchDelegate.buildResults` 路径加口令钩子（三种前缀），整体包在 `kVaultEnabled` 内 |
-| `lib/services/sync/sync_service.dart` | `_applyRemoteMemo` 识别 `IsleLog-Backup/1` 前缀并跳过 |
+| `lib/services/sync/sync_service.dart` | `_applyRemoteMemo` 识别封面备份 memo 的正文模板并跳过 |
 | `lib/services/api/memos_api_service.dart` | `deleteMemo` 加 `hard` 参数；新增按 memo 列附件的方法 |
 | `lib/services/settings/settings_service.dart` | 新增 `enc_backup_memo_name` |
 | `lib/main.dart` | 初始化包在 `kVaultEnabled` 内 |
