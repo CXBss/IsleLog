@@ -455,7 +455,7 @@ class DatabaseService {
     final result =
         all.where((m) => m.content.toLowerCase().contains(q)).toList()
           ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    debugPrint('[DB] searchMemos "$query" → ${result.length} 条');
+    debugPrint('[DB] searchMemos len=${query.length} → ${result.length} 条');
     return result;
   }
 
@@ -812,7 +812,7 @@ class DatabaseService {
     final result =
         all.where((c) => c.content.toLowerCase().contains(q)).toList()
           ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    debugPrint('[DB] searchComments "$query" → ${result.length} 条');
+    debugPrint('[DB] searchComments len=${query.length} → ${result.length} 条');
     return result;
   }
 

@@ -6,7 +6,9 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'data/database/database_service.dart';
 import 'services/settings/settings_service.dart';
 import 'services/sync/sync_service.dart';
+import 'services/vault/vault_controller.dart';
 import 'shared/constants/app_constants.dart';
+import 'shared/constants/build_flags.dart';
 import 'shared/mock/mock_data.dart';
 import 'shared/widgets/main_scaffold.dart';
 
@@ -24,6 +26,11 @@ Future<void> main() async {
   debugPrint('[App] 检查并写入 Mock 数据...');
   await DatabaseService.seedIfEmpty(mockMemos);
   debugPrint('[App] Mock 数据检查完成');
+
+  if (kVaultEnabled) {
+    await VaultController.init();
+    VaultController.instance.attachLifecycleObserver();
+  }
 
   // 读取持久化的主题模式
   themeModeNotifier.value = await SettingsService.themeMode;

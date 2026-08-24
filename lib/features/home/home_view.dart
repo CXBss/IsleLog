@@ -15,6 +15,8 @@ import '../../services/api/memos_api_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
+import '../../shared/constants/build_flags.dart';
+import '../vault/vault_entry_gate.dart';
 import 'memo_list_equality.dart';
 import 'widgets/memo_search_card.dart';
 import 'widgets/memo_timeline_card.dart';
@@ -1126,6 +1128,11 @@ class _DaySection extends StatelessWidget {
 // ── 搜索 ──────────────────────────────────────────────────────────
 
 class _MemoSearchDelegate extends SearchDelegate<void> {
+  // 口令是从这个搜索框输入的，不能让它进系统输入法的学习词库和联想候选。
+  // SearchDelegate 的这两个参数会透传给内部 TextField。
+  // 副作用是普通日记搜索也没有自动更正了——对搜索场景基本无损。
+  _MemoSearchDelegate() : super(autocorrect: false, enableSuggestions: false);
+
   @override
   String get searchFieldLabel => '搜索日记和评论…';
 
@@ -1142,11 +1149,13 @@ class _MemoSearchDelegate extends SearchDelegate<void> {
   );
 
   @override
-  Widget buildResults(BuildContext context) => _SearchResults(query: query);
+  Widget buildResults(BuildContext context) =>
+      _SearchResults(query: query, submitted: true);
 
   @override
-  Widget buildSuggestions(BuildContext context) =>
-      query.isEmpty ? const SizedBox() : _SearchResults(query: query);
+  Widget buildSuggestions(BuildContext context) => query.isEmpty
+      ? const SizedBox()
+      : _SearchResults(query: query, submitted: false);
 }
 
 /// 统一搜索结果条目：可以是 Memo 或 Comment
@@ -1165,7 +1174,8 @@ class _CommentItem extends _SearchItem {
 
 class _SearchResults extends StatefulWidget {
   final String query;
-  const _SearchResults({required this.query});
+  final bool submitted;
+  const _SearchResults({required this.query, required this.submitted});
 
   @override
   State<_SearchResults> createState() => _SearchResultsState();
@@ -1201,6 +1211,15 @@ class _SearchResultsState extends State<_SearchResults> {
     if (_scrollController.hasClients) {
       _scrollController.jumpTo(0);
     }
+
+    // 只在回车提交时判定口令——逐键输入路径绝不触发，否则每按一个键
+    // 都可能跑一次 32MB Argon2id（卡顿 + 时间侧信道）。
+    // kVaultEnabled 是编译期常量：公版构建此分支连同 vault 代码一起被 tree-shake。
+    if (kVaultEnabled && widget.submitted && mounted) {
+      final handled = await VaultEntryGate.handle(context, q);
+      if (handled) return;
+    }
+
     setState(() => _loading = true);
 
     final memos = await DatabaseService.searchMemos(q);
