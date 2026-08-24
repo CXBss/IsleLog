@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -155,6 +157,38 @@ class SettingsService {
     final p = await _prefs;
     await p.remove(_keyDraftContent);
     await p.remove(_keyDraftLocation);
+  }
+
+  // ── 加密备份指针（隐私空间同步使用，按服务器隔离） ────────────
+
+  static const _keyEncBackupMemoName = 'enc_backup_memo_name';
+
+  /// 按 serverUrl 隔离的备份 memo 指针。换服务器/换账号后不会拿着旧 id 去 404。
+  static Future<String?> encBackupMemoNameFor(String serverUrl) async {
+    final raw = (await _prefs).getString(_keyEncBackupMemoName);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      return map[serverUrl] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> setEncBackupMemoName(
+    String serverUrl,
+    String memoName,
+  ) async {
+    final prefs = await _prefs;
+    final raw = prefs.getString(_keyEncBackupMemoName);
+    final map = <String, dynamic>{};
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        map.addAll(Map<String, dynamic>.from(jsonDecode(raw) as Map));
+      } catch (_) {}
+    }
+    map[serverUrl] = memoName;
+    await prefs.setString(_keyEncBackupMemoName, jsonEncode(map));
   }
 
   // ── Theme Mode ────────────────────────────────────────────────

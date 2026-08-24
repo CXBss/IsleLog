@@ -12,9 +12,11 @@ import '../../data/models/memo_entry.dart';
 import '../../data/models/thread_entry.dart';
 import '../../data/models/weather_info.dart';
 import '../../shared/constants/app_constants.dart';
+import '../../shared/constants/build_flags.dart';
 import '../api/memos_api_service.dart';
 import '../attachment/attachment_service.dart';
 import '../settings/settings_service.dart';
+import '../vault/vault_sync.dart';
 import 'pending_memo_conflict_policy.dart';
 import 'sync_task_queue.dart';
 
@@ -96,6 +98,13 @@ class SyncService {
     debugPrint('[Sync] syncFull（全量）开始');
     return _taskQueue.run(() => _sync(full: true));
   }
+
+  /// 在同步任务队列里独占执行 [task]，与 syncAll / pushPendingBackground 互斥。
+  ///
+  /// 供隐私空间移入使用：移入要远端硬删 + 本地硬删，若与一次正在进行的
+  /// syncAll 交错，可能出现"删完又被 _applyRemoteMemo 用旧列表重建"。
+  static Future<T> runExclusive<T>(Future<T> Function() task) =>
+      _taskQueue.run(task);
 
   /// 内部同步实现
   ///
@@ -915,6 +924,13 @@ class SyncService {
     String baseUrl, {
     required bool archived,
   }) async {
+    // 必须包在 kVaultEnabled 里：公版既不含 vault 代码也不含模板字符串，
+    // 备份 memo 在公版时间线上作为普通备忘录显示（封面故事的一部分）。
+    if (kVaultEnabled &&
+        VaultSync.isBackupMemoContent(data['content'] as String? ?? '')) {
+      return 0; // 隐私空间的封面备份 memo：不写入主库、不渲染
+    }
+
     final remoteName = data['name'] as String;
 
     final localMemo = await DatabaseService.getMemoByMemosName(remoteName);

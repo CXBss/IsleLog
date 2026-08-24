@@ -273,13 +273,16 @@ class MemosApiService {
     }
   }
 
-  /// 删除远端 memo
+  /// 删除远端 memo。
   ///
-  /// [name]：资源名，如 `"memos/42"`
-  Future<void> deleteMemo(String name) async {
-    debugPrint('[API] deleteMemo name=$name');
+  /// [hard]：true 时请求物理删除（含版本历史），需服务端支持 `?hard=true`
+  /// —— 移入隐私空间时必须用 hard=true，否则明文会残留在服务端软删除记录和版本历史里。
+  /// 服务端未部署对应支持前，传 true 的效果退化为普通软删除（服务端忽略未知查询参数）。
+  Future<void> deleteMemo(String name, {bool hard = false}) async {
+    debugPrint('[API] deleteMemo name=$name hard=$hard');
     try {
-      await _dio.delete('/api/v1/$name');
+      final path = hard ? '/api/v1/$name?hard=true' : '/api/v1/$name';
+      await _dio.delete(path);
       debugPrint('[API] deleteMemo 成功，name=$name');
     } on DioException catch (e) {
       throw _wrap(e);
@@ -367,6 +370,68 @@ class MemosApiService {
     try {
       await _dio.delete('/api/v1/$name');
       debugPrint('[API] deleteAttachment 成功');
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 列出某条 memo 关联的附件
+  ///
+  /// [memoId]：纯数字 id（不含 "memos/" 前缀）
+  Future<List<Map<String, dynamic>>> listMemoAttachments(String memoId) async {
+    debugPrint('[API] listMemoAttachments memoId=$memoId');
+    try {
+      final res = await _dio.get('/api/v1/memos/$memoId/attachments');
+      final list = (res.data['attachments'] as List?) ?? const [];
+      return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 直接把附件下载成内存字节，不落地。
+  ///
+  /// 与 [AttachmentService.downloadToLocal] 的区别：那个会写本地文件，
+  /// 隐私空间的附件密文不能经过磁盘中转。失败返回 null，不抛异常。
+  ///
+  /// [resName]：形如 "attachments/456"
+  Future<Uint8List?> downloadAttachmentBytes(
+    String resName,
+    String filename,
+  ) async {
+    final path = '/file/$resName/${Uri.encodeComponent(filename)}';
+    debugPrint('[API] downloadAttachmentBytes $path');
+    try {
+      final res = await _dio.get<List<int>>(
+        path,
+        options: Options(responseType: ResponseType.bytes),
+      );
+      final data = res.data;
+      return data == null ? null : Uint8List.fromList(data);
+    } on DioException catch (e) {
+      debugPrint('[API] downloadAttachmentBytes 失败：$e');
+      return null;
+    }
+  }
+
+  /// 全量替换 memo 关联的附件列表
+  ///
+  /// [memoName]：形如 "memos/123"
+  /// [attachmentNames]：形如 ["attachments/456"]，传空列表则解除全部关联
+  Future<void> setMemoAttachments({
+    required String memoName,
+    required List<String> attachmentNames,
+  }) async {
+    final memoId = memoName.split('/').last;
+    debugPrint('[API] setMemoAttachments $memoName ← ${attachmentNames.length} 个');
+    try {
+      await _dio.patch(
+        '/api/v1/memos/$memoId/attachments',
+        data: {
+          'name': memoName,
+          'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+        },
+      );
     } on DioException catch (e) {
       throw _wrap(e);
     }
