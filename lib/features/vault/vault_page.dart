@@ -108,6 +108,71 @@ class _VaultPageState extends State<VaultPage> {
     }
   }
 
+  /// vault 条目的长按菜单。
+  ///
+  /// 与主库时间线卡片的长按菜单对齐（memo_timeline_card.dart 的 _showMenu）。
+  /// 此前长按被「移出」独占、菜单根本没建，删除按钮埋在 列表→详情→编辑 三层下，
+  /// 只能靠「先移出、再去主库删」绕路。
+  Future<void> _showVaultMenu(VaultEntry entry) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('编辑'),
+              onTap: () => Navigator.pop(ctx, 'edit'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.unarchive_outlined),
+              title: const Text('移出隐私空间'),
+              onTap: () => Navigator.pop(ctx, 'move_out'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: AppColors.error),
+              title: const Text('删除', style: TextStyle(color: AppColors.error)),
+              onTap: () => Navigator.pop(ctx, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == null || !mounted) return;
+
+    switch (action) {
+      case 'edit':
+        await Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => VaultEditorPage(existing: entry)),
+        );
+        _recompute();
+      case 'move_out':
+        await _moveOut(entry);
+      case 'delete':
+        await _deleteEntry(entry);
+    }
+  }
+
+  /// 删除 vault 条目。
+  ///
+  /// 主库的删除是软删 + SnackBar 撤销，这里不行：deleteEntry 是立即物理删除，
+  /// 还会连带清掉 atc.bin 里的附件字节，服务端也没有回收站——撤不回来。
+  /// 所以改用事前确认，而不是事后撤销。
+  Future<void> _deleteEntry(VaultEntry entry) async {
+    final confirmed = await _confirm(
+      title: '删除这条隐私日记？',
+      body: '连同它的附件一起永久删除，无法恢复。',
+      action: '删除',
+      destructive: true,
+    );
+    if (confirmed != true || !mounted) return;
+    await VaultController.instance.deleteEntry(entry.id);
+    if (!mounted) return;
+    _recompute();
+    _toast('已删除');
+  }
+
   Future<void> _moveOut(VaultEntry entry) async {
     final confirmed = await _confirm(
       title: '移出隐私空间？',
@@ -129,6 +194,7 @@ class _VaultPageState extends State<VaultPage> {
     required String title,
     required String body,
     required String action,
+    bool destructive = false,
   }) {
     return showDialog<bool>(
       context: context,
@@ -142,7 +208,12 @@ class _VaultPageState extends State<VaultPage> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: Text(action),
+            child: Text(
+              action,
+              style: destructive
+                  ? const TextStyle(color: AppColors.error)
+                  : null,
+            ),
           ),
         ],
       ),
@@ -401,14 +472,20 @@ class _VaultPageState extends State<VaultPage> {
     return switch (item) {
       VaultBrowseVaultItem(:final entry) => VaultEntryCard(
         entry: entry,
-        // 与主库一致：点击进详情（能同时看到全文和附件），详情里点编辑才进编辑态。
+        // 与主库时间线卡片一致：单击进详情、双击直接编辑、长按出菜单。
         onTap: () async {
           await Navigator.of(context).push(
             MaterialPageRoute(builder: (_) => VaultDetailPage(entry: entry)),
           );
           _recompute();
         },
-        onLongPress: () => _moveOut(entry),
+        onDoubleTap: () async {
+          await Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => VaultEditorPage(existing: entry)),
+          );
+          _recompute();
+        },
+        onLongPress: () => _showVaultMenu(entry),
       ),
       VaultBrowseMemo(:final memo) => VaultMemoCard(
         memo: memo,

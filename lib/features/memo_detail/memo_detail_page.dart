@@ -25,6 +25,7 @@ import '../threads/thread_detail_page.dart';
 import '../threads/thread_picker_sheet.dart';
 import 'widgets/thread_nav_bar.dart';
 import '../../shared/constants/app_constants.dart';
+import '../../shared/widgets/image_grid.dart';
 
 /// 日记详情页
 ///
@@ -98,6 +99,31 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
       memo.attachments.where((a) => a.isAudio).toList();
   List<AttachmentInfo> get _fileAttachments =>
       memo.attachments.where((a) => !a.isImage && !a.isAudio).toList();
+
+  /// 把附件适配成共享图片网格的来源。
+  ///
+  /// 取图仍走原来的 _DetailAttachThumb（本地文件优先，否则带鉴权头拉远端），
+  /// 共享出去的只是布局和交互；导出动作保持原有的 showImageActions。
+  List<GridImageSource> _buildGridSources(BuildContext context) {
+    final images = _imageAttachments;
+    return [
+      for (final att in images)
+        GridImageSource(
+          build: ({double? width, double? height, BoxFit fit = BoxFit.cover}) =>
+              _DetailAttachThumb(
+                attachment: att,
+                width: width,
+                height: height,
+                fit: fit,
+              ),
+          onExport: () async {
+            final baseUrl = await SettingsService.serverUrl;
+            if (!context.mounted) return;
+            img_actions.showImageActions(context, att, baseUrl: baseUrl);
+          },
+        ),
+    ];
+  }
 
   @override
   void initState() {
@@ -488,7 +514,7 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                   // ── 图片附件 ──────────────────────────────────────────
                   if (_imageAttachments.isNotEmpty) ...[
                     const SizedBox(height: 12),
-                    _DetailImageGrid(attachments: _imageAttachments),
+                    ImageGrid(images: _buildGridSources(context)),
                   ],
 
                   // ── 音频附件 ──────────────────────────────────────────
@@ -769,151 +795,18 @@ class _DetailTagChip extends StatelessWidget {
 }
 
 /// 详情页图片网格（可全屏查看）
-class _DetailImageGrid extends StatelessWidget {
-  final List<AttachmentInfo> attachments;
-  const _DetailImageGrid({required this.attachments});
-
-  void _openViewer(BuildContext context, int index) {
-    Navigator.push(
-      context,
-      PageRouteBuilder(
-        opaque: false,
-        barrierColor: Colors.black87,
-        pageBuilder: (_, __, ___) =>
-            _DetailImageViewer(attachments: attachments, initialIndex: index),
-        transitionsBuilder: (_, anim, __, child) =>
-            FadeTransition(opacity: anim, child: child),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final count = attachments.length;
-    if (count == 1) {
-      return GestureDetector(
-        onTap: () => _openViewer(context, 0),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: _DetailAttachThumb(
-            attachment: attachments[0],
-            width: double.infinity,
-            height: 220,
-          ),
-        ),
-      );
-    }
-    if (count == 2) {
-      return Row(
-        children: [
-          for (var i = 0; i < 2; i++) ...[
-            if (i > 0) const SizedBox(width: 4),
-            Expanded(
-              child: GestureDetector(
-                onTap: () => _openViewer(context, i),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: _DetailAttachThumb(
-                    attachment: attachments[i],
-                    height: 160,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ],
-      );
-    }
-    // 3+: 左大右双
-    return Row(
-      children: [
-        Expanded(
-          child: GestureDetector(
-            onTap: () => _openViewer(context, 0),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: _DetailAttachThumb(
-                attachment: attachments[0],
-                height: 180,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(width: 4),
-        SizedBox(
-          width: 100,
-          height: 180,
-          child: Column(
-            children: [
-              Expanded(
-                child: GestureDetector(
-                  onTap: () => _openViewer(context, 1),
-                  child: ClipRRect(
-                    borderRadius: const BorderRadius.only(
-                      topRight: Radius.circular(8),
-                    ),
-                    child: _DetailAttachThumb(
-                      attachment: attachments[1],
-                      width: double.infinity,
-                      height: double.infinity,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Expanded(
-                child: GestureDetector(
-                  onTap: () => _openViewer(context, 2),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      ClipRRect(
-                        borderRadius: const BorderRadius.only(
-                          bottomRight: Radius.circular(8),
-                        ),
-                        child: _DetailAttachThumb(
-                          attachment: attachments[2],
-                          width: double.infinity,
-                          height: double.infinity,
-                        ),
-                      ),
-                      if (count > 3)
-                        ClipRRect(
-                          borderRadius: const BorderRadius.only(
-                            bottomRight: Radius.circular(8),
-                          ),
-                          child: ColoredBox(
-                            color: Colors.black45,
-                            child: Center(
-                              child: Text(
-                                '+${count - 3}',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 /// 图片缩略图（异步加载 baseUrl）
 class _DetailAttachThumb extends StatefulWidget {
   final AttachmentInfo attachment;
   final double? width;
   final double? height;
-  const _DetailAttachThumb({required this.attachment, this.width, this.height});
+  final BoxFit fit;
+  const _DetailAttachThumb({
+    required this.attachment,
+    this.width,
+    this.height,
+    this.fit = BoxFit.cover,
+  });
 
   @override
   State<_DetailAttachThumb> createState() => _DetailAttachThumbState();
@@ -941,11 +834,16 @@ class _DetailAttachThumbState extends State<_DetailAttachThumb> {
         File(att.localPath!),
         width: w,
         height: h,
-        fit: BoxFit.cover,
+        fit: widget.fit,
       );
     }
     if (_baseUrl != null && att.fullUrl(_baseUrl!) != null) {
-      return _AuthImage(url: att.fullUrl(_baseUrl!)!, width: w, height: h);
+      return _AuthImage(
+        url: att.fullUrl(_baseUrl!)!,
+        width: w,
+        height: h,
+        fit: widget.fit,
+      );
     }
     return SizedBox(
       width: w,
@@ -955,116 +853,6 @@ class _DetailAttachThumbState extends State<_DetailAttachThumb> {
   }
 }
 
-/// 全屏图片查看器
-class _DetailImageViewer extends StatefulWidget {
-  final List<AttachmentInfo> attachments;
-  final int initialIndex;
-  const _DetailImageViewer({
-    required this.attachments,
-    required this.initialIndex,
-  });
-
-  @override
-  State<_DetailImageViewer> createState() => _DetailImageViewerState();
-}
-
-class _DetailImageViewerState extends State<_DetailImageViewer> {
-  late final PageController _ctrl;
-  late int _current;
-  String? _baseUrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _current = widget.initialIndex;
-    _ctrl = PageController(initialPage: widget.initialIndex);
-    SettingsService.serverUrl.then((v) {
-      if (mounted) setState(() => _baseUrl = v);
-    });
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () => Navigator.pop(context),
-      child: Scaffold(
-        backgroundColor: Colors.black87,
-        body: Stack(
-          children: [
-            PageView.builder(
-              controller: _ctrl,
-              itemCount: widget.attachments.length,
-              onPageChanged: (i) => setState(() => _current = i),
-              itemBuilder: (_, i) {
-                final att = widget.attachments[i];
-                Widget content;
-                if (att.localPath != null) {
-                  content = InteractiveViewer(
-                    minScale: 1.0,
-                    maxScale: 5.0,
-                    child: Image.file(
-                      File(att.localPath!),
-                      fit: BoxFit.contain,
-                    ),
-                  );
-                } else if (_baseUrl != null && att.fullUrl(_baseUrl!) != null) {
-                  content = InteractiveViewer(
-                    minScale: 1.0,
-                    maxScale: 5.0,
-                    child: _AuthImage(
-                      url: att.fullUrl(_baseUrl!)!,
-                      fit: BoxFit.contain,
-                    ),
-                  );
-                } else {
-                  return const SizedBox.shrink();
-                }
-                return GestureDetector(
-                  onTap: () {},
-                  onLongPress: () => img_actions.showImageActions(
-                    context,
-                    att,
-                    baseUrl: _baseUrl,
-                  ),
-                  child: Center(child: content),
-                );
-              },
-            ),
-            if (widget.attachments.length > 1)
-              Positioned(
-                bottom: 32,
-                left: 0,
-                right: 0,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(
-                    widget.attachments.length,
-                    (i) => Container(
-                      width: 6,
-                      height: 6,
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: i == _current ? Colors.white : Colors.white38,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 单条评论 tile（长按弹出编辑/删除菜单）
 class _CommentTile extends StatelessWidget {
   final CommentEntry comment;
   final VoidCallback onEdit;
@@ -1245,7 +1033,9 @@ class _CommentInputBar extends StatelessWidget {
       child: Container(
         decoration: BoxDecoration(
           color: AppColors.elevatedSurface(context),
-          border: Border(top: BorderSide(color: AppColors.subtleBorder(context))),
+          border: Border(
+            top: BorderSide(color: AppColors.subtleBorder(context)),
+          ),
         ),
         padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
         child: Column(

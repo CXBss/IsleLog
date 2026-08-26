@@ -5,6 +5,7 @@ import 'package:just_audio/just_audio.dart';
 import '../../data/models/vault_entry.dart';
 import '../../services/vault/vault_controller.dart';
 import '../../shared/constants/app_constants.dart';
+import '../../shared/widgets/image_grid.dart';
 import 'vault_audio_source.dart';
 import 'vault_editor_page.dart';
 
@@ -167,19 +168,31 @@ class _VaultDetailPageState extends State<VaultDetailPage> {
         ),
       ),
       const SizedBox(height: 8),
-      // 图片按原尺寸铺开，而不是列表里那种 64px 缩略图——
-      // 这个页面的存在意义就是能看清内容。全程走内存，不落临时文件。
-      ...images.map((id) {
-        final bytes = VaultController.instance.attachmentBytes(id);
-        if (bytes == null) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.memory(bytes, fit: BoxFit.fitWidth),
-          ),
-        );
-      }),
+      // 复用主库详情页那套网格 + 全屏查看器（翻页、双指缩放），
+      // 只是取图换成内存字节——落盘就违背隐私空间的意义。
+      //
+      // onExport 一律为 null：全屏查看器的长按导出会把私密照片保存进系统相册
+      // 或直接分享出去，两者都会击穿隐私空间，这里必须禁掉。
+      ImageGrid(
+        images: [
+          for (final id in images)
+            if (VaultController.instance.attachmentBytes(id) case final bytes?)
+              GridImageSource(
+                build:
+                    ({
+                      double? width,
+                      double? height,
+                      BoxFit fit = BoxFit.cover,
+                    }) => Image.memory(
+                      bytes,
+                      width: width,
+                      height: height,
+                      fit: fit,
+                    ),
+                onExport: null,
+              ),
+        ],
+      ),
       ...audios.map(_buildAudioTile),
     ];
   }

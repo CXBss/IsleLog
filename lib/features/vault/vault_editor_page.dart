@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart' show Uuid;
@@ -288,28 +289,41 @@ class _VaultEditorPageState extends State<VaultEditorPage>
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: TextField(
-                controller: _controller,
-                maxLines: null,
-                expands: true,
-                autofocus: widget.existing == null,
-                // 隐私内容不进系统输入法的学习词库和联想候选
-                autocorrect: false,
-                enableSuggestions: false,
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  hintText: '写点什么…',
+      // Cmd+Enter（macOS）/ Ctrl+Enter（其他平台）保存，
+      // 与主库编辑页 memo_editor_page.dart:1526 的写法一致。
+      body: CallbackShortcuts(
+        bindings: {
+          SingleActivator(
+            LogicalKeyboardKey.enter,
+            meta: defaultTargetPlatform == TargetPlatform.macOS,
+            control: defaultTargetPlatform != TargetPlatform.macOS,
+          ): () {
+            if (!_saving) _save();
+          },
+        },
+        child: Column(
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: TextField(
+                  controller: _controller,
+                  maxLines: null,
+                  expands: true,
+                  autofocus: widget.existing == null,
+                  // 隐私内容不进系统输入法的学习词库和联想候选
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    hintText: '写点什么…',
+                  ),
                 ),
               ),
             ),
-          ),
-          _buildAttachmentStrip(),
-        ],
+            _buildAttachmentStrip(),
+          ],
+        ),
       ),
     );
   }

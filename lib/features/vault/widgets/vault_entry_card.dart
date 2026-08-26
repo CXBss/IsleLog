@@ -9,12 +9,14 @@ import '../vault_audio_source.dart';
 class VaultEntryCard extends StatelessWidget {
   final VaultEntry entry;
   final VoidCallback onTap;
+  final VoidCallback? onDoubleTap;
   final VoidCallback? onLongPress;
 
   const VaultEntryCard({
     super.key,
     required this.entry,
     required this.onTap,
+    this.onDoubleTap,
     this.onLongPress,
   });
 
@@ -33,20 +35,28 @@ class VaultEntryCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          ListTile(
+          // ListTile 自身不支持双击，手势统一提到外层 GestureDetector 处理。
+          //
+          // 注意：同时注册 onTap 和 onDoubleTap 后，单击要等双击判定超时
+          // （约 300ms）才触发，这是 Flutter 手势竞争的固有代价，
+          // 与主库时间线卡片（memo_timeline_card.dart:453）的取舍一致。
+          GestureDetector(
             onTap: onTap,
+            onDoubleTap: onDoubleTap,
             onLongPress: onLongPress,
-            leading: const Icon(
-              Icons.lock,
-              size: 18,
-              color: AppColors.primaryDark,
+            child: ListTile(
+              leading: const Icon(
+                Icons.lock,
+                size: 18,
+                color: AppColors.primaryDark,
+              ),
+              title: Text(
+                entry.content,
+                maxLines: _kMaxLines,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(_formatTime(entry.createdAt)),
             ),
-            title: Text(
-              entry.content,
-              maxLines: _kMaxLines,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(_formatTime(entry.createdAt)),
           ),
           if (entry.attachmentIds.isNotEmpty)
             Padding(
