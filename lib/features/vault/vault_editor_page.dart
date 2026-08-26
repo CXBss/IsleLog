@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -8,6 +9,7 @@ import 'package:uuid/uuid.dart' show Uuid;
 
 import '../../data/models/vault_entry.dart';
 import '../../services/vault/vault_controller.dart';
+import '../../shared/constants/app_constants.dart';
 
 class VaultEditorPage extends StatefulWidget {
   final VaultEntry? existing;
@@ -201,6 +203,56 @@ class _VaultEditorPageState extends State<VaultEditorPage>
     if (mounted) Navigator.of(context).pop();
   }
 
+  /// 底部附件条：已有附件 + 本次新加的，都显示出来。
+  ///
+  /// 此前编辑页只跟踪 _pendingAttachments，已有附件仅在保存时静默合并回去、
+  /// 从不渲染——编辑一条带图的日记时完全看不出它有附件。
+  Widget _buildAttachmentStrip() {
+    final existingIds = widget.existing?.attachmentIds ?? const <String>[];
+    if (existingIds.isEmpty && _pendingAttachments.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final tiles = <Widget>[
+      ...existingIds.map(
+        (id) => _thumb(
+          VaultController.instance.attachmentBytes(id),
+          VaultController.instance.attachmentMimeType(id),
+        ),
+      ),
+      ..._pendingAttachments.map((a) => _thumb(a.bytes, a.mimeType)),
+    ];
+
+    return Container(
+      height: 76,
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+      ),
+      child: ListView(scrollDirection: Axis.horizontal, children: tiles),
+    );
+  }
+
+  Widget _thumb(Uint8List? bytes, String? mime) {
+    if (bytes == null) return const SizedBox.shrink();
+    final isImage = mime?.startsWith('image/') ?? false;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: isImage
+            ? Image.memory(bytes, width: 64, height: 64, fit: BoxFit.cover)
+            : Container(
+                width: 64,
+                height: 64,
+                color: AppColors.primaryLight,
+                child: const Icon(Icons.mic, color: AppColors.primaryDark),
+              ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -236,21 +288,28 @@ class _VaultEditorPageState extends State<VaultEditorPage>
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: TextField(
-          controller: _controller,
-          maxLines: null,
-          expands: true,
-          autofocus: widget.existing == null,
-          // 隐私内容不进系统输入法的学习词库和联想候选
-          autocorrect: false,
-          enableSuggestions: false,
-          decoration: const InputDecoration(
-            border: InputBorder.none,
-            hintText: '写点什么…',
+      body: Column(
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: TextField(
+                controller: _controller,
+                maxLines: null,
+                expands: true,
+                autofocus: widget.existing == null,
+                // 隐私内容不进系统输入法的学习词库和联想候选
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  hintText: '写点什么…',
+                ),
+              ),
+            ),
           ),
-        ),
+          _buildAttachmentStrip(),
+        ],
       ),
     );
   }

@@ -18,6 +18,9 @@ class VaultMemoCard extends StatelessWidget {
   final VoidCallback onLongPress;
   final VoidCallback? onTap;
 
+  /// 与主页时间线卡片一致的行数截断（memo_timeline_card.dart 的 _kMaxLines）。
+  static const int _kMaxLines = 6;
+
   const VaultMemoCard({
     super.key,
     required this.memo,
@@ -64,7 +67,11 @@ class VaultMemoCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 6),
-              HighlightedText(text: memo.content, query: query),
+              HighlightedText(
+                text: memo.content,
+                query: query,
+                maxLines: _kMaxLines,
+              ),
               if (memo.tags.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Wrap(

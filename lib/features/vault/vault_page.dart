@@ -7,8 +7,10 @@ import '../../services/vault/vault_controller.dart';
 import '../../services/vault/vault_migration.dart';
 import '../../services/vault/vault_screen_guard.dart';
 import '../../shared/constants/app_constants.dart';
+import '../memo_detail/memo_detail_page.dart';
 import 'vault_browse_model.dart';
 import 'vault_calendar_view.dart';
+import 'vault_detail_page.dart';
 import 'vault_editor_page.dart';
 import 'widgets/vault_entry_card.dart';
 import 'widgets/vault_memo_card.dart';
@@ -399,9 +401,10 @@ class _VaultPageState extends State<VaultPage> {
     return switch (item) {
       VaultBrowseVaultItem(:final entry) => VaultEntryCard(
         entry: entry,
+        // 与主库一致：点击进详情（能同时看到全文和附件），详情里点编辑才进编辑态。
         onTap: () async {
           await Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => VaultEditorPage(existing: entry)),
+            MaterialPageRoute(builder: (_) => VaultDetailPage(entry: entry)),
           );
           _recompute();
         },
@@ -410,6 +413,15 @@ class _VaultPageState extends State<VaultPage> {
       VaultBrowseMemo(:final memo) => VaultMemoCard(
         memo: memo,
         query: _filter.query,
+        // 点击看全文，复用主页的详情页；长按才是移入。
+        // 此前只接了 onLongPress，普通日记点了没反应，在隐私空间里
+        // 根本没有途径读到全文，也就无从判断该不该移入。
+        onTap: () async {
+          await Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => MemoDetailPage(memo: memo)));
+          if (mounted) await _loadMain();
+        },
         onLongPress: () => _moveIn(memo),
       ),
     };

@@ -44,6 +44,42 @@ void main() {
     expect(find.byIcon(Icons.article_outlined), findsOneWidget);
   });
 
+  testWidgets('点击触发回调（查看全文）', (tester) async {
+    var tapped = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: VaultMemoCard(
+            memo: _memo('普通', DateTime(2026, 8, 11)),
+            query: '',
+            onLongPress: () {},
+            onTap: () => tapped = true,
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(VaultMemoCard));
+    expect(tapped, isTrue, reason: '此前只接了 onLongPress，点击无任何反应');
+  });
+
+  testWidgets('长正文按 6 行截断，不做字符数硬砍', (tester) async {
+    // 一段远超 80 字符的中文，旧实现会砍到 80 字并加省略号
+    final long = '今天去看海了。' * 40;
+    await _pump(tester, _memo(long, DateTime(2026, 8, 11)));
+
+    final text = tester.widget<Text>(
+      find.descendant(
+        of: find.byType(VaultMemoCard),
+        matching: find.byWidgetPredicate(
+          (w) => w is Text && w.data != null && w.data!.startsWith('今天去看海了'),
+        ),
+      ),
+    );
+    expect(text.maxLines, 6);
+    expect(text.data, long, reason: '正文应完整传入，只靠 maxLines 截断显示');
+  });
+
   testWidgets('长按触发回调（移入隐私空间）', (tester) async {
     var pressed = false;
     await _pump(

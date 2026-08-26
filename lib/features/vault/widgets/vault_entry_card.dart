@@ -18,11 +18,15 @@ class VaultEntryCard extends StatelessWidget {
     this.onLongPress,
   });
 
+  /// 与主页时间线卡片保持一致的截断口径（memo_timeline_card.dart 的 _kMaxLines）。
+  ///
+  /// 旧实现除了 maxLines 还额外做了 substring(0, 80) 的字符数硬砍，中文 80 字
+  /// 只有两三句话，列表里几乎看不出这条写的是什么。字符数限制已去掉，
+  /// 只保留行数截断，看全文点进详情/编辑页。
+  static const int _kMaxLines = 6;
+
   @override
   Widget build(BuildContext context) {
-    final preview = entry.content.length > 80
-        ? '${entry.content.substring(0, 80)}…'
-        : entry.content;
     return Card(
       color: AppColors.surface(context),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -37,7 +41,11 @@ class VaultEntryCard extends StatelessWidget {
               size: 18,
               color: AppColors.primaryDark,
             ),
-            title: Text(preview, maxLines: 3, overflow: TextOverflow.ellipsis),
+            title: Text(
+              entry.content,
+              maxLines: _kMaxLines,
+              overflow: TextOverflow.ellipsis,
+            ),
             subtitle: Text(_formatTime(entry.createdAt)),
           ),
           if (entry.attachmentIds.isNotEmpty)
