@@ -11,6 +11,19 @@ class VaultEntry {
   String? memosName;
   final String? movedFromMemosName;
 
+  /// 地址文本（与主库 MemoEntry.location 同义）
+  String? location;
+
+  /// 经纬度，与 location 配套，用于点击跳转地图
+  double? latitude;
+  double? longitude;
+
+  /// 天气信息 JSON（与主库 MemoEntry.weatherJson 同格式）
+  String? weatherJson;
+
+  /// 心情标识（与主库 MemoEntry.mood 同义）
+  String? mood;
+
   VaultEntry({
     required this.id,
     required this.content,
@@ -20,6 +33,11 @@ class VaultEntry {
     required this.attachmentIds,
     this.memosName,
     this.movedFromMemosName,
+    this.location,
+    this.latitude,
+    this.longitude,
+    this.weatherJson,
+    this.mood,
   });
 
   Map<String, dynamic> toJson() => {
@@ -31,6 +49,11 @@ class VaultEntry {
     'attachmentIds': attachmentIds,
     'memosName': memosName,
     'movedFromMemosName': movedFromMemosName,
+    'location': location,
+    'latitude': latitude,
+    'longitude': longitude,
+    'weatherJson': weatherJson,
+    'mood': mood,
   };
 
   factory VaultEntry.fromJson(Map<String, dynamic> json) => VaultEntry(
@@ -42,6 +65,12 @@ class VaultEntry {
     attachmentIds: (json['attachmentIds'] as List).cast<String>(),
     memosName: json['memosName'] as String?,
     movedFromMemosName: json['movedFromMemosName'] as String?,
+    // 这几个键是后加的，早期 vault 文件里没有——缺失一律读成 null
+    location: json['location'] as String?,
+    latitude: (json['latitude'] as num?)?.toDouble(),
+    longitude: (json['longitude'] as num?)?.toDouble(),
+    weatherJson: json['weatherJson'] as String?,
+    mood: json['mood'] as String?,
   );
 }
 

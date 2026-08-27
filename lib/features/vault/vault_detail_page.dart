@@ -3,6 +3,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../data/models/vault_entry.dart';
+import '../../data/models/weather_info.dart';
 import '../../services/vault/vault_controller.dart';
 import '../../shared/constants/app_constants.dart';
 import '../../shared/widgets/image_grid.dart';
@@ -112,19 +113,85 @@ class _VaultDetailPageState extends State<VaultDetailPage> {
   }
 
   Widget _buildMeta() {
-    return Row(
+    final weather = _weather();
+    final mood = _entry.mood == null ? null : moodByKey(_entry.mood);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Icon(Icons.lock, size: 16, color: AppColors.primaryDark),
-        const SizedBox(width: 6),
-        Text(
-          _formatTime(_entry.createdAt),
-          style: TextStyle(
-            fontSize: 12,
-            color: AppColors.textSecondary(context),
-          ),
+        Row(
+          children: [
+            const Icon(Icons.lock, size: 16, color: AppColors.primaryDark),
+            const SizedBox(width: 6),
+            Text(
+              _formatTime(_entry.createdAt),
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColors.textSecondary(context),
+              ),
+            ),
+          ],
         ),
+        if (_entry.location != null && _entry.location!.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(
+                Icons.location_on_outlined,
+                size: 14,
+                color: Colors.blueGrey,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  _entry.location!,
+                  style: TextStyle(fontSize: 13, color: Colors.blueGrey[600]),
+                ),
+              ),
+            ],
+          ),
+        ],
+        if (weather != null || mood != null) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              if (weather != null) ...[
+                const Icon(
+                  Icons.wb_sunny_outlined,
+                  size: 14,
+                  color: Colors.blueGrey,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  weather,
+                  style: TextStyle(fontSize: 13, color: Colors.blueGrey[600]),
+                ),
+              ],
+              if (weather != null && mood != null) const SizedBox(width: 12),
+              if (mood != null) ...[
+                Icon(mood.icon, size: 14, color: mood.color),
+                const SizedBox(width: 4),
+                Text(
+                  mood.label,
+                  style: TextStyle(fontSize: 13, color: Colors.blueGrey[600]),
+                ),
+              ],
+            ],
+          ),
+        ],
       ],
     );
+  }
+
+  /// 天气展示文本，解析失败时当作没有天气。
+  String? _weather() {
+    final raw = _entry.weatherJson;
+    if (raw == null) return null;
+    try {
+      return WeatherInfo.fromJsonString(raw).detail;
+    } catch (_) {
+      return null;
+    }
   }
 
   Widget _buildTags() {

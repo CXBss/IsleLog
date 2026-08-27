@@ -94,6 +94,12 @@ class VaultMigration {
         tags: const [],
         attachmentIds: attachmentIds,
         movedFromMemosName: memo.memosName,
+        // 元数据一并带过来，否则移入等于把天气/心情/位置悄悄抹掉
+        location: memo.location,
+        latitude: memo.latitude,
+        longitude: memo.longitude,
+        weatherJson: memo.weatherJson,
+        mood: memo.mood,
       );
       await VaultController.instance.saveEntry(entry);
 
@@ -188,7 +194,12 @@ class VaultMigration {
         ..content = entry.content
         ..createdAt = entry.createdAt
         ..updatedAt = DateTime.now()
-        ..attachments = restored;
+        ..attachments = restored
+        ..location = entry.location
+        ..latitude = entry.latitude
+        ..longitude = entry.longitude
+        ..weatherJson = entry.weatherJson
+        ..mood = entry.mood;
       await DatabaseService.saveMemo(memo);
 
       // ── 3. 全部成功后才从 vault 移除 ──

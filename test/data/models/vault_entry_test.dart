@@ -72,4 +72,50 @@ void main() {
     expect(restored.revision, 0);
     expect(restored.entries, isEmpty);
   });
+
+  group('元数据字段', () {
+    test('位置/天气/心情能完整往返', () {
+      final entry = VaultEntry(
+        id: 'e1',
+        content: 'x',
+        createdAt: DateTime.utc(2026, 8, 27),
+        updatedAt: DateTime.utc(2026, 8, 27),
+        tags: const [],
+        attachmentIds: const [],
+        location: '深圳市南山区',
+        latitude: 22.53,
+        longitude: 113.93,
+        weatherJson: '{"condition":"晴"}',
+        mood: 'happy',
+      );
+
+      final restored = VaultEntry.fromJson(entry.toJson());
+
+      expect(restored.location, '深圳市南山区');
+      expect(restored.latitude, 22.53);
+      expect(restored.longitude, 113.93);
+      expect(restored.weatherJson, '{"condition":"晴"}');
+      expect(restored.mood, 'happy');
+    });
+
+    // 已存在的 vault 文件里没有这几个键，读取时必须当 null 而不是崩。
+    test('旧数据缺少这些键时读成 null，不抛异常', () {
+      final legacy = {
+        'id': 'old',
+        'content': '老条目',
+        'createdAt': DateTime.utc(2026, 1, 1).toIso8601String(),
+        'updatedAt': DateTime.utc(2026, 1, 1).toIso8601String(),
+        'tags': <String>[],
+        'attachmentIds': <String>[],
+      };
+
+      final restored = VaultEntry.fromJson(legacy);
+
+      expect(restored.content, '老条目');
+      expect(restored.location, isNull);
+      expect(restored.latitude, isNull);
+      expect(restored.weatherJson, isNull);
+      expect(restored.mood, isNull);
+    });
+  });
 }

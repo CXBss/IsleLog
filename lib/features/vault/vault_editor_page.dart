@@ -177,12 +177,24 @@ class _VaultEditorPageState extends State<VaultEditorPage>
     if (existing != null) {
       _contentCtrl.selection = const TextSelection.collapsed(offset: 0);
     }
-    // vault 条目不带位置字段，位置输入框始终从空开始
-    _locationCtrl = TextEditingController();
+    _locationCtrl = TextEditingController(text: existing?.location ?? '');
     _contentFocus = FocusNode(onKeyEvent: _isDesktop ? _onKeyEvent : null);
 
     if (existing != null) {
       _selectedDateTime = existing.createdAt;
+      if (existing.latitude != null && existing.longitude != null) {
+        _locationInfo = LocationInfo(
+          latitude: existing.latitude!,
+          longitude: existing.longitude!,
+          address: existing.location,
+        );
+      }
+      if (existing.weatherJson != null) {
+        try {
+          _weatherInfo = WeatherInfo.fromJsonString(existing.weatherJson!);
+        } catch (_) {}
+      }
+      _mood = existing.mood;
       // 已有附件按 id 从 vault 附件包里取字节，回填成可编辑（可删除）的列表
       for (final id in existing.attachmentIds) {
         final bytes = VaultController.instance.attachmentBytes(id);
@@ -1208,11 +1220,17 @@ class _VaultEditorPageState extends State<VaultEditorPage>
     }.toList();
 
     final now = DateTime.now();
+    final locationText = _locationCtrl.text.trim();
     final existing = widget.existing;
     final entry = existing != null
         ? (existing
             ..content = _contentCtrl.text
-            ..attachmentIds = attachmentIds)
+            ..attachmentIds = attachmentIds
+            ..location = locationText.isEmpty ? null : locationText
+            ..latitude = _locationInfo?.latitude
+            ..longitude = _locationInfo?.longitude
+            ..weatherJson = _weatherInfo?.toJsonString()
+            ..mood = _mood)
         : VaultEntry(
             id: _workingId ??= const Uuid().v4(),
             content: _contentCtrl.text,
@@ -1220,6 +1238,11 @@ class _VaultEditorPageState extends State<VaultEditorPage>
             updatedAt: now,
             tags: const [],
             attachmentIds: attachmentIds,
+            location: locationText.isEmpty ? null : locationText,
+            latitude: _locationInfo?.latitude,
+            longitude: _locationInfo?.longitude,
+            weatherJson: _weatherInfo?.toJsonString(),
+            mood: _mood,
           );
     await VaultController.instance.saveEntry(entry);
 
