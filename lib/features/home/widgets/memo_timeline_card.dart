@@ -19,10 +19,14 @@ import '../../../features/memo_detail/memo_detail_page.dart';
 import '../../../features/memo_editor/memo_editor_page.dart';
 import '../../../features/revision_history/revision_history_page.dart';
 import '../../../features/threads/thread_picker_sheet.dart';
+import '../../../services/attachment/attachment_grouping.dart';
+import '../../../services/attachment/video_playback_support.dart';
 import '../../../services/location/location_service.dart';
 import '../../../services/settings/settings_service.dart'; // Bearer Token 用于图片认证
 import '../../../services/sync/sync_service.dart';
 import '../../../shared/constants/app_constants.dart';
+import '../../../shared/widgets/video_attachment_card.dart';
+import '../../../shared/widgets/video_viewer_page.dart';
 import 'audio_player_widget.dart';
 import 'file_chip_widget.dart';
 
@@ -241,12 +245,13 @@ class _MemoCardState extends State<_MemoCard> {
     }
   }
 
-  List<AttachmentInfo> get _imageAttachments =>
-      memo.attachments.where((a) => a.isImage).toList();
-  List<AttachmentInfo> get _audioAttachments =>
-      memo.attachments.where((a) => a.isAudio).toList();
-  List<AttachmentInfo> get _fileAttachments =>
-      memo.attachments.where((a) => !a.isImage && !a.isAudio).toList();
+  GroupedAttachments get _grouped =>
+      groupAttachments(memo.attachments, videoPlayback: videoPlaybackSupported);
+
+  List<AttachmentInfo> get _imageAttachments => _grouped.images;
+  List<AttachmentInfo> get _audioAttachments => _grouped.audios;
+  List<AttachmentInfo> get _videoAttachments => _grouped.videos;
+  List<AttachmentInfo> get _fileAttachments => _grouped.files;
 
   static const int _kMaxLines = 6;
 
@@ -512,6 +517,15 @@ class _MemoCardState extends State<_MemoCard> {
                 const SizedBox(height: 6),
                 _ImageGrid(attachments: _imageAttachments),
               ],
+
+              // ── 视频附件区 ────────────────────────────────────
+              ..._videoAttachments.map(
+                (a) => VideoAttachmentCard(
+                  key: ValueKey(a.localId),
+                  attachment: a,
+                  onTap: () => VideoViewerPage.open(context, a),
+                ),
+              ),
 
               // ── 音频附件区 ────────────────────────────────────
               ..._audioAttachments.map((a) =>

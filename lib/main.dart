@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:media_kit/media_kit.dart';
 
 import 'data/database/database_service.dart';
+import 'services/attachment/video_playback_support.dart';
 import 'services/settings/settings_service.dart';
 import 'services/sync/sync_service.dart';
 import 'services/vault/vault_controller.dart';
@@ -18,6 +20,9 @@ final themeModeNotifier = ValueNotifier<ThemeMode>(ThemeMode.system);
 /// 应用入口
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 视频播放（media_kit）；不支持的平台不初始化，视频仍按普通文件处理
+  if (videoPlaybackSupported) MediaKit.ensureInitialized();
 
   debugPrint('[App] 初始化数据库...');
   await DatabaseService.db;

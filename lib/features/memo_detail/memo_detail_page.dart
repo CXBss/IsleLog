@@ -14,6 +14,8 @@ import '../../data/models/comment_entry.dart';
 import '../../data/models/memo_entry.dart';
 import '../../data/models/thread_entry.dart';
 import '../../data/models/weather_info.dart';
+import '../../services/attachment/attachment_grouping.dart';
+import '../../services/attachment/video_playback_support.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
@@ -26,6 +28,8 @@ import '../threads/thread_picker_sheet.dart';
 import 'widgets/thread_nav_bar.dart';
 import '../../shared/constants/app_constants.dart';
 import '../../shared/widgets/image_grid.dart';
+import '../../shared/widgets/video_attachment_card.dart';
+import '../../shared/widgets/video_viewer_page.dart';
 
 /// 日记详情页
 ///
@@ -93,12 +97,13 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
     return text.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
   }
 
-  List<AttachmentInfo> get _imageAttachments =>
-      memo.attachments.where((a) => a.isImage).toList();
-  List<AttachmentInfo> get _audioAttachments =>
-      memo.attachments.where((a) => a.isAudio).toList();
-  List<AttachmentInfo> get _fileAttachments =>
-      memo.attachments.where((a) => !a.isImage && !a.isAudio).toList();
+  GroupedAttachments get _grouped =>
+      groupAttachments(memo.attachments, videoPlayback: videoPlaybackSupported);
+
+  List<AttachmentInfo> get _imageAttachments => _grouped.images;
+  List<AttachmentInfo> get _audioAttachments => _grouped.audios;
+  List<AttachmentInfo> get _videoAttachments => _grouped.videos;
+  List<AttachmentInfo> get _fileAttachments => _grouped.files;
 
   /// 把附件适配成共享图片网格的来源。
   ///
@@ -515,6 +520,18 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                   if (_imageAttachments.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     ImageGrid(images: _buildGridSources(context)),
+                  ],
+
+                  // ── 视频附件 ──────────────────────────────────────────
+                  if (_videoAttachments.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    ..._videoAttachments.map(
+                      (a) => VideoAttachmentCard(
+                        key: ValueKey(a.localId),
+                        attachment: a,
+                        onTap: () => VideoViewerPage.open(context, a),
+                      ),
+                    ),
                   ],
 
                   // ── 音频附件 ──────────────────────────────────────────

@@ -22,12 +22,15 @@ import '../../services/ai/ai_models.dart';
 import '../../services/ai/ai_service.dart';
 import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
+import '../../services/attachment/video_playback_support.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/pending_memo_conflict_policy.dart';
 import '../../services/sync/sync_service.dart';
 import '../../services/weather/weather_service.dart';
 import '../../shared/constants/app_constants.dart';
+import '../../shared/widgets/video_attachment_card.dart';
+import '../../shared/widgets/video_viewer_page.dart';
 import '../conflict/conflict_overview_page.dart';
 import 'ai/ai_action_sheet.dart';
 import 'ai/cloud_ai_consent_dialog.dart';
@@ -2027,22 +2030,30 @@ class _AttachThumbState extends State<_AttachThumb> {
 
   AttachmentInfo get attachment => widget.attachment;
 
+  /// 视频缩略图可以点开预览，其它类型没有预览入口。
+  bool get _playable => attachment.isVideo && videoPlaybackSupported;
+
   @override
   Widget build(BuildContext context) {
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        Container(
-          width: 64,
-          height: 64,
-          decoration: BoxDecoration(
-            color: Colors.grey[200],
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: Colors.grey[300]!),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: _buildThumbContent(),
+        GestureDetector(
+          onTap: _playable
+              ? () => VideoViewerPage.open(context, attachment)
+              : null,
+          child: Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.grey[300]!),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: _buildThumbContent(),
+            ),
           ),
         ),
         // 删除按钮
@@ -2067,6 +2078,14 @@ class _AttachThumbState extends State<_AttachThumb> {
   }
 
   Widget _buildThumbContent() {
+    if (_playable) {
+      return VideoThumbnailView(
+        attachment: attachment,
+        badgeSize: 22,
+        showDuration: false,
+      );
+    }
+
     if (attachment.isImage) {
       final path = attachment.localPath;
       if (path != null) {

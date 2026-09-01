@@ -41,6 +41,7 @@ class AttachmentInfo {
 
   bool get isImage => mimeType.startsWith('image/');
   bool get isAudio => mimeType.startsWith('audio/');
+  bool get isVideo => mimeType.startsWith('video/');
 
   /// 是否为相对路径（以 `/` 开头）
   bool get _isRelativePath => remoteUrl != null && remoteUrl!.startsWith('/');
