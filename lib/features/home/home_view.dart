@@ -332,7 +332,7 @@ class _HomeViewState extends State<HomeView> {
   }
 
   void _openSearch() {
-    showSearch(context: context, delegate: _MemoSearchDelegate());
+    showSearch(context: context, delegate: MemoSearchDelegate());
   }
 
   // ── 分组 ──────────────────────────────────────────────────────
@@ -1127,11 +1127,13 @@ class _DaySection extends StatelessWidget {
 
 // ── 搜索 ──────────────────────────────────────────────────────────
 
-class _MemoSearchDelegate extends SearchDelegate<void> {
-  // 口令是从这个搜索框输入的，不能让它进系统输入法的学习词库和联想候选。
-  // SearchDelegate 的这两个参数会透传给内部 TextField。
-  // 副作用是普通日记搜索也没有自动更正了——对搜索场景基本无损。
-  _MemoSearchDelegate() : super(autocorrect: false, enableSuggestions: false);
+class MemoSearchDelegate extends SearchDelegate<void> {
+  // 这里刻意不传 autocorrect / enableSuggestions：Android 上把它们设为 false
+  // 会给输入框打上 TYPE_TEXT_FLAG_NO_SUGGESTIONS，中文输入法据此退化成
+  // 英文/密码式键盘，搜索框连中文都打不出来。
+  //
+  // 代价是隐私空间的口令（也从这个框输入，见 VaultEntryGate）可能被系统
+  // 输入法记进学习词库——权衡后选了日常搜索可用。
 
   @override
   String get searchFieldLabel => '搜索日记和评论…';
