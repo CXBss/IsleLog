@@ -19,9 +19,9 @@
 - 一个事件串有标题、一句话简介、进行中/已完结状态
 - 一篇日记可属于多个事件串（多对多）
 - **事件串只能手动创建**，AI 不建议新建
-- 创建后 AI 后台生成简介，用户可手动改写
-- 每篇新日记保存后，后台拿**各事件串的简介**判断它可能属于哪个，产出建议供确认
-- 用户主动触发的 AI 任务立刻抢占并中止后台任务
+- 创建后 AI 生成简介，用户可手动改写
+- **每晚一次批处理**：拿各事件串的简介判断当天新增/修改的日记可能属于哪个，产出建议供确认
+- 用户主动触发的 AI 任务抢占并中止后台任务（详见 §6）
 
 核心洞察：匹配的输入是**事件串简介**（压缩表示）而非候选日记全文。这让上下文占用与事件串数量线性相关且系数极小，同时不需要时间窗口启发式 —— 隔几个月复发的事件也能匹配上。
 
@@ -50,26 +50,9 @@ CREATE TABLE IF NOT EXISTS thread_members (
   PRIMARY KEY (thread_id, memo_id)
 );
 CREATE INDEX IF NOT EXISTS idx_thread_members_memo ON thread_members(memo_id);
-
-CREATE TABLE IF NOT EXISTS thread_suggestions (
-  id         INTEGER PRIMARY KEY,
-  user_id    INTEGER NOT NULL,
-  memo_id    INTEGER NOT NULL,
-  thread_id  INTEGER NOT NULL,       -- 只建议加入已有事件串，不为 NULL
-  confidence REAL    DEFAULT 0,
-  reason     TEXT    DEFAULT '',
-  status     TEXT    DEFAULT 'PENDING', -- PENDING / ACCEPTED / DISMISSED
-  created_ts INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_thread_suggestions_user_status
-  ON thread_suggestions(user_id, status);
 ```
 
-`memos` 表加一列，标记「是否已被后台分析过」：
-
-```sql
-ALTER TABLE memos ADD COLUMN thread_scan_ts INTEGER DEFAULT 0;
-```
+> `thread_suggestions` 表与 `thread_scan_ts` 等列属于 Phase 2，定义见 §6.8（含幂等加列机制与 unique index 去重）。
 
 ### 3.2 设计取舍
 
@@ -134,6 +117,7 @@ class ThreadSuggestionEntry {
   double confidence = 0;
   String reason = '';
   @enumerated SuggestionStatus status = SuggestionStatus.pending;
+  @enumerated SyncStatus syncStatus = SyncStatus.synced;
   DateTime createdAt = DateTime.now();
 }
 ```
@@ -158,12 +142,10 @@ dart run build_runner build --delete-conflicting-outputs
 | PATCH | `/api/v1/threads/:thread` | 改 `title` / `summary` / `status`，支持 `?updateMask=` |
 | DELETE | `/api/v1/threads/:thread` | 软删（`row_status = DELETED`） |
 | PUT | `/api/v1/threads/:thread/members` | **全量替换**成员列表 `{memos: [...]}` |
-| GET | `/api/v1/thread-suggestions` | 参数 `status`（默认 `PENDING`） |
-| PATCH | `/api/v1/thread-suggestions/:suggestion` | 改 `status` 为 `ACCEPTED` / `DISMISSED` |
-| POST | `/api/v1/ai/thread-summary` | 手动重新生成简介 `{thread, provider, cloudConsent}` |
-| POST | `/api/v1/ai/thread-match` | 手动重新分析归属 `{memo, provider, cloudConsent}` |
 
-**只做成员的全量替换**，不做单成员 POST/DELETE。理由是**离线客户端的重试语义**：客户端离线期间可能对同一事件串加了 3 篇、删了 1 篇；若只有单条接口，push 需先 diff 再发 4 个请求，第 3 个失败时事件串停在中间状态 —— 而 `syncStatus` 只有一个标记位，表达不了「还差一篇和一个删除」，重试也得记住发到哪了。`PUT` 整个列表则是一个请求、一次原子写、一条 changelog、天然幂等，失败原样重发即可。配合 JSON 列，服务端实现就是一条 `UPDATE threads SET members = ?`。
+> 建议与 AI 相关接口属于 Phase 2，见 §6.9。
+
+**只做成员的全量替换**，不做单成员 POST/DELETE。理由是**离线客户端的重试语义**：客户端离线期间可能对同一事件串加了 3 篇、删了 1 篇；若只有单条接口，push 需先 diff 再发 4 个请求，第 3 个失败时事件串停在中间状态 —— 而 `syncStatus` 只有一个标记位，表达不了「还差一篇和一个删除」，重试也得记住发到哪了。`PUT` 整个列表则是一个请求、一次原子写、一条 changelog、天然幂等，失败原样重发即可。服务端实现见下方事务说明。
 
 服务端实现为一个事务：`DELETE FROM thread_members WHERE thread_id = ?` 后批量 `INSERT`，随后 bump `threads.updated_ts` 并写一条 changelog。
 
@@ -172,8 +154,6 @@ dart run build_runner build --delete-conflicting-outputs
 接口风格对齐现有「设置 Memo 的附件」（`PATCH /memos/:memo/attachments`）。
 
 **不做反查接口** `GET /memos/:memo/threads`：客户端本地有全量数据，本地索引查询即可。
-
-`PATCH /thread-suggestions/:suggestion` 收到 `ACCEPTED` 时，服务端代为执行成员写入（等价于一次 `PUT members` 的增量），并写 thread 的 changelog。
 
 ### Thread 响应结构
 
@@ -202,7 +182,8 @@ dart run build_runner build --delete-conflicting-outputs
 `change_log` 表新增 entity 取值：
 
 - `thread`，`entityId` 为 `threads/{id}`
-- `thread_suggestion`，`entityId` 为 `threadSuggestions/{id}`
+
+建议（`thread_suggestions`）**不进 changelog**，每次同步全量拉取待确认列表即可，理由见 §6.9。
 
 **成员增删只写 thread 的 UPDATE changelog**，不 bump 成员 memo 的 `updated_ts`。否则会把无关 memo 卷入增量同步，并可能污染版本历史（`memo_revision_logs`）。
 
@@ -229,70 +210,235 @@ dart run build_runner build --delete-conflicting-outputs
 
 `title` / `summary` / `status` / 成员列表**整体** last-write-wins（比较 `updatedAt`）。冲突时保留本地并标记 `syncStatus = conflict`，复用现有机制。
 
-## 6. AI 行为
+## 6. Phase 2：AI 辅助
 
-### 6.1 两类后台任务
+Phase 1 交付的是纯手动的事件串。Phase 2 让 AI 承担两件事：**给事件串写一句话简介**，以及**发现漏归类的日记**。手动始终是主路径，AI 只是兜底。
 
-**A. 简介生成（增量）**
+### 6.1 调度：每晚一次批处理
 
-- 触发：事件串创建后，以及每次成员发生变化后
-- 首次（创建时，成员少）做全量总结
-- 之后一律增量：输入为 `旧简介 + 新加入成员的正文` → 输出新简介，输入量恒定
-- 兜底（需全量重算，如批量删成员）：取样 **最早 3 篇 + 最新 5 篇，每篇截断 800 字**
+不做实时分析。所有 AI 工作集中在**每天凌晨 4 点**跑一个批次。
+
+这带来三个免费的好处，都不需要额外代码：
+- 一天之内对同一篇日记的反复编辑，天然合并成一次分析
+- 批量增删成员天然合并成一次简介重算
+- 用户睡着时跑，与前台请求基本不冲突
+
+**不引入 cron 库**，用 10 分钟间隔的 ticker 加追赶判断：
+
+```go
+// 今天的 4 点已过，且今天还没跑过，且不在退避期内
+if now.After(todayAt4) && lastRunTs < todayAt4.Unix() && now.After(pausedUntil) {
+    runNightlyBatch()
+}
+```
+
+比真 cron 更健壮：服务在 4 点恰好重启、或宕了两小时，醒来后照样补上当天批次；真 cron 会直接错过。
+
+`last_run_ts` **只在批次完整跑完时才写**。中途被中止（抢占、超时、进程退出）都不写，下次自然续跑。
+
+### 6.2 批次内容与顺序
+
+```
+1. 重算简介：所有 summary_dirty = 1 且 summary_source = 'AI' 的事件串
+2. 归属匹配：所有 thread_scan_ts = 0 的日记（单次上限 200 篇）
+```
+
+**顺序不能反**：匹配的输入正是各事件串的简介，简介没更新就是拿旧的去匹配。两步不并发，`localGate` 本来也只有 1。
+
+### 6.3 简介生成
+
+- 输入：事件串标题 + **全部成员的完整正文**，不截断
+- 输出：一句话进展简介（≤ 60 字）
 - `summary_source = MANUAL` 时跳过，不覆盖用户手写的简介
+- 每次都**全量重算**，不做增量
 
-全量重算必须取样的原因：「装修」这类长事件串可能攒 30 篇 × 1500 字 ≈ 6 万 tokens，超出本地模型 5 万上下文。真正的 context 压力在这里，不在匹配环节。
+不做增量的理由：增量（旧简介 + 新成员正文）当初是为了防止上下文溢出，但本地模型上下文已达 20 万 token，全量不再是问题。而增量要额外维护「哪些成员是新的」「成员被移除时回退全量」两套逻辑和两套 prompt，并且拿简介再总结简介会像传话游戏一样逐轮漂移。夜间批次里「脏」的事件串通常只有 1–3 个，省那几次调用不值得。
 
-**B. 归属匹配**
+**唯一的兜底**：整串正文超过该 provider 配置上下文（`ProviderConfig.ContextLength`）的 70% 时，退回取样（最早 3 篇 + 最新 5 篇，每篇截断 800 字）。阈值从配置推导而非写死数字，换硬件后改配置即可。这条防的是「某个事件串塞进几十篇超长正文 → 上下文溢出 → 该串每晚失败且永远失败」。
 
-- 触发：memo 创建时，以及 memo 更新且 **content 实际变化**时 —— 后者需把 `thread_scan_ts` 重置为 `0` 再入队。仅改 pin/archive/mood/weather 等不重置。成员增删同样不重置（这正是用「扫过没有」而非「归属了没有」的收益：把日记移出事件串不会触发重新分析）
-- 去重：同一 `(memo_id, thread_id)` 若已存在 `DISMISSED` 的建议，则不再重复建议 —— 否则每次编辑正文都会把用户否掉的建议重新推一遍
+### 6.4 归属匹配
+
+- 触发：memo 创建时，以及 memo 更新且 **content 实际变化**时 —— 后者把 `thread_scan_ts` 重置为 0。仅改 pin/archive/mood/weather 等不重置；成员增删也不重置
 - 输入：
   - 当前日记正文
-  - **全部**事件串的 `title + summary`（`RESOLVED` 的也参与，prompt 中注明已完结）
-  - 每个事件串**最新一篇日记的首句**
-- 输出：命中的 `thread_id` + `confidence` + `reason`，或「无匹配」
-- 结果写入 `thread_suggestions`（`PENDING`）
+  - 候选事件串列表，每条含 `title + summary + status + 最新一篇日记首句`
+  - 候选上限 150 条（按最近活跃排序），保险丝
+- 输出：命中的事件串 + `confidence` + `reason`，或无匹配
 - 成功后写 `thread_scan_ts = now`
 
-上下文预算（本地模型 5 万）：
+附加「最新一篇首句」是为了救「还是没找到」这类短到没有关键词的日记 —— 只看简介模型容易在多个事件串间摇摆，看到最新进展即可判定。
 
-| 输入项 | 量级 |
-|--------|------|
-| 30 个事件串 title + summary（约 50 字/条） | ~2000 tokens |
-| 30 条最新一篇首句（约 30 字/条） | ~1200 tokens |
-| 新日记正文（长文按 2000 字算） | ~3000 tokens |
-| prompt 模板 | ~500 tokens |
-| **合计** | **< 7000 tokens** |
+`RESOLVED` 的事件串**照样参与匹配**，prompt 中注明已完结、除非明确延续否则不选。蛐蛐正是「以为死了 → 又叫了」，过早标完结就永远匹配不上。
 
-裕度充足。附加「最新一篇首句」是为了救「还是没找到」这类短到没有关键词的日记 —— 只看简介模型容易在多个事件串间摇摆，看到最新进展即可判定。
+**不做时间窗口过滤**：简介匹配与时间无关，隔几个月复发的事件也能命中。
 
-`RESOLVED` 事件串照样参与匹配：蛐蛐正是「以为死了 → 又叫了」，过早标完结就永远匹配不上。
+#### 服务端必须校验模型输出
 
-**不做时间窗口过滤。** 简介匹配与时间无关，隔几个月复发的事件也能命中。
+照搬润色那套「不信任模型返回值」的思路：
 
-### 6.2 隐私边界
+- `threadId` 不在本次候选集中 → 整条丢弃（防编造）
+- `confidence` 不在 0–1 → 丢弃
+- **`confidence < 0.7` → 丢弃，不入库**
 
-沿用服务端现有规则（`cloudConsent` 仅对当前请求有效、不持久化）：
+高阈值是刻意的取舍：宁可漏报，也不要用平庸猜测磨损信任。代价是「还是没找到」这类短日记可能需要手动归类。
 
-- **后台任务硬编码 `provider = LOCAL`**，不接 DeepSeek 分支 —— 后台任务无法代用户同意上云
-- `LOCAL` 不可用时：简介生成跳过（保持旧简介）；归属匹配退化为关键词粗排，`confidence` 封顶 0.5，`reason` 标注「关键词匹配」，且**不写 `thread_scan_ts`**，待 LOCAL 恢复后重跑
-- 用户在客户端手动触发 `/ai/thread-summary` 或 `/ai/thread-match` 时，才可选 DeepSeek 并带 `cloudConsent`
+因为低置信度结果根本不入库，**不需要「低置信度收进列表」的分档 UI**，也不需要 LOCAL 不可用时的关键词粗排兜底——那条路径产出的 confidence 永远够不到 0.7，写了也不会有可见结果。模型不可用就什么都不做，等下次。
 
-**AI 永不直接写 `thread_members`。** AI 只写 `thread_suggestions` 和 `threads.summary`。成员写入一律由用户确认后走普通 API。这是服务端既有规则「AI 接口不会直接修改 memo 或 article，仅返回建议内容供客户端确认」的延续。
+### 6.5 隐私边界
 
-### 6.3 前台抢占
+- **后台批次硬编码 `provider = LOCAL`**，不接 DeepSeek 分支 —— 后台任务无法代用户同意上云（`cloudConsent` 仅对当次请求有效且不持久化）
+- 只有用户手动触发的两个接口才可选 DeepSeek 并带 `cloudConsent`
+- **AI 永不写 `thread_members`**。AI 只写 `thread_suggestions` 和 `threads.summary`
 
-现有并发闸门在 `handler/ai.go`：`localGate` 容量 1、`deepSeekGate` 容量 2，`tryAcquireProvider` 为非阻塞获取，满则返回 429。
+### 6.6 前台抢占与退避
 
-新增抢占逻辑：
+夜间批次严格串行、`localGate` 容量为 1，因此**同一时刻只有一个后台调用**。spec 早期设想的 `CancelFunc` 注册表退化成一个字段：
 
-- `AIHandler` 持有后台任务的 `context.CancelFunc` 注册表（mutex 保护）
-- 前台请求（标签建议 / 润色 / 手动重新分析）在获取 `localGate` **之前**先调用 `preemptBackground()`：cancel 当前后台任务，并等待其释放闸门（超时 2s，超时则照常返回 429）
-- cancel 会断开到本地模型的 HTTP 连接，llama.cpp 收到断连即停止生成，闸门随之释放
-- 后台 worker 用**阻塞式**获取闸门（它可以等），前台仍用 `tryAcquireProvider`
+```go
+type AIHandler struct {
+    bgMu     sync.Mutex
+    bgCancel context.CancelFunc // nil = 后台空闲
+}
+```
 
-**被中止的任务不丢**：`thread_scan_ts` 保持 `0`，稍后空闲时自然重跑；服务重启后启动扫描一遍即可补上。内存队列只做调度，持久化状态靠这一列。后台 worker 单并发，避免打爆 LOCAL。
+前台请求（标签建议 / 润色 / 手动触发）在 `tryAcquireProvider` **之前**先调 `preemptBackground()`：取锁、cancel、等闸门释放，上限 3 秒，超时则照旧返回 429。
+
+底层已具备该能力：`handler/ai_test.go` 中的 `TestAIForwardsCanceledRequestContext` 与 `TestAIConcurrencyGateReleasesAfterContextCancellation` 证明 provider 会透传 context 取消、闸门会正确释放。
+
+**被抢占后必须退避**，否则用户夜间使用的那段时间里，批次会陷入「被 cancel → 立刻重试 → 又被 cancel」的循环：
+
+```
+被抢占 → paused_until = now + 15min，且不写 last_run_ts
+```
+
+进度全在 `thread_scan_ts` / `summary_dirty` 上，15 分钟后从断点续跑，跑完才写 `last_run_ts`。
+
+### 6.7 首次上线的存量回填
+
+`thread_scan_ts` 默认 0 意味着**加完列后全库历史日记都变成「待分析」**。几年的日记 × 每次十几秒，第一晚要跑几小时，且绝大多数毫无意义（此时事件串总共才几个）。
+
+因此加列迁移的同一步里执行一次：
+
+```sql
+UPDATE memos SET thread_scan_ts = updated_ts WHERE thread_scan_ts = 0;
+```
+
+功能从「今天起写的和改的」开始生效。历史回扫是 Phase 3 的显式动作（用户在设置页主动触发、明确知道要跑多久），不是升级后的意外惊喜。
+
+### 6.8 数据模型增补
+
+服务端 `Migrate` 目前只执行 `CREATE TABLE IF NOT EXISTS`，没有加列机制。需引入幂等 helper（`PRAGMA table_info` 查后再 `ALTER`）：
+
+```go
+func addColumnIfMissing(db *sql.DB, table, column, ddl string) error
+```
+
+用它加三列：
+
+```sql
+memos.thread_scan_ts     INTEGER NOT NULL DEFAULT 0  -- 0 = 待分析
+threads.summary_dirty    INTEGER NOT NULL DEFAULT 0  -- 1 = 简介待重算
+users.thread_ai_enabled  INTEGER NOT NULL DEFAULT 1  -- 自动分析总开关
+```
+
+开关用**独立列而非 `users.extra` 的 JSON**：worker 每轮要用它过滤，`json_extract` 写在轮询 SQL 里既慢又脆。
+
+建议表：
+
+```sql
+CREATE TABLE IF NOT EXISTS thread_suggestions (
+  id         INTEGER PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
+  memo_id    INTEGER NOT NULL REFERENCES memos(id)   ON DELETE CASCADE,
+  thread_id  INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  confidence REAL    NOT NULL DEFAULT 0,
+  reason     TEXT    NOT NULL DEFAULT '',
+  status     TEXT    NOT NULL DEFAULT 'PENDING',  -- PENDING / ACCEPTED / DISMISSED
+  created_ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_thread_suggestions_user_status
+  ON thread_suggestions(user_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_suggestions_pair
+  ON thread_suggestions(memo_id, thread_id);
+```
+
+**unique index 取代了显式去重逻辑**：同一对 `(memo, thread)` 一辈子只存在一行，插入用 `INSERT OR IGNORE`。用户否掉之后再怎么改正文都不会重新冒出来，且省掉一次「先查有没有 DISMISSED」的查询。
+
+代价：接受建议后又把日记移出事件串，系统不会再建议第二次。这是刻意的——第二次提示只会烦人。
+
+**软删除不触发级联**：memo 和 thread 都是软删除，`ON DELETE CASCADE` 不会触发。列表接口必须显式过滤，只返回 memo 与 thread 均为 `NORMAL` 的建议。
+
+调度状态存单行配置：`thread_ai_last_run_ts`、`thread_ai_paused_until_ts`。
+
+### 6.9 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/ai/thread-status` | 队列与调度状态 |
+| PATCH | `/api/v1/ai/thread-settings` | `{enabled}` 开关 |
+| POST | `/api/v1/ai/thread-batch:run` | 立即跑一次批次 |
+| POST | `/api/v1/ai/thread-summary` | 单个事件串重新生成简介，可选 DeepSeek |
+| GET | `/api/v1/thread-suggestions` | 参数 `status`，默认 `PENDING` |
+| PATCH | `/api/v1/thread-suggestions/:id` | 改 `status` 为 `ACCEPTED` / `DISMISSED` |
+
+`thread-status` 响应：
+
+```json
+{
+  "enabled": true,
+  "providerAvailable": true,
+  "pendingMemos": 3,
+  "dirtyThreads": 1,
+  "lastRunTime": "2026-08-24T04:00:12Z",
+  "lastRunError": ""
+}
+```
+
+**不做「单篇日记重新分析归属」接口**：有了「立即跑批次」，它没有独立价值。
+
+**建议不走 changelog。** 每次同步直接 `GET /thread-suggestions?status=PENDING` 全量拉取——高阈值之后这个列表本来就很短，增量同步的复杂度（entity 分支、冲突判定）换不来任何东西。
+
+#### 修复 Phase 1 的 `summary_source` 缺陷
+
+Phase 1 中，服务端从「请求里有没有 `summary`」**推断**用户是否手写。而客户端 `_pushPendingThreads` 每次 `updateThread` 都会带上 `summary`，导致**用户只要改过一次标题或标记过一次完结，该事件串的 AI 简介就永久失效**。Phase 1 未暴露此问题，因为当时还没有 AI 写简介。
+
+改为客户端**显式声明**：
+
+```
+PATCH /threads/:id  { "summary": "...", "summarySource": "AI" | "MANUAL" }
+```
+
+客户端本就有 `summaryIsManual`，直接映射。服务端不再推断意图。
+
+配套：**AI 生成简介后必须 bump `threads.updated_ts` 并写 changelog**，否则客户端永远拉不到新简介。
+
+### 6.10 客户端
+
+**建议的接受流程：服务端不代写成员。**
+
+服务端收到 `ACCEPTED` 只记录状态，成员写入完全走客户端既有的事件串推送链路：客户端本地把 memo 加进 `memberLocalIds`（thread 转 pending）+ 把建议标为 accepted，两者各自按既有规则同步。
+
+这样避免两个写入方（服务端 accept 分支 + 客户端 `PUT members`）互相覆盖，且让「AI 永不写 `thread_members`」在代码上真的没有那条路径。离线点「加入」也照常工作。
+
+**新增本地集合** `ThreadSuggestionEntry`：`suggestionName` / `memoLocalId` / `threadLocalId` / `confidence` / `reason` / `status` / `syncStatus`，形状照 `ThreadEntry`。拉取时只覆盖本地 `synced` 的行，本地已操作但未推送的保持不动，避免离线操作被服务端旧状态复活。
+
+**建议的两个入口**（高阈值筛过之后剩下的都有把握，两个都值得做）：
+
+- 事件串 Tab 顶部横幅：「发现 N 条可能的关联」→ 展开显示 `日记首行 + 理由`，两个按钮：加入 / 忽略
+- 时间线卡片虚线 chip：`? 工位蛐蛐`，就地确认或忽略，不弹窗不跳页
+
+后者正是 Phase 1 推迟的 spec §7.5 —— 当时推迟的理由就是「与建议 chip 共用同一块卡片区域，一起做只改一遍布局」。
+
+**状态与开关：**
+
+事件串 Tab 顶部一行状态，仅在非空闲时显示：
+
+```
+3 篇待分析 · 今晚 4:00 处理      ← 正常
+模型离线，暂停分析                ← providerAvailable = false
+```
+
+设置页：`自动分析事件关联` 开关 + `立即分析` 按钮。
 
 ## 7. 客户端 UI
 
@@ -308,7 +454,7 @@ dart run build_runner build --delete-conflicting-outputs
 
 ### 7.2 事件串 Tab
 
-- 顶部：有 `PENDING` 建议时显示横幅「发现 N 条可能的关联」，点击进入确认列表
+- 顶部：有 `PENDING` 建议时显示横幅「发现 N 条可能的关联」，点击进入确认列表（Phase 2，另见 §6.10 的状态行）
 - 分组：进行中 / 已完结
 - 卡片：`标题 · 简介 · 4 篇 · 08月11日–08月13日`
 
@@ -327,9 +473,13 @@ dart run build_runner build --delete-conflicting-outputs
 
 右上角小 chip 显示所属事件串（标题截断）。有待确认建议时显示**淡色虚线 chip**（`? 工位蛐蛐`），点击就地确认或忽略，不弹窗、不跳页。
 
+> 整节属于 Phase 2：两种 chip 共用同一块卡片区域，一起做只需改一遍布局。
+
 ### 7.6 编辑器
 
-工具栏增加「事件串」按钮，手动选择已有事件串或新建。**手动是主路径，AI 只是兜底** —— 因此 Phase 1 不含 AI 也完全可用。
+AppBar 增加「事件串」按钮，手动选择已有事件串或新建。**手动是主路径，AI 只是兜底** —— 因此 Phase 1 不含 AI 也完全可用。
+
+> 实现修正：原设计放在底部工具栏，但该行已有录音/拍照/附件/位置/天气/心情，多一个 36px 按钮会在窄屏上把保存按钮挤出可视区。改放 AppBar（与「AI 助手」同列），语义上也更贴切——两者都是针对整篇日记的操作，而非插入内容的工具。
 
 ### 7.7 创建页的批量加入
 
@@ -337,26 +487,38 @@ dart run build_runner build --delete-conflicting-outputs
 
 ## 8. 分期
 
-**Phase 1 — 纯手动，无 AI。做完即可解决蛐蛐问题。**
+**Phase 1 — 纯手动，无 AI。做完即可解决蛐蛐问题。已完成。**
 
 - 服务端：`threads` + `thread_members` 两表 + CRUD API + changelog entity `thread`
 - 客户端：`ThreadEntry` 模型 + 同步（含离线推送顺序、冲突）+ 底部 Tab 改版 + 详情页事件串 chip 与上下篇导航 + 编辑器手动挂载 + 创建页批量加入
 - 文档：`server-API.md` 补 threads 章节
 
-**Phase 2 — AI 兜底**
+**Phase 2 — AI 辅助**（设计见 §6）
 
-- 服务端：`thread_suggestions` 表 + `memos.thread_scan_ts` 列 + `/ai/thread-summary` + `/ai/thread-match` + 后台 worker + 前台抢占 + changelog entity `thread_suggestion`
-- 客户端：`ThreadSuggestionEntry` + 建议横幅 + 时间线虚线 chip 就地确认
+服务端：
+- 幂等加列 helper + `memos.thread_scan_ts` / `threads.summary_dirty` / `users.thread_ai_enabled` 三列，加列时回填存量日记为已扫描
+- `thread_suggestions` 表（含 `(memo_id, thread_id)` unique index）
+- 夜间调度器（ticker + 追赶 + 退避）与批处理：先重算简介、后归属匹配
+- AI 操作 `buildThreadSummaryCompletion` / `buildThreadMatchCompletion` + 输出校验（候选集校验、0.7 阈值）
+- 前台抢占（单槽 cancel + 3 秒等待）
+- 接口：`thread-status` / `thread-settings` / `thread-batch:run` / `thread-summary` / `thread-suggestions` 增删改
+- 修复 Phase 1 的 `summary_source` 推断缺陷，改为客户端显式声明
 - 文档：`server-API.md` 补 AI 与建议章节
+
+客户端：
+- `ThreadSuggestionEntry` 集合 + 全量拉取待确认列表（不走 changelog）
+- 事件串 Tab 建议横幅 + 状态行；时间线卡片虚线 chip 就地确认
+- 设置页开关与「立即分析」
+- 推送 thread 时显式带 `summarySource`
 
 **Phase 3 — 可选**
 
-- 用已有事件串简介**回扫历史日记**（注意：是回扫，不是从历史中发现新事件串）
+- 用已有事件串简介**回扫历史日记**（是回扫，不是从历史中发现新事件串）。Phase 2 已把存量日记标记为已扫描，因此这必须是用户显式触发的动作
 - 长期无更新的事件串自动建议标记完结
 
 ## 9. 验收标准
 
-Phase 1：
+Phase 1（已验证）：
 
 - 手动创建「工位蛐蛐」，搜索并一次加入 4 篇历史日记
 - 任一篇的详情页显示事件串 chip 与 `← 上一篇 · 3/4 · 下一篇 →`，可前后跳转
@@ -365,6 +527,11 @@ Phase 1：
 
 Phase 2：
 
-- 新写一篇「今晚又听到蛐蛐了」，保存后不做任何操作，时间线卡片出现虚线 chip `? 工位蛐蛐`，点击即加入
-- 后台分析进行中时手动触发标签建议，标签建议立即返回（不 429），且后台任务稍后自动重跑
-- 关闭 LOCAL provider 后，后台匹配退化为关键词建议且 `thread_scan_ts` 保持 0
+- 升级到含 Phase 2 的服务端后，`thread_status` 的 `pendingMemos` 为 0（存量日记已回填为已扫描），不会触发全库分析
+- 新写一篇「今晚又听到蛐蛐了」，次日 4 点后同步，时间线卡片出现虚线 chip `? 工位蛐蛐`，点击即加入且成员正确推送
+- 同一篇日记的建议被忽略后，再次编辑其正文也不会重新出现（unique index 生效）
+- 手动点「立即分析」可跳过等待，效果与夜间批次一致
+- 批次运行中触发标签建议：标签建议正常返回（不 429），批次被中止且 15 分钟后从断点续跑
+- 关闭「自动分析事件关联」后，夜间批次不再运行，`pendingMemos` 持续累积但不消耗模型
+- 用户手动改写某事件串的简介后，改标题或标记完结，简介不再被 AI 覆盖（`summary_source` 缺陷已修）
+- 删除一篇有待确认建议的日记，该建议不再出现在横幅中（软删过滤生效）
