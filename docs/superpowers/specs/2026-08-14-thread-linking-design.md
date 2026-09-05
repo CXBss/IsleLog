@@ -92,7 +92,8 @@ class ThreadEntry {
 
   String title = '';
   String summary = '';
-  bool summaryIsManual = false;      // true 时 AI 不再覆盖 summary
+  bool summaryIsManual = false;      // 来源：true = 用户写的（仅供 UI 显示）
+  bool summaryLocked = false;        // true 时 AI 不得改写（Phase 2 新增）
 
   @enumerated ThreadStatus status = ThreadStatus.active;
 
@@ -239,7 +240,7 @@ if now.After(todayAt4) && lastRunTs < todayAt4.Unix() && now.After(pausedUntil) 
 ### 6.2 批次内容与顺序
 
 ```
-1. 重算简介：所有 summary_dirty = 1 且 summary_source = 'AI' 的事件串
+1. 重算简介：所有 summary_dirty = 1 且 summary_locked = 0 的事件串
 2. 归属匹配：所有 thread_scan_ts = 0 的日记（单次上限 200 篇）
 ```
 
@@ -249,8 +250,14 @@ if now.After(todayAt4) && lastRunTs < todayAt4.Unix() && now.After(pausedUntil) 
 
 - 输入：事件串标题 + **全部成员的完整正文**，不截断
 - 输出：一句话进展简介（≤ 60 字）
-- `summary_source = MANUAL` 时跳过，不覆盖用户手写的简介
+- `summary_locked = 1` 时跳过，不覆盖已锁定的简介
 - 每次都**全量重算**，不做增量
+
+**锁定与来源是两件事。** `summary_source`（AI / MANUAL）记录**谁写的**，供 UI 显示；`summary_locked` 决定 **AI 能不能改**。二者分开的原因：若只有 `summary_source`，用户想冻结一条 AI 写得不错的简介，唯一办法是把它原样重打一遍好让它变成 MANUAL —— 显然不合理。
+
+- 用户点锁定按钮 → `summary_locked = 1`，来源不变
+- 用户手动改写简介 → 同时置 `summary_source = MANUAL` 且 `summary_locked = 1`（否则当晚就被覆盖，是个坏惊喜）
+- 用户解锁 → AI 在下次 `summary_dirty` 时恢复接管
 
 不做增量的理由：增量（旧简介 + 新成员正文）当初是为了防止上下文溢出，但本地模型上下文已达 20 万 token，全量不再是问题。而增量要额外维护「哪些成员是新的」「成员被移除时回退全量」两套逻辑和两套 prompt，并且拿简介再总结简介会像传话游戏一样逐轮漂移。夜间批次里「脏」的事件串通常只有 1–3 个，省那几次调用不值得。
 
@@ -338,7 +345,14 @@ func addColumnIfMissing(db *sql.DB, table, column, ddl string) error
 ```sql
 memos.thread_scan_ts     INTEGER NOT NULL DEFAULT 0  -- 0 = 待分析
 threads.summary_dirty    INTEGER NOT NULL DEFAULT 0  -- 1 = 简介待重算
+threads.summary_locked   INTEGER NOT NULL DEFAULT 0  -- 1 = AI 不得改写
 users.thread_ai_enabled  INTEGER NOT NULL DEFAULT 1  -- 自动分析总开关
+```
+
+加 `summary_locked` 时回填，保持 Phase 1 的既有行为：
+
+```sql
+UPDATE threads SET summary_locked = 1 WHERE summary_source = 'MANUAL';
 ```
 
 开关用**独立列而非 `users.extra` 的 JSON**：worker 每轮要用它过滤，`json_extract` 写在轮询 SQL 里既慢又脆。
@@ -405,10 +419,14 @@ Phase 1 中，服务端从「请求里有没有 `summary`」**推断**用户是�
 改为客户端**显式声明**：
 
 ```
-PATCH /threads/:id  { "summary": "...", "summarySource": "AI" | "MANUAL" }
+PATCH /threads/:id  {
+  "summary": "...",
+  "summarySource": "AI" | "MANUAL",
+  "summaryLocked": true
+}
 ```
 
-客户端本就有 `summaryIsManual`，直接映射。服务端不再推断意图。
+服务端不再推断意图，三个字段都由客户端显式声明。`summaryLocked` 同时也是锁定按钮的写入通道。
 
 配套：**AI 生成简介后必须 bump `threads.updated_ts` 并写 changelog**，否则客户端永远拉不到新简介。
 
@@ -428,6 +446,12 @@ PATCH /threads/:id  { "summary": "...", "summarySource": "AI" | "MANUAL" }
 - 时间线卡片虚线 chip：`? 工位蛐蛐`，就地确认或忽略，不弹窗不跳页
 
 后者正是 Phase 1 推迟的 spec §7.5 —— 当时推迟的理由就是「与建议 chip 共用同一块卡片区域，一起做只改一遍布局」。
+
+**简介锁定按钮：**
+
+事件串详情页简介行右侧一个锁图标。未锁定为空心锁 + 次级色，提示「锁定简介，AI 不再改写」；锁定后为实心锁 + 主题色，提示「已锁定，点击解锁」。点击即切换 `summaryLocked` 并置 `syncStatus = pending`。
+
+手动改写简介时自动锁定，无需再点按钮。
 
 **状态与开关：**
 
@@ -534,4 +558,5 @@ Phase 2：
 - 批次运行中触发标签建议：标签建议正常返回（不 429），批次被中止且 15 分钟后从断点续跑
 - 关闭「自动分析事件关联」后，夜间批次不再运行，`pendingMemos` 持续累积但不消耗模型
 - 用户手动改写某事件串的简介后，改标题或标记完结，简介不再被 AI 覆盖（`summary_source` 缺陷已修）
+- 对一条 AI 生成的简介点锁定按钮，此后夜间批次不再改写它；解锁后下次 `summary_dirty` 时恢复生成
 - 删除一篇有待确认建议的日记，该建议不再出现在横幅中（软删过滤生效）
