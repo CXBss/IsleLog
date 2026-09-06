@@ -10,6 +10,7 @@ import '../../data/models/comment_entry.dart';
 import '../../data/models/folder_entry.dart';
 import '../../data/models/memo_entry.dart';
 import '../../data/models/thread_entry.dart';
+import '../../data/models/thread_suggestion_entry.dart';
 import '../../data/models/weather_info.dart';
 import '../../shared/constants/app_constants.dart';
 import '../../shared/constants/build_flags.dart';
@@ -134,6 +135,8 @@ class SyncService {
       await _pullArticles(api);
       // 事件串依赖已拉取的日记，确保成员可映射为本地 id。
       await _pullThreads(api);
+      // 建议在事件串之后拉取，保证 threadLocalId 能映射到本地
+      await _pullSuggestions(api);
       // 再 push：冲突条目已被标记为 conflict（不是 pending），不会被推送
       final pushed = await _pushPending(api, url, token);
       await SettingsService.setLastSyncTime(DateTime.now());
@@ -578,6 +581,8 @@ class SyncService {
     count += await _pushPendingArticles(api);
     // 事件串最后推送：离线日记先取得 memosName 后才能成为成员。
     count += await _pushPendingThreads(api);
+    // 建议最后推送：接受建议引发的成员变更已在上一步推完
+    count += await _pushPendingSuggestions(api);
     return count;
   }
 
@@ -1650,6 +1655,7 @@ class SyncService {
       ..title = data['title'] as String? ?? ''
       ..summary = data['summary'] as String? ?? ''
       ..summaryIsManual = data['summarySource'] == 'MANUAL'
+      ..summaryLocked = data['summaryLocked'] == true
       ..status = data['status'] == 'RESOLVED'
           ? ThreadStatus.resolved
           : ThreadStatus.active;
@@ -1751,6 +1757,8 @@ class SyncService {
             name: thread.threadName!,
             title: thread.title,
             summary: thread.summary,
+            summarySource: thread.summaryIsManual ? 'MANUAL' : 'AI',
+            summaryLocked: thread.summaryLocked,
             status: thread.status == ThreadStatus.resolved
                 ? 'RESOLVED'
                 : 'ACTIVE',
@@ -1769,6 +1777,93 @@ class SyncService {
         pushed++;
       } catch (e) {
         debugPrint('[Sync] 推送事件串失败 id=${thread.id}: $e');
+      }
+    }
+    return pushed;
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 事件串建议同步
+  // ────────────────────────────────────────────────────────────────
+
+  /// 拉取待确认建议。
+  ///
+  /// 不走 changelog：建议是短命数据且高阈值过滤后列表很短，每次全量拉取
+  /// 比维护 entity 分支和冲突判定简单得多。
+  static Future<int> _pullSuggestions(MemosApiService api) async {
+    debugPrint('[Sync] _pullSuggestions 开始');
+    var pulled = 0;
+    try {
+      final remoteList = await api.listThreadSuggestions();
+      final remoteNames = remoteList
+          .map((data) => data['name'] as String?)
+          .whereType<String>()
+          .toSet();
+
+      for (final data in remoteList) {
+        final name = data['name'] as String?;
+        if (name == null) continue;
+
+        final local = await DatabaseService.getSuggestionByName(name);
+        if (!shouldOverwriteSuggestion(local)) continue;
+
+        final memo = await DatabaseService.getMemoByMemosName(
+          data['memo'] as String? ?? '',
+        );
+        final thread = await DatabaseService.getThreadByThreadName(
+          data['thread'] as String? ?? '',
+        );
+        // 本地还没有对应的日记或事件串就跳过，下轮同步补齐
+        if (memo == null || thread == null) continue;
+
+        final entry = local ?? ThreadSuggestionEntry();
+        entry
+          ..suggestionName = name
+          ..memoLocalId = memo.id
+          ..threadLocalId = thread.id
+          ..confidence = (data['confidence'] as num?)?.toDouble() ?? 0
+          ..reason = data['reason'] as String? ?? ''
+          ..status = SuggestionStatus.pending
+          ..syncStatus = SyncStatus.synced
+          ..createdAt =
+              DateTime.tryParse(data['createTime'] as String? ?? '')?.toLocal() ??
+              DateTime.now();
+        await DatabaseService.saveSuggestion(entry);
+        pulled++;
+      }
+
+      // 远端已不在待确认列表中的（被其他设备处理掉了）本地物理删除
+      for (final local in await DatabaseService.getSyncedSuggestions()) {
+        if (local.suggestionName != null &&
+            !remoteNames.contains(local.suggestionName)) {
+          await DatabaseService.hardDeleteSuggestion(local.id);
+        }
+      }
+    } catch (e) {
+      debugPrint('[Sync] _pullSuggestions 失败: $e');
+    }
+    debugPrint('[Sync] _pullSuggestions 完成，拉取 $pulled 条');
+    return pulled;
+  }
+
+  /// 推送本地对建议的处理结果。
+  static Future<int> _pushPendingSuggestions(MemosApiService api) async {
+    final pending = await DatabaseService.getPendingSyncSuggestions();
+    var pushed = 0;
+    for (final suggestion in pending) {
+      if (suggestion.suggestionName == null) continue;
+      try {
+        await api.updateThreadSuggestion(
+          name: suggestion.suggestionName!,
+          status: suggestion.status == SuggestionStatus.accepted
+              ? 'ACCEPTED'
+              : 'DISMISSED',
+        );
+        // 处理完的建议不再需要留在本地
+        await DatabaseService.hardDeleteSuggestion(suggestion.id);
+        pushed++;
+      } catch (e) {
+        debugPrint('[Sync] 推送建议失败 id=${suggestion.id}: $e');
       }
     }
     return pushed;

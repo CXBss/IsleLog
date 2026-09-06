@@ -85,6 +85,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
     await _load();
   }
 
+  Future<void> _toggleSummaryLock() async {
+    final thread = _thread;
+    if (thread == null) return;
+    thread.summaryLocked = !thread.summaryLocked;
+    await _save();
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading)
@@ -137,25 +144,45 @@ class _ThreadDetailPageState extends State<ThreadDetailPage> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-            child: InkWell(
-              onTap: () => _edit(
-                label: '简介',
-                initial: thread.summary,
-                allowEmpty: true,
-                onSave: (value) {
-                  thread.summary = value;
-                  thread.summaryIsManual = true;
-                  _save();
-                },
-              ),
-              child: Text(
-                thread.summary.isEmpty ? '点击添加一句话简介' : thread.summary,
-                style: TextStyle(
-                  color: thread.summary.isEmpty
-                      ? Colors.grey
-                      : AppColors.textBody(context),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: () => _edit(
+                      label: '简介',
+                      initial: thread.summary,
+                      allowEmpty: true,
+                      onSave: (value) {
+                        thread.summary = value;
+                        thread.summaryIsManual = true;
+                        // 手动改写后自动锁定，否则当晚就被批次覆盖
+                        thread.summaryLocked = true;
+                        _save();
+                      },
+                    ),
+                    child: Text(
+                      thread.summary.isEmpty ? '点击添加一句话简介' : thread.summary,
+                      style: TextStyle(
+                        color: thread.summary.isEmpty
+                            ? Colors.grey
+                            : AppColors.textBody(context),
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+                IconButton(
+                  icon: Icon(
+                    thread.summaryLocked ? Icons.lock : Icons.lock_open_outlined,
+                    size: 18,
+                    color: thread.summaryLocked
+                        ? AppColors.primary
+                        : AppColors.textSecondary(context),
+                  ),
+                  tooltip: thread.summaryLocked ? '已锁定，点击解锁' : '锁定简介，AI 不再改写',
+                  onPressed: _toggleSummaryLock,
+                ),
+              ],
             ),
           ),
           Padding(

@@ -9,7 +9,9 @@ import '../models/folder_entry.dart';
 import '../models/memo_entry.dart';
 import '../models/tag_stat.dart';
 import '../models/thread_entry.dart';
+import '../models/thread_suggestion_entry.dart';
 import 'memo_write_policy.dart';
+import 'thread_membership_policy.dart';
 
 /// 本地数据库服务（单例）
 ///
@@ -45,6 +47,7 @@ class DatabaseService {
         ArticleEntrySchema,
         FolderEntrySchema,
         ThreadEntrySchema,
+        ThreadSuggestionEntrySchema,
       ],
       directory: dir.path,
       name: 'isle_v2', // v2: 新增 originalContent 字段，旧 default.isar 自动废弃
@@ -687,8 +690,18 @@ class DatabaseService {
     final folderStream = isar.folderEntrys.watchLazy(fireImmediately: false);
     // 事件串同样并入：详情页移出成员、同步拉取到远端改动后，列表页需随之刷新
     final threadStream = isar.threadEntrys.watchLazy(fireImmediately: false);
+    // 建议增删同样要触发列表刷新（横幅与卡片 chip 都依赖它）
+    final suggestionStream = isar.threadSuggestionEntrys.watchLazy(
+      fireImmediately: false,
+    );
     return memoStream
-        .mergeWith([commentStream, articleStream, folderStream, threadStream])
+        .mergeWith([
+          commentStream,
+          articleStream,
+          folderStream,
+          threadStream,
+          suggestionStream,
+        ])
         .debounceTime(const Duration(milliseconds: 300));
   }
 
@@ -1403,6 +1416,35 @@ class DatabaseService {
     return result;
   }
 
+  /// 逐条检查并修复「升级后手写简介被静默解锁」的事件串，判断逻辑见
+  /// [needsManualSummaryLockRepair]。每次启动都跑一遍：代价是一次全表
+  /// 扫描（事件串数量级很小，可忽略），首次修复完之后不会再有命中，因为
+  /// 新建事件串在创建时就会正确设置该字段。
+  ///
+  /// 若该事件串当前处于 [SyncStatus.conflict]（等待用户处理冲突），只修正
+  /// 本地字段本身，不把 syncStatus 改为 pending——否则会绕开冲突保留机制，
+  /// 在下次同步时把本地版本悄悄推送覆盖，丢掉触发冲突的远端改动。字段本身
+  /// 依然会被修正，冲突解决后自然能正确参与下一次推送判断。
+  static Future<int> repairUnlockedManualSummaries() async {
+    final threads = await getAllThreads();
+    var fixed = 0;
+    for (final thread in threads) {
+      if (needsManualSummaryLockRepair(thread)) {
+        final wasConflict = thread.syncStatus == SyncStatus.conflict;
+        thread.summaryLocked = true;
+        if (!wasConflict) {
+          thread.syncStatus = SyncStatus.pending;
+        }
+        await saveThread(thread);
+        fixed++;
+      }
+    }
+    if (fixed > 0) {
+      debugPrint('[DB] repairUnlockedManualSummaries → 修复 $fixed 个事件串');
+    }
+    return fixed;
+  }
+
   /// 反查某篇日记所属的事件串。
   static Future<List<ThreadEntry>> getThreadsForMemo(int memoLocalId) async {
     final isar = await db;
@@ -1466,6 +1508,101 @@ class DatabaseService {
       }
       await isar.threadEntrys.putAll(affected);
     });
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 事件串建议（ThreadSuggestionEntry）
+  // ────────────────────────────────────────────────────────────────
+
+  static Future<int> saveSuggestion(ThreadSuggestionEntry suggestion) async {
+    final isar = await db;
+    final id = await isar.writeTxn(
+      () => isar.threadSuggestionEntrys.put(suggestion),
+    );
+    return id;
+  }
+
+  static Future<ThreadSuggestionEntry?> getSuggestionByName(String name) async {
+    final isar = await db;
+    return isar.threadSuggestionEntrys
+        .filter()
+        .suggestionNameEqualTo(name)
+        .findFirst();
+  }
+
+  /// 待用户确认的建议，按置信度倒序。
+  static Future<List<ThreadSuggestionEntry>> getPendingSuggestions() async {
+    final isar = await db;
+    final result = await isar.threadSuggestionEntrys
+        .filter()
+        .statusEqualTo(SuggestionStatus.pending)
+        .sortByConfidenceDesc()
+        .findAll();
+    debugPrint('[DB] getPendingSuggestions → ${result.length} 条');
+    return result;
+  }
+
+  /// 某篇日记的待确认建议（时间线卡片的虚线 chip 用）。
+  static Future<List<ThreadSuggestionEntry>> getSuggestionsForMemo(
+    int memoLocalId,
+  ) async {
+    final isar = await db;
+    return isar.threadSuggestionEntrys
+        .filter()
+        .memoLocalIdEqualTo(memoLocalId)
+        .statusEqualTo(SuggestionStatus.pending)
+        .findAll();
+  }
+
+  static Future<List<ThreadSuggestionEntry>> getSyncedSuggestions() async {
+    final isar = await db;
+    return isar.threadSuggestionEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.synced)
+        .findAll();
+  }
+
+  static Future<List<ThreadSuggestionEntry>> getPendingSyncSuggestions() async {
+    final isar = await db;
+    return isar.threadSuggestionEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.pending)
+        .findAll();
+  }
+
+  static Future<bool> hardDeleteSuggestion(int id) async {
+    final isar = await db;
+    return isar.writeTxn(() => isar.threadSuggestionEntrys.delete(id));
+  }
+
+  /// 接受或忽略一条 AI 建议。
+  ///
+  /// accepted=true 时同时把该日记加入建议指向的事件串（走
+  /// [toggleThreadMember]，与手动挂载走同一条路径，服务端不代写成员），
+  /// 并把建议标记为 accepted；accepted=false 时只标记建议为 dismissed。
+  /// 两条记录（thread、suggestion）在 accept 时必须一起转为 pending，
+  /// 否则下次同步只会推送其中一个，另一个的状态在服务端凭空复活。
+  static Future<void> applySuggestionDecision(
+    ThreadSuggestionEntry suggestion, {
+    required bool accepted,
+  }) async {
+    if (accepted) {
+      final thread = await getThreadById(suggestion.threadLocalId);
+      if (thread != null) {
+        thread
+          ..memberLocalIds = toggleThreadMember(
+            thread.memberLocalIds,
+            suggestion.memoLocalId,
+            selected: true,
+          )
+          ..syncStatus = SyncStatus.pending;
+        await saveThread(thread);
+      }
+    }
+    suggestion
+      ..status = accepted ? SuggestionStatus.accepted : SuggestionStatus.dismissed
+      ..syncStatus = SyncStatus.pending;
+    await saveSuggestion(suggestion);
   }
 }
 

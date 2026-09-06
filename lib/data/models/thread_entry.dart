@@ -22,6 +22,13 @@ class ThreadEntry {
   String summary = '';
   bool summaryIsManual = false;
 
+  /// 锁定后 AI 不再改写简介
+  ///
+  /// 与 [summaryIsManual] 是两件事：后者记录「谁写的」仅供展示，前者决定
+  /// 「AI 能不能改」。分开是因为用户可能想冻结一条 AI 写得不错的简介，
+  /// 而不必把它原样重打一遍。
+  bool summaryLocked = false;
+
   @enumerated
   ThreadStatus status = ThreadStatus.active;
 

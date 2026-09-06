@@ -818,6 +818,8 @@ class MemosApiService {
     required String name,
     String? title,
     String? summary,
+    String? summarySource,
+    bool? summaryLocked,
     String? status,
   }) async {
     try {
@@ -826,6 +828,10 @@ class MemosApiService {
         data: {
           if (title != null) 'title': title,
           if (summary != null) 'summary': summary,
+          // 服务端不再从「有没有 summary」推断来源，必须显式声明，
+          // 否则每次推送都会把简介判定为手写，AI 永远无法接管
+          if (summarySource != null) 'summarySource': summarySource,
+          if (summaryLocked != null) 'summaryLocked': summaryLocked,
           if (status != null) 'status': status,
         },
       );
@@ -854,6 +860,73 @@ class MemosApiService {
         data: {'memos': memos},
       );
       return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 夜间批次的队列与调度状态
+  Future<Map<String, dynamic>> getThreadAiStatus() async {
+    try {
+      final res = await _dio.get('/api/v1/ai/thread-status');
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 切换自动分析总开关
+  Future<void> setThreadAiEnabled(bool enabled) async {
+    try {
+      await _dio.patch('/api/v1/ai/thread-settings', data: {'enabled': enabled});
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 立即跑一遍夜间批次
+  Future<void> runThreadBatch() async {
+    try {
+      await _dio.post(
+        '/api/v1/ai/thread-batch:run',
+        options: Options(
+          // 服务端同步跑完整个批次才响应，可能持续几分钟，这一个接口需要
+          // 比默认的短超时更长的等待时间，其余接口不受影响
+          receiveTimeout: const Duration(minutes: 10),
+          sendTimeout: const Duration(minutes: 10),
+        ),
+      );
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 拉取建议列表（默认待确认）
+  Future<List<Map<String, dynamic>>> listThreadSuggestions({
+    String status = 'PENDING',
+  }) async {
+    try {
+      final res = await _dio.get(
+        '/api/v1/thread-suggestions',
+        queryParameters: {'status': status},
+      );
+      final list = (res.data['suggestions'] as List<dynamic>? ?? [])
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+      debugPrint('[API] listThreadSuggestions → ${list.length} 条');
+      return list;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  /// 修改建议状态（ACCEPTED / DISMISSED）
+  Future<void> updateThreadSuggestion({
+    required String name,
+    required String status,
+  }) async {
+    try {
+      await _dio.patch('/api/v1/$name', data: {'status': status});
     } on DioException catch (e) {
       throw _wrap(e);
     }

@@ -401,7 +401,7 @@ git commit -m "feat: 事件串 Phase 2 数据库迁移与存量回填"
 - Consumes: `model.FormatID(int64) string`
 - Produces:
   - `model.ThreadSuggestion{ID, UserID, MemoID, ThreadID int64; Confidence float64; Reason, Status string; CreatedTs int64}`
-  - `func (s *ThreadSuggestion) ResourceName() string` → `"threadSuggestions/{id}"`
+  - `func (s *ThreadSuggestion) ResourceName() string` → `"thread-suggestions/{id}"`
   - `func (s *ThreadSuggestion) ToJSON(memoSnippet, threadTitle string) map[string]interface{}`
   - 常量 `SuggestionPending` / `SuggestionAccepted` / `SuggestionDismissed`
   - `const MinSuggestionConfidence = 0.7`
@@ -424,7 +424,7 @@ func TestThreadSuggestionToJSON(t *testing.T) {
 
 	result := suggestion.ToJSON("今晚又听到蛐蛐了", "工位蛐蛐")
 
-	if result["name"] != "threadSuggestions/77" {
+	if result["name"] != "thread-suggestions/77" {
 		t.Fatalf("name = %v", result["name"])
 	}
 	if result["memo"] != "memos/1001" {
@@ -503,9 +503,9 @@ type ThreadSuggestion struct {
 	CreatedTs  int64
 }
 
-// ResourceName 返回 API 资源名称，格式为 "threadSuggestions/{id}"。
+// ResourceName 返回 API 资源名称，格式为 "thread-suggestions/{id}"。
 func (s *ThreadSuggestion) ResourceName() string {
-	return "threadSuggestions/" + FormatID(s.ID)
+	return "thread-suggestions/" + FormatID(s.ID)
 }
 
 // ToJSON 构建建议的 API 响应。
@@ -567,6 +567,21 @@ git commit -m "feat: 新增事件串建议模型"
 在 `handler/thread_test.go` 末尾追加：
 
 ```go
+// 创建时带手写简介必须同时锁定，否则当晚就被批次覆盖——与详情页手动
+// 编辑简介的锁定语义（Task 13）保持一致。
+func TestCreateThreadWithSummaryLocksIt(t *testing.T) {
+	database := newTestDB(t)
+	u := newTestUser(t, database, "alice")
+	h := NewThreadHandler(database)
+
+	threadID := createThread(t, h, u, `{"title":"工位蛐蛐","summary":"用户自己写的"}`)
+
+	result, _ := getThread(t, h, u, threadID)
+	if result["summaryLocked"] != true {
+		t.Fatalf("summaryLocked = %v，期望 true（创建时带手写简介应自动锁定）", result["summaryLocked"])
+	}
+}
+
 // Phase 1 的缺陷：服务端从「请求里有没有 summary」推断用户是否手写，
 // 而客户端每次 updateThread 都会带上 summary，导致用户只要改过一次标题，
 // 该事件串的 AI 简介就永久失效。改为客户端显式声明。
@@ -684,6 +699,17 @@ Expected: FAIL —— `summaryLocked` 键不存在
 ```
 
 - [ ] **Step 4: 改造 handler/thread.go**
+
+`CreateThread` 中已有的 `if req.Summary != "" { t.SummarySource = "MANUAL" }`（约第 145 行）补上锁定：
+
+```go
+	if req.Summary != "" {
+		t.SummarySource = "MANUAL"
+		// 手动写的简介必须同时锁定，否则当晚就被批次覆盖，是个坏惊喜——
+		// 与详情页手动编辑简介时的锁定语义保持一致（见 §6.3）
+		t.SummaryLocked = true
+	}
+```
 
 把 `loadThread` 与 `ListThreads` 中的 SELECT 列表从
 `id,user_id,title,summary,summary_source,status,created_ts,updated_ts,row_status`
@@ -815,7 +841,7 @@ git commit -m "feat: 简介锁定与扫描标记，修复 summary_source 推断�
 - Create: `service/ai/thread_test.go`
 
 **Interfaces:**
-- Consumes: 既有 `completeWithOneJSONRepair`、`providerForRequest`、`ErrInvalidModelOutput`、`ProviderConfig.ContextLength`
+- Consumes: 既有 `completeWithOneJSONRepair`、`providerForRequest`、`ErrInvalidModelOutput`、`ProviderConfig.ContextLength`；Task 2 的 `model.MinSuggestionConfidence`（`service/ai` 与 `model` 互不依赖，import 不成环，因此阈值不重复定义）
 - Produces:
   - `ai.ThreadEntryText{Content string}`
   - `ai.ThreadSummaryRequest{Title string; Entries []ThreadEntryText; ContextLength int; Provider ProviderName; CloudConsent bool}`
@@ -1127,6 +1153,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"islelog-server/model"
 )
 
 // 取样参数：仅在正文总量超出上下文预算时启用。
@@ -1244,7 +1272,7 @@ func (s *Service) ThreadMatch(ctx context.Context, request ThreadMatchRequest) (
 	if decoded.Confidence < 0 || decoded.Confidence > 1 {
 		return ThreadMatchResult{Usage: usage}, nil
 	}
-	if decoded.Confidence < MinThreadMatchConfidence {
+	if decoded.Confidence < model.MinSuggestionConfidence {
 		return ThreadMatchResult{Usage: usage}, nil
 	}
 	known := false
@@ -1265,13 +1293,6 @@ func (s *Service) ThreadMatch(ctx context.Context, request ThreadMatchRequest) (
 		Usage:      usage,
 	}, nil
 }
-```
-
-在 `service/ai/types.go` 的常量区加入（`ai` 包不能 import `model`，因此阈值在此独立定义）：
-
-```go
-// MinThreadMatchConfidence 是归属建议入库的最低置信度，与 model.MinSuggestionConfidence 一致。
-const MinThreadMatchConfidence = 0.7
 ```
 
 - [ ] **Step 6: 运行测试确认通过**
@@ -2966,7 +2987,7 @@ git commit -m "feat: 事件串 AI 状态、开关与立即执行接口"
 {
   "suggestions": [
     {
-      "name": "threadSuggestions/77",
+      "name": "thread-suggestions/77",
       "memo": "memos/1001",
       "thread": "threads/20",
       "memoSnippet": "今晚又听到蛐蛐了",
@@ -3088,7 +3109,7 @@ git commit -m "docs: 补充事件串 AI 辅助接口文档"
   - `enum SuggestionStatus { pending, accepted, dismissed }`
   - `class ThreadSuggestionEntry`（字段见下）
   - `ThreadEntry.summaryLocked`
-  - `DatabaseService.saveSuggestion(ThreadSuggestionEntry, {bool skipTimestamp}) → Future<int>`
+  - `DatabaseService.saveSuggestion(ThreadSuggestionEntry) → Future<int>`（无 `skipTimestamp`：`ThreadSuggestionEntry` 没有 `updatedAt` 字段需要保护，不同于 `ThreadEntry.saveThread`）
   - `DatabaseService.getPendingSuggestions() → Future<List<ThreadSuggestionEntry>>`
   - `DatabaseService.getSuggestionsForMemo(int memoLocalId) → Future<List<ThreadSuggestionEntry>>`
   - `DatabaseService.getSyncedSuggestions() → Future<List<ThreadSuggestionEntry>>`
@@ -3116,7 +3137,7 @@ enum SuggestionStatus { pending, accepted, dismissed }
 class ThreadSuggestionEntry {
   Id id = Isar.autoIncrement;
 
-  /// 远端资源名 "threadSuggestions/{id}"，不设 unique（同 memosName 的理由）
+  /// 远端资源名 "thread-suggestions/{id}"，不设 unique（同 memosName 的理由）
   @Index()
   String? suggestionName;
 

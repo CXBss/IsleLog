@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:isle_log/data/database/thread_membership_policy.dart';
 import 'package:isle_log/data/models/memo_entry.dart';
 import 'package:isle_log/data/models/thread_entry.dart';
+import 'package:isle_log/data/models/thread_suggestion_entry.dart';
 
 ThreadEntry _local(SyncStatus status, DateTime updatedAt) =>
     ThreadEntry()
@@ -177,6 +178,140 @@ void main() {
 
     test('空列表返回空结果', () {
       expect(mapRemoteMembersToLocalIds([], {'memos/1': 8}), isEmpty);
+    });
+  });
+
+  group('shouldOverwriteSuggestion', () {
+    test('本地不存在时写入', () {
+      expect(shouldOverwriteSuggestion(null), isTrue);
+    });
+
+    test('本地已同步时可被服务端覆盖', () {
+      final local = ThreadSuggestionEntry()..syncStatus = SyncStatus.synced;
+
+      expect(shouldOverwriteSuggestion(local), isTrue);
+    });
+
+    // 离线点了「加入」或「忽略」后，服务端仍是 PENDING；
+    // 若被覆盖，用户的操作会凭空复活成待确认。
+    test('本地已操作未推送时不被覆盖', () {
+      final local = ThreadSuggestionEntry()
+        ..syncStatus = SyncStatus.pending
+        ..status = SuggestionStatus.dismissed;
+
+      expect(shouldOverwriteSuggestion(local), isFalse);
+    });
+  });
+
+  group('buildAlignedSuggestions', () {
+    ThreadSuggestionEntry suggestion(int id) =>
+        ThreadSuggestionEntry()..id = id;
+    MemoEntry memo({bool deleted = false}) =>
+        MemoEntry()..isDeleted = deleted;
+    ThreadEntry thread({bool deleted = false}) =>
+        ThreadEntry()..isDeleted = deleted;
+
+    test('全部有效时保留全部且下标一一对应', () {
+      final s1 = suggestion(1);
+      final s2 = suggestion(2);
+      final m1 = memo();
+      final t1 = thread();
+      final m2 = memo();
+      final t2 = thread();
+
+      final result = buildAlignedSuggestions([
+        SuggestionResolution(suggestion: s1, memo: m1, thread: t1),
+        SuggestionResolution(suggestion: s2, memo: m2, thread: t2),
+      ]);
+
+      expect(result.kept, [s1, s2]);
+      expect(result.resolved, [(m1, t1), (m2, t2)]);
+    });
+
+    // 关键回归用例：中间一条因 memo 已不存在被跳过后，kept 与 resolved
+    // 的下标必须继续对齐，否则 UI 用下标回调「接受/忽略」会打到错误一条。
+    test('中间一条 memo 缺失时被跳过，后续下标仍保持对齐', () {
+      final s1 = suggestion(1);
+      final s2 = suggestion(2);
+      final s3 = suggestion(3);
+      final t1 = thread();
+      final m3 = memo();
+      final t3 = thread();
+
+      final result = buildAlignedSuggestions([
+        SuggestionResolution(suggestion: s1, memo: memo(), thread: t1),
+        SuggestionResolution(suggestion: s2, memo: null, thread: thread()),
+        SuggestionResolution(suggestion: s3, memo: m3, thread: t3),
+      ]);
+
+      expect(result.kept, [s1, s3]);
+      expect(result.resolved.length, 2);
+      expect(result.resolved[1], (m3, t3));
+    });
+
+    test('thread 缺失时该条被跳过', () {
+      final s1 = suggestion(1);
+
+      final result = buildAlignedSuggestions([
+        SuggestionResolution(suggestion: s1, memo: memo(), thread: null),
+      ]);
+
+      expect(result.kept, isEmpty);
+      expect(result.resolved, isEmpty);
+    });
+
+    test('memo 或 thread 已软删除时该条被跳过', () {
+      final s1 = suggestion(1);
+      final s2 = suggestion(2);
+
+      final result = buildAlignedSuggestions([
+        SuggestionResolution(
+          suggestion: s1,
+          memo: memo(deleted: true),
+          thread: thread(),
+        ),
+        SuggestionResolution(
+          suggestion: s2,
+          memo: memo(),
+          thread: thread(deleted: true),
+        ),
+      ]);
+
+      expect(result.kept, isEmpty);
+      expect(result.resolved, isEmpty);
+    });
+
+    test('空输入返回空结果', () {
+      final result = buildAlignedSuggestions([]);
+
+      expect(result.kept, isEmpty);
+      expect(result.resolved, isEmpty);
+    });
+  });
+
+  group('needsManualSummaryLockRepair', () {
+    test('手写简介但未锁定时需要修复', () {
+      final thread = ThreadEntry()
+        ..summaryIsManual = true
+        ..summaryLocked = false;
+
+      expect(needsManualSummaryLockRepair(thread), isTrue);
+    });
+
+    test('手写简介且已锁定时无需修复', () {
+      final thread = ThreadEntry()
+        ..summaryIsManual = true
+        ..summaryLocked = true;
+
+      expect(needsManualSummaryLockRepair(thread), isFalse);
+    });
+
+    test('非手写简介时无需修复，即便未锁定', () {
+      final thread = ThreadEntry()
+        ..summaryIsManual = false
+        ..summaryLocked = false;
+
+      expect(needsManualSummaryLockRepair(thread), isFalse);
     });
   });
 }

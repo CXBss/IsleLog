@@ -567,6 +567,92 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 
 `members` 仅在单条查询和设置成员时返回；成员数为零时不返回起止时间。
 
+## 事件串 AI 辅助
+
+> 仅适用于 IsleLog 自建服务。每天凌晨 4 点跑一次批处理：先重算「脏」事件串的简介，
+> 再为待分析的日记产出归属建议。后台任务**硬编码使用 LOCAL 模型**，绝不上云。
+> AI 只写 `thread_suggestions` 与 `threads.summary`，永不修改事件串成员。
+
+### 状态
+
+`GET /api/v1/ai/thread-status` **[IsleLog 扩展]**
+
+```json
+{
+  "enabled": true,
+  "providerAvailable": true,
+  "pendingMemos": 3,
+  "dirtyThreads": 1,
+  "lastRunTime": "2026-08-24T04:00:12Z",
+  "lastRunError": ""
+}
+```
+
+`lastRunTime` 在从未运行过时不输出。
+
+### 开关
+
+`PATCH /api/v1/ai/thread-settings` **[IsleLog 扩展]**
+
+请求体 `{"enabled": false}`。关闭后夜间批次对该用户完全不运行，`pendingMemos` 会持续累积但不消耗模型。
+
+### 立即执行
+
+`POST /api/v1/ai/thread-batch:run` **[IsleLog 扩展]**
+
+立即跑一遍批次，效果与夜间批次一致。本地模型不可用时返回 503。
+
+### 建议列表
+
+`GET /api/v1/thread-suggestions?status=PENDING` **[IsleLog 扩展]**
+
+```json
+{
+  "suggestions": [
+    {
+      "name": "thread-suggestions/77",
+      "memo": "memos/1001",
+      "thread": "threads/20",
+      "memoSnippet": "今晚又听到蛐蛐了",
+      "threadTitle": "工位蛐蛐",
+      "confidence": 0.86,
+      "reason": "同样在讲工位的蛐蛐",
+      "status": "PENDING",
+      "createTime": "2026-08-24T04:00:12Z"
+    }
+  ]
+}
+```
+
+按置信度倒序。**置信度低于 0.7 的匹配结果直接丢弃、不入库**，因此列表中不会出现低置信度项。
+`memo` 或 `thread` 已被软删除的建议不会返回。
+
+### 修改建议状态
+
+`PATCH /api/v1/thread-suggestions/:id` **[IsleLog 扩展]**
+
+请求体 `{"status": "ACCEPTED"}` 或 `{"status": "DISMISSED"}`。
+
+> **接受建议不会写入事件串成员。** 服务端只记录状态，成员写入由客户端走
+> `PUT /threads/:id/members` 完成，避免两个写入方互相覆盖。
+>
+> 同一 `(memo, thread)` 组合在库中只存在一行：用户忽略之后，再怎么编辑正文
+> 也不会重新收到同一条建议。
+
+### 事件串字段变化
+
+`PATCH /api/v1/threads/:id` 新增两个字段：
+
+| 字段 | 说明 |
+|------|------|
+| `summarySource` | `AI` / `MANUAL`，简介来源，仅供展示 |
+| `summaryLocked` | bool，为 true 时 AI 不再改写该简介 |
+
+服务端**不再从「请求里是否带 summary」推断来源**，两者都必须由客户端显式声明。
+Thread 响应结构相应新增 `summaryLocked`。
+
+---
+
 ## 变更日志（增量同步）
 
 > 用于客户端增量同步。客户端全量同步完成后保存最新的 `changeId` 作为游标，下次启动时拉取 `id > changeId` 的变更，再按 `entity`/`entityId` 拉取对应实体的最新数据。
