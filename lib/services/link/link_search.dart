@@ -26,6 +26,7 @@ Future<List<LinkTarget>> searchLinkTargets(
 
   var memos = <MemoEntry>[];
   var articles = <ArticleEntry>[];
+  var limit = 50;
 
   if (query.isDate) {
     if (wantMemo) {
@@ -46,10 +47,12 @@ Future<List<LinkTarget>> searchLinkTargets(
     }
   } else {
     // 空输入：列最近更新的条目，不输入也能选。
+    // spec 第 5 节规定这条分支只列 20 条，别改回 50。
     if (wantMemo) memos = await DatabaseService.getRecentMemos(limit: 20);
     if (wantArticle) {
       articles = await DatabaseService.getRecentArticles(limit: 20);
     }
+    limit = 20;
   }
 
   return buildLinkTargets(
@@ -57,6 +60,6 @@ Future<List<LinkTarget>> searchLinkTargets(
     articles: articles,
     excludeMemoId: excludeMemoId,
     excludeArticleId: excludeArticleId,
-    limit: 50,
+    limit: limit,
   );
 }
