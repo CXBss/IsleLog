@@ -1,5 +1,6 @@
 import '../models/memo_entry.dart';
 import '../models/thread_entry.dart';
+import '../models/thread_suggestion_entry.dart';
 
 /// Pull 时对事件串采取的动作。
 enum ThreadPullAction { insert, overwrite, markConflict, skip }
@@ -78,3 +79,12 @@ List<int> mapRemoteMembersToLocalIds(
   for (final name in memoNames)
     if (localIdByMemosName[name] case final id?) id,
 ];
+
+/// 判断拉取到的远端建议是否可以覆盖本地记录。
+///
+/// 本地已操作但尚未推送（`syncStatus == pending`）时必须保留：服务端此刻
+/// 仍是 `PENDING`，覆盖会让用户离线点过的「加入」或「忽略」凭空复活。
+bool shouldOverwriteSuggestion(ThreadSuggestionEntry? local) {
+  if (local == null) return true;
+  return local.syncStatus == SyncStatus.synced;
+}

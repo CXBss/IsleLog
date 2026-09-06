@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:isle_log/data/database/thread_membership_policy.dart';
 import 'package:isle_log/data/models/memo_entry.dart';
 import 'package:isle_log/data/models/thread_entry.dart';
+import 'package:isle_log/data/models/thread_suggestion_entry.dart';
 
 ThreadEntry _local(SyncStatus status, DateTime updatedAt) =>
     ThreadEntry()
@@ -177,6 +178,28 @@ void main() {
 
     test('空列表返回空结果', () {
       expect(mapRemoteMembersToLocalIds([], {'memos/1': 8}), isEmpty);
+    });
+  });
+
+  group('shouldOverwriteSuggestion', () {
+    test('本地不存在时写入', () {
+      expect(shouldOverwriteSuggestion(null), isTrue);
+    });
+
+    test('本地已同步时可被服务端覆盖', () {
+      final local = ThreadSuggestionEntry()..syncStatus = SyncStatus.synced;
+
+      expect(shouldOverwriteSuggestion(local), isTrue);
+    });
+
+    // 离线点了「加入」或「忽略」后，服务端仍是 PENDING；
+    // 若被覆盖，用户的操作会凭空复活成待确认。
+    test('本地已操作未推送时不被覆盖', () {
+      final local = ThreadSuggestionEntry()
+        ..syncStatus = SyncStatus.pending
+        ..status = SuggestionStatus.dismissed;
+
+      expect(shouldOverwriteSuggestion(local), isFalse);
     });
   });
 }
