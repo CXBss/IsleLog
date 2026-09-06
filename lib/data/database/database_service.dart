@@ -11,6 +11,7 @@ import '../models/tag_stat.dart';
 import '../models/thread_entry.dart';
 import '../models/thread_suggestion_entry.dart';
 import 'memo_write_policy.dart';
+import 'thread_membership_policy.dart';
 
 /// 本地数据库服务（单例）
 ///
@@ -1543,6 +1544,36 @@ class DatabaseService {
   static Future<bool> hardDeleteSuggestion(int id) async {
     final isar = await db;
     return isar.writeTxn(() => isar.threadSuggestionEntrys.delete(id));
+  }
+
+  /// 接受或忽略一条 AI 建议。
+  ///
+  /// accepted=true 时同时把该日记加入建议指向的事件串（走
+  /// [toggleThreadMember]，与手动挂载走同一条路径，服务端不代写成员），
+  /// 并把建议标记为 accepted；accepted=false 时只标记建议为 dismissed。
+  /// 两条记录（thread、suggestion）在 accept 时必须一起转为 pending，
+  /// 否则下次同步只会推送其中一个，另一个的状态在服务端凭空复活。
+  static Future<void> applySuggestionDecision(
+    ThreadSuggestionEntry suggestion, {
+    required bool accepted,
+  }) async {
+    if (accepted) {
+      final thread = await getThreadById(suggestion.threadLocalId);
+      if (thread != null) {
+        thread
+          ..memberLocalIds = toggleThreadMember(
+            thread.memberLocalIds,
+            suggestion.memoLocalId,
+            selected: true,
+          )
+          ..syncStatus = SyncStatus.pending;
+        await saveThread(thread);
+      }
+    }
+    suggestion
+      ..status = accepted ? SuggestionStatus.accepted : SuggestionStatus.dismissed
+      ..syncStatus = SyncStatus.pending;
+    await saveSuggestion(suggestion);
   }
 }
 

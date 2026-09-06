@@ -88,3 +88,40 @@ bool shouldOverwriteSuggestion(ThreadSuggestionEntry? local) {
   if (local == null) return true;
   return local.syncStatus == SyncStatus.synced;
 }
+
+/// 一条待展示建议及其（可能尚未解析出，或指向的记录已不存在的）
+/// memo / thread。调用方负责用异步的 [DatabaseService] 查询填充这两项，
+/// 这里只做纯过滤，不发起任何数据库调用。
+class SuggestionResolution {
+  final ThreadSuggestionEntry suggestion;
+  final MemoEntry? memo;
+  final ThreadEntry? thread;
+
+  const SuggestionResolution({
+    required this.suggestion,
+    required this.memo,
+    required this.thread,
+  });
+}
+
+/// 过滤掉 memo/thread 已不存在或已被软删除的建议。
+///
+/// 返回的 `kept`（建议本体）与 `resolved`（对应已解析出的 memo/thread）
+/// 严格按下标一一对应——调用方据此拼出展示用列表（如 UI 层的
+/// `SuggestionItem`）后，两个列表的长度和顺序必须始终一致，否则
+/// 界面上按下标回调的「接受/忽略」会作用到错误的那一条建议。
+({List<ThreadSuggestionEntry> kept, List<(MemoEntry, ThreadEntry)> resolved})
+buildAlignedSuggestions(List<SuggestionResolution> resolutions) {
+  final kept = <ThreadSuggestionEntry>[];
+  final resolved = <(MemoEntry, ThreadEntry)>[];
+  for (final r in resolutions) {
+    final memo = r.memo;
+    final thread = r.thread;
+    if (memo == null || thread == null || memo.isDeleted || thread.isDeleted) {
+      continue;
+    }
+    kept.add(r.suggestion);
+    resolved.add((memo, thread));
+  }
+  return (kept: kept, resolved: resolved);
+}
