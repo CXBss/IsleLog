@@ -68,7 +68,7 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
   Future<void> _toggleThreadAi(bool value) async {
     final api = await _api();
     if (api == null) return;
-    setState(() => _threadAiEnabled = value);
+    if (mounted) setState(() => _threadAiEnabled = value);
     try {
       await api.setThreadAiEnabled(value);
     } catch (e) {
@@ -84,7 +84,7 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
   Future<void> _runNow() async {
     final api = await _api();
     if (api == null) return;
-    setState(() => _running = true);
+    if (mounted) setState(() => _running = true);
     try {
       await api.runThreadBatch();
       if (mounted) {
