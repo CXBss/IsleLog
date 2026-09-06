@@ -887,7 +887,15 @@ class MemosApiService {
   /// 立即跑一遍夜间批次
   Future<void> runThreadBatch() async {
     try {
-      await _dio.post('/api/v1/ai/thread-batch:run');
+      await _dio.post(
+        '/api/v1/ai/thread-batch:run',
+        options: Options(
+          // 服务端同步跑完整个批次才响应，可能持续几分钟，这一个接口需要
+          // 比默认的短超时更长的等待时间，其余接口不受影响
+          receiveTimeout: const Duration(minutes: 10),
+          sendTimeout: const Duration(minutes: 10),
+        ),
+      );
     } on DioException catch (e) {
       throw _wrap(e);
     }
