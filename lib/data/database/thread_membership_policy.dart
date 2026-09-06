@@ -125,3 +125,13 @@ buildAlignedSuggestions(List<SuggestionResolution> resolutions) {
   }
   return (kept: kept, resolved: resolved);
 }
+
+/// 判断某个事件串是否需要修复「升级后手写简介被静默解锁」问题。
+///
+/// `summaryLocked` 是随本次改动新增的字段，旧版本升级后所有已有事件串
+/// 该字段默认为 false——即使 `summaryIsManual == true`（用户手写过简介，
+/// 服务端早已为这种情况回填 `summary_locked = 1`）。命中时需要补一次本地
+/// 修复：锁定 + 转为 pending，以便下次同步把修正值推送回服务端，否则这份
+/// 过期的 false 可能在下次编辑时被推送上去，悄悄解锁受保护的简介。
+bool needsManualSummaryLockRepair(ThreadEntry thread) =>
+    thread.summaryIsManual && !thread.summaryLocked;

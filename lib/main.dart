@@ -32,6 +32,9 @@ Future<void> main() async {
   await DatabaseService.seedIfEmpty(mockMemos);
   debugPrint('[App] Mock 数据检查完成');
 
+  // 修复升级路径可能遗留的「手写简介被静默解锁」问题，详见方法注释
+  await DatabaseService.repairUnlockedManualSummaries();
+
   if (kVaultEnabled) {
     await VaultController.init();
     VaultController.instance.attachLifecycleObserver();

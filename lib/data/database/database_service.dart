@@ -1416,6 +1416,28 @@ class DatabaseService {
     return result;
   }
 
+  /// 逐条检查并修复「升级后手写简介被静默解锁」的事件串，判断逻辑见
+  /// [needsManualSummaryLockRepair]。每次启动都跑一遍：代价是一次全表
+  /// 扫描（事件串数量级很小，可忽略），首次修复完之后不会再有命中，因为
+  /// 新建事件串在创建时就会正确设置该字段。
+  static Future<int> repairUnlockedManualSummaries() async {
+    final threads = await getAllThreads();
+    var fixed = 0;
+    for (final thread in threads) {
+      if (needsManualSummaryLockRepair(thread)) {
+        thread
+          ..summaryLocked = true
+          ..syncStatus = SyncStatus.pending;
+        await saveThread(thread);
+        fixed++;
+      }
+    }
+    if (fixed > 0) {
+      debugPrint('[DB] repairUnlockedManualSummaries → 修复 $fixed 个事件串');
+    }
+    return fixed;
+  }
+
   /// 反查某篇日记所属的事件串。
   static Future<List<ThreadEntry>> getThreadsForMemo(int memoLocalId) async {
     final isar = await db;
