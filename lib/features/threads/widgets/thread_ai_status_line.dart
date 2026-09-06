@@ -32,7 +32,13 @@ class ThreadAiStatusLine extends StatelessWidget {
     if (!data.hasWork) return null;
     if (!data.enabled) return '自动分析已关闭';
     if (!data.providerAvailable) return '模型离线，暂停分析';
-    return '${data.pendingMemos} 篇待分析 · 今晚 4:00 处理';
+    if (data.pendingMemos > 0 && data.dirtyThreads > 0) {
+      return '${data.pendingMemos} 篇待分析 · ${data.dirtyThreads} 条简介待更新 · 今晚 4:00 处理';
+    }
+    if (data.pendingMemos > 0) {
+      return '${data.pendingMemos} 篇待分析 · 今晚 4:00 处理';
+    }
+    return '${data.dirtyThreads} 条简介待更新 · 今晚 4:00 处理';
   }
 
   @override

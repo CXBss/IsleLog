@@ -9,7 +9,21 @@ Future<void> _pump(WidgetTester tester, ThreadAiStatusData data) async {
 }
 
 void main() {
-  testWidgets('待分析时显示数量与处理时间', (tester) async {
+  testWidgets('仅有待分析日记时显示数量与处理时间', (tester) async {
+    await _pump(
+      tester,
+      const ThreadAiStatusData(
+        enabled: true,
+        providerAvailable: true,
+        pendingMemos: 3,
+        dirtyThreads: 0,
+      ),
+    );
+
+    expect(find.text('3 篇待分析 · 今晚 4:00 处理'), findsOneWidget);
+  });
+
+  testWidgets('待分析日记与简介待更新同时存在时两者都展示', (tester) async {
     await _pump(
       tester,
       const ThreadAiStatusData(
@@ -20,7 +34,23 @@ void main() {
       ),
     );
 
-    expect(find.text('3 篇待分析 · 今晚 4:00 处理'), findsOneWidget);
+    expect(find.text('3 篇待分析 · 1 条简介待更新 · 今晚 4:00 处理'), findsOneWidget);
+  });
+
+  // 手动把日记加入事件串只置 summary_dirty，不动 pendingMemos，
+  // 是最常见操作后的日常状态，不该被文案误读成「0 篇待分析」
+  testWidgets('只有简介待更新、没有待分析日记时单独展示简介待更新', (tester) async {
+    await _pump(
+      tester,
+      const ThreadAiStatusData(
+        enabled: true,
+        providerAvailable: true,
+        pendingMemos: 0,
+        dirtyThreads: 2,
+      ),
+    );
+
+    expect(find.text('2 条简介待更新 · 今晚 4:00 处理'), findsOneWidget);
   });
 
   testWidgets('模型离线时明确提示', (tester) async {
