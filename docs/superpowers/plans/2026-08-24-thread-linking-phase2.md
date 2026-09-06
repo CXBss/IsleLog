@@ -3109,7 +3109,7 @@ git commit -m "docs: 补充事件串 AI 辅助接口文档"
   - `enum SuggestionStatus { pending, accepted, dismissed }`
   - `class ThreadSuggestionEntry`（字段见下）
   - `ThreadEntry.summaryLocked`
-  - `DatabaseService.saveSuggestion(ThreadSuggestionEntry, {bool skipTimestamp}) → Future<int>`
+  - `DatabaseService.saveSuggestion(ThreadSuggestionEntry) → Future<int>`（无 `skipTimestamp`：`ThreadSuggestionEntry` 没有 `updatedAt` 字段需要保护，不同于 `ThreadEntry.saveThread`）
   - `DatabaseService.getPendingSuggestions() → Future<List<ThreadSuggestionEntry>>`
   - `DatabaseService.getSuggestionsForMemo(int memoLocalId) → Future<List<ThreadSuggestionEntry>>`
   - `DatabaseService.getSyncedSuggestions() → Future<List<ThreadSuggestionEntry>>`
