@@ -8,7 +8,6 @@ import 'package:flutter/services.dart';
 import '../../../shared/utils/image_actions.dart' as img_actions;
 
 import '../../../data/database/database_service.dart';
-import '../../../data/database/thread_membership_policy.dart';
 import '../../../data/models/attachment_info.dart';
 import '../../../data/models/comment_entry.dart';
 import '../../../data/models/memo_entry.dart';
@@ -274,31 +273,14 @@ class _MemoCardState extends State<_MemoCard> {
   Future<void> _acceptSuggestion() async {
     final suggestion = _suggestion;
     if (suggestion == null) return;
-    final thread = await DatabaseService.getThreadById(suggestion.threadLocalId);
-    if (thread != null) {
-      thread
-        ..memberLocalIds = toggleThreadMember(
-          thread.memberLocalIds,
-          suggestion.memoLocalId,
-          selected: true,
-        )
-        ..syncStatus = SyncStatus.pending;
-      await DatabaseService.saveThread(thread);
-    }
-    suggestion
-      ..status = SuggestionStatus.accepted
-      ..syncStatus = SyncStatus.pending;
-    await DatabaseService.saveSuggestion(suggestion);
+    await DatabaseService.applySuggestionDecision(suggestion, accepted: true);
     await _loadSuggestion();
   }
 
   Future<void> _dismissSuggestion() async {
     final suggestion = _suggestion;
     if (suggestion == null) return;
-    suggestion
-      ..status = SuggestionStatus.dismissed
-      ..syncStatus = SyncStatus.pending;
-    await DatabaseService.saveSuggestion(suggestion);
+    await DatabaseService.applySuggestionDecision(suggestion, accepted: false);
     await _loadSuggestion();
   }
 
