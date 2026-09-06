@@ -99,6 +99,8 @@ class _LinkPickerSheetState extends State<_LinkPickerSheet> {
       lastDate: DateTime(now.year + 1, 12, 31),
     );
     if (picked == null) return;
+    // 日期选择器打开期间 sheet 可能已被关闭，此时再 setState 会抛异常。
+    if (!mounted) return;
     final text =
         '${picked.year}-${picked.month.toString().padLeft(2, '0')}'
         '-${picked.day.toString().padLeft(2, '0')}';
@@ -108,11 +110,18 @@ class _LinkPickerSheetState extends State<_LinkPickerSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final media = MediaQuery.of(context);
+    final bottomInset = media.viewInsets.bottom;
+    // 键盘弹起时可用高度会缩水，sheet 必须跟着缩，
+    // 否则顶部的搜索框会被推出屏幕。
+    final available = (media.size.height - media.padding.top - bottomInset)
+        .clamp(0.0, double.infinity);
+    final preferred = media.size.height * 0.75;
+    final sheetHeight = preferred <= available ? preferred : available;
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
       child: Container(
-        height: MediaQuery.of(context).size.height * 0.75,
+        height: sheetHeight,
         decoration: BoxDecoration(
           color: AppColors.surface(context),
           borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
