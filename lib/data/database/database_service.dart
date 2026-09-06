@@ -9,6 +9,7 @@ import '../models/folder_entry.dart';
 import '../models/memo_entry.dart';
 import '../models/tag_stat.dart';
 import '../models/thread_entry.dart';
+import '../models/thread_suggestion_entry.dart';
 import 'memo_write_policy.dart';
 
 /// 本地数据库服务（单例）
@@ -45,6 +46,7 @@ class DatabaseService {
         ArticleEntrySchema,
         FolderEntrySchema,
         ThreadEntrySchema,
+        ThreadSuggestionEntrySchema,
       ],
       directory: dir.path,
       name: 'isle_v2', // v2: 新增 originalContent 字段，旧 default.isar 自动废弃
@@ -687,8 +689,18 @@ class DatabaseService {
     final folderStream = isar.folderEntrys.watchLazy(fireImmediately: false);
     // 事件串同样并入：详情页移出成员、同步拉取到远端改动后，列表页需随之刷新
     final threadStream = isar.threadEntrys.watchLazy(fireImmediately: false);
+    // 建议增删同样要触发列表刷新（横幅与卡片 chip 都依赖它）
+    final suggestionStream = isar.threadSuggestionEntrys.watchLazy(
+      fireImmediately: false,
+    );
     return memoStream
-        .mergeWith([commentStream, articleStream, folderStream, threadStream])
+        .mergeWith([
+          commentStream,
+          articleStream,
+          folderStream,
+          threadStream,
+          suggestionStream,
+        ])
         .debounceTime(const Duration(milliseconds: 300));
   }
 
@@ -1466,6 +1478,63 @@ class DatabaseService {
       }
       await isar.threadEntrys.putAll(affected);
     });
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // 事件串建议（ThreadSuggestionEntry）
+  // ────────────────────────────────────────────────────────────────
+
+  static Future<int> saveSuggestion(ThreadSuggestionEntry suggestion) async {
+    final isar = await db;
+    final id = await isar.writeTxn(
+      () => isar.threadSuggestionEntrys.put(suggestion),
+    );
+    return id;
+  }
+
+  /// 待用户确认的建议，按置信度倒序。
+  static Future<List<ThreadSuggestionEntry>> getPendingSuggestions() async {
+    final isar = await db;
+    final result = await isar.threadSuggestionEntrys
+        .filter()
+        .statusEqualTo(SuggestionStatus.pending)
+        .sortByConfidenceDesc()
+        .findAll();
+    debugPrint('[DB] getPendingSuggestions → ${result.length} 条');
+    return result;
+  }
+
+  /// 某篇日记的待确认建议（时间线卡片的虚线 chip 用）。
+  static Future<List<ThreadSuggestionEntry>> getSuggestionsForMemo(
+    int memoLocalId,
+  ) async {
+    final isar = await db;
+    return isar.threadSuggestionEntrys
+        .filter()
+        .memoLocalIdEqualTo(memoLocalId)
+        .statusEqualTo(SuggestionStatus.pending)
+        .findAll();
+  }
+
+  static Future<List<ThreadSuggestionEntry>> getSyncedSuggestions() async {
+    final isar = await db;
+    return isar.threadSuggestionEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.synced)
+        .findAll();
+  }
+
+  static Future<List<ThreadSuggestionEntry>> getPendingSyncSuggestions() async {
+    final isar = await db;
+    return isar.threadSuggestionEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.pending)
+        .findAll();
+  }
+
+  static Future<bool> hardDeleteSuggestion(int id) async {
+    final isar = await db;
+    return isar.writeTxn(() => isar.threadSuggestionEntrys.delete(id));
   }
 }
 

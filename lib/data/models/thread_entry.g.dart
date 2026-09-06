@@ -53,24 +53,29 @@ const ThreadEntrySchema = CollectionSchema(
       name: r'summaryIsManual',
       type: IsarType.bool,
     ),
-    r'syncStatus': PropertySchema(
+    r'summaryLocked': PropertySchema(
       id: 7,
+      name: r'summaryLocked',
+      type: IsarType.bool,
+    ),
+    r'syncStatus': PropertySchema(
+      id: 8,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _ThreadEntrysyncStatusEnumValueMap,
     ),
     r'threadName': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'threadName',
       type: IsarType.string,
     ),
     r'title': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'title',
       type: IsarType.string,
     ),
     r'updatedAt': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'updatedAt',
       type: IsarType.dateTime,
     )
@@ -147,10 +152,11 @@ void _threadEntrySerialize(
   writer.writeByte(offsets[4], object.status.index);
   writer.writeString(offsets[5], object.summary);
   writer.writeBool(offsets[6], object.summaryIsManual);
-  writer.writeByte(offsets[7], object.syncStatus.index);
-  writer.writeString(offsets[8], object.threadName);
-  writer.writeString(offsets[9], object.title);
-  writer.writeDateTime(offsets[10], object.updatedAt);
+  writer.writeBool(offsets[7], object.summaryLocked);
+  writer.writeByte(offsets[8], object.syncStatus.index);
+  writer.writeString(offsets[9], object.threadName);
+  writer.writeString(offsets[10], object.title);
+  writer.writeDateTime(offsets[11], object.updatedAt);
 }
 
 ThreadEntry _threadEntryDeserialize(
@@ -170,12 +176,13 @@ ThreadEntry _threadEntryDeserialize(
           ThreadStatus.active;
   object.summary = reader.readString(offsets[5]);
   object.summaryIsManual = reader.readBool(offsets[6]);
+  object.summaryLocked = reader.readBool(offsets[7]);
   object.syncStatus =
-      _ThreadEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[7])] ??
+      _ThreadEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[8])] ??
           SyncStatus.pending;
-  object.threadName = reader.readStringOrNull(offsets[8]);
-  object.title = reader.readString(offsets[9]);
-  object.updatedAt = reader.readDateTime(offsets[10]);
+  object.threadName = reader.readStringOrNull(offsets[9]);
+  object.title = reader.readString(offsets[10]);
+  object.updatedAt = reader.readDateTime(offsets[11]);
   return object;
 }
 
@@ -202,14 +209,16 @@ P _threadEntryDeserializeProp<P>(
     case 6:
       return (reader.readBool(offset)) as P;
     case 7:
+      return (reader.readBool(offset)) as P;
+    case 8:
       return (_ThreadEntrysyncStatusValueEnumMap[
               reader.readByteOrNull(offset)] ??
           SyncStatus.pending) as P;
-    case 8:
-      return (reader.readStringOrNull(offset)) as P;
     case 9:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 10:
+      return (reader.readString(offset)) as P;
+    case 11:
       return (reader.readDateTime(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -1033,6 +1042,16 @@ extension ThreadEntryQueryFilter
   }
 
   QueryBuilder<ThreadEntry, ThreadEntry, QAfterFilterCondition>
+      summaryLockedEqualTo(bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'summaryLocked',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<ThreadEntry, ThreadEntry, QAfterFilterCondition>
       syncStatusEqualTo(SyncStatus value) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
@@ -1512,6 +1531,19 @@ extension ThreadEntryQuerySortBy
     });
   }
 
+  QueryBuilder<ThreadEntry, ThreadEntry, QAfterSortBy> sortBySummaryLocked() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'summaryLocked', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ThreadEntry, ThreadEntry, QAfterSortBy>
+      sortBySummaryLockedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'summaryLocked', Sort.desc);
+    });
+  }
+
   QueryBuilder<ThreadEntry, ThreadEntry, QAfterSortBy> sortBySyncStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'syncStatus', Sort.asc);
@@ -1648,6 +1680,19 @@ extension ThreadEntryQuerySortThenBy
     });
   }
 
+  QueryBuilder<ThreadEntry, ThreadEntry, QAfterSortBy> thenBySummaryLocked() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'summaryLocked', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ThreadEntry, ThreadEntry, QAfterSortBy>
+      thenBySummaryLockedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'summaryLocked', Sort.desc);
+    });
+  }
+
   QueryBuilder<ThreadEntry, ThreadEntry, QAfterSortBy> thenBySyncStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'syncStatus', Sort.asc);
@@ -1743,6 +1788,12 @@ extension ThreadEntryQueryWhereDistinct
     });
   }
 
+  QueryBuilder<ThreadEntry, ThreadEntry, QDistinct> distinctBySummaryLocked() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'summaryLocked');
+    });
+  }
+
   QueryBuilder<ThreadEntry, ThreadEntry, QDistinct> distinctBySyncStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'syncStatus');
@@ -1818,6 +1869,12 @@ extension ThreadEntryQueryProperty
   QueryBuilder<ThreadEntry, bool, QQueryOperations> summaryIsManualProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'summaryIsManual');
+    });
+  }
+
+  QueryBuilder<ThreadEntry, bool, QQueryOperations> summaryLockedProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'summaryLocked');
     });
   }
 
