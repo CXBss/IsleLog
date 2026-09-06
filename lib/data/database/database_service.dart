@@ -1420,14 +1420,21 @@ class DatabaseService {
   /// [needsManualSummaryLockRepair]。每次启动都跑一遍：代价是一次全表
   /// 扫描（事件串数量级很小，可忽略），首次修复完之后不会再有命中，因为
   /// 新建事件串在创建时就会正确设置该字段。
+  ///
+  /// 若该事件串当前处于 [SyncStatus.conflict]（等待用户处理冲突），只修正
+  /// 本地字段本身，不把 syncStatus 改为 pending——否则会绕开冲突保留机制，
+  /// 在下次同步时把本地版本悄悄推送覆盖，丢掉触发冲突的远端改动。字段本身
+  /// 依然会被修正，冲突解决后自然能正确参与下一次推送判断。
   static Future<int> repairUnlockedManualSummaries() async {
     final threads = await getAllThreads();
     var fixed = 0;
     for (final thread in threads) {
       if (needsManualSummaryLockRepair(thread)) {
-        thread
-          ..summaryLocked = true
-          ..syncStatus = SyncStatus.pending;
+        final wasConflict = thread.syncStatus == SyncStatus.conflict;
+        thread.summaryLocked = true;
+        if (!wasConflict) {
+          thread.syncStatus = SyncStatus.pending;
+        }
         await saveThread(thread);
         fixed++;
       }
