@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../../services/ai/ai_api_client.dart';
 import '../../services/ai/ai_models.dart';
 import '../../services/ai/ai_service.dart';
+import '../../services/api/memos_api_service.dart';
+import '../../services/settings/settings_service.dart';
 import '../../shared/constants/app_constants.dart';
 
 /// AI 编辑辅助设置页
@@ -22,10 +24,14 @@ class AiSettingsPage extends StatefulWidget {
 class _AiSettingsPageState extends State<AiSettingsPage> {
   late Future<List<AiProviderStatus>> _statuses;
 
+  bool? _threadAiEnabled;
+  bool _running = false;
+
   @override
   void initState() {
     super.initState();
     _statuses = _load();
+    _loadThreadAi();
   }
 
   Future<List<AiProviderStatus>> _load() async {
@@ -37,6 +43,64 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
     setState(() {
       _statuses = _load();
     });
+  }
+
+  Future<MemosApiService?> _api() async {
+    final url = await SettingsService.serverUrl;
+    final token = await SettingsService.accessToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      return null;
+    }
+    return MemosApiService(baseUrl: url, token: token);
+  }
+
+  Future<void> _loadThreadAi() async {
+    final api = await _api();
+    if (api == null) return;
+    try {
+      final data = await api.getThreadAiStatus();
+      if (mounted) setState(() => _threadAiEnabled = data['enabled'] == true);
+    } catch (_) {
+      // 服务端不支持或离线时不显示该项
+    }
+  }
+
+  Future<void> _toggleThreadAi(bool value) async {
+    final api = await _api();
+    if (api == null) return;
+    setState(() => _threadAiEnabled = value);
+    try {
+      await api.setThreadAiEnabled(value);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _threadAiEnabled = !value);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('设置失败：$e')));
+      }
+    }
+  }
+
+  Future<void> _runNow() async {
+    final api = await _api();
+    if (api == null) return;
+    setState(() => _running = true);
+    try {
+      await api.runThreadBatch();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('分析完成')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('分析失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
   }
 
   @override
@@ -97,6 +161,28 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
               for (final status in statuses) ...[
                 _ProviderCard(status: status),
                 const SizedBox(height: 8),
+              ],
+              if (_threadAiEnabled != null) ...[
+                const Divider(height: 24),
+                SwitchListTile(
+                  value: _threadAiEnabled!,
+                  activeColor: AppColors.primary,
+                  title: const Text('自动分析事件关联'),
+                  subtitle: const Text('每晚 4:00 生成事件串简介并发现可能的关联，仅使用本地模型'),
+                  onChanged: _toggleThreadAi,
+                ),
+                ListTile(
+                  leading: _running
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_circle_outline),
+                  title: const Text('立即分析'),
+                  subtitle: const Text('不想等到凌晨时手动跑一次'),
+                  onTap: _running ? null : _runNow,
+                ),
               ],
               const SizedBox(height: 8),
               const _PrivacyNotice(),
