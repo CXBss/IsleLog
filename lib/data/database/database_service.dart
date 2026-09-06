@@ -1492,6 +1492,14 @@ class DatabaseService {
     return id;
   }
 
+  static Future<ThreadSuggestionEntry?> getSuggestionByName(String name) async {
+    final isar = await db;
+    return isar.threadSuggestionEntrys
+        .filter()
+        .suggestionNameEqualTo(name)
+        .findFirst();
+  }
+
   /// 待用户确认的建议，按置信度倒序。
   static Future<List<ThreadSuggestionEntry>> getPendingSuggestions() async {
     final isar = await db;
