@@ -8,9 +8,11 @@ import 'package:flutter/services.dart';
 import '../../../shared/utils/image_actions.dart' as img_actions;
 
 import '../../../data/database/database_service.dart';
+import '../../../data/database/thread_membership_policy.dart';
 import '../../../data/models/attachment_info.dart';
 import '../../../data/models/comment_entry.dart';
 import '../../../data/models/memo_entry.dart';
+import '../../../data/models/thread_suggestion_entry.dart';
 import '../../../data/models/weather_info.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
@@ -218,10 +220,14 @@ class _MemoCardState extends State<_MemoCard> {
 
   int _commentCount = 0;
 
+  ThreadSuggestionEntry? _suggestion;
+  String _suggestionThreadTitle = '';
+
   @override
   void initState() {
     super.initState();
     _loadCommentCount();
+    _loadSuggestion();
   }
 
   @override
@@ -230,6 +236,7 @@ class _MemoCardState extends State<_MemoCard> {
     // 只有换了另一条 memo 才重新加载评论数
     if (old.memo.id != memo.id) {
       _loadCommentCount();
+      _loadSuggestion();
     }
   }
 
@@ -243,6 +250,56 @@ class _MemoCardState extends State<_MemoCard> {
     if (mounted && comments.length != _commentCount) {
       setState(() => _commentCount = comments.length);
     }
+  }
+
+  Future<void> _loadSuggestion() async {
+    final list = await DatabaseService.getSuggestionsForMemo(memo.id);
+    if (list.isEmpty) {
+      if (mounted && _suggestion != null) {
+        setState(() {
+          _suggestion = null;
+          _suggestionThreadTitle = '';
+        });
+      }
+      return;
+    }
+    final thread = await DatabaseService.getThreadById(list.first.threadLocalId);
+    if (!mounted || thread == null || thread.isDeleted) return;
+    setState(() {
+      _suggestion = list.first;
+      _suggestionThreadTitle = thread.title;
+    });
+  }
+
+  Future<void> _acceptSuggestion() async {
+    final suggestion = _suggestion;
+    if (suggestion == null) return;
+    final thread = await DatabaseService.getThreadById(suggestion.threadLocalId);
+    if (thread != null) {
+      thread
+        ..memberLocalIds = toggleThreadMember(
+          thread.memberLocalIds,
+          suggestion.memoLocalId,
+          selected: true,
+        )
+        ..syncStatus = SyncStatus.pending;
+      await DatabaseService.saveThread(thread);
+    }
+    suggestion
+      ..status = SuggestionStatus.accepted
+      ..syncStatus = SyncStatus.pending;
+    await DatabaseService.saveSuggestion(suggestion);
+    await _loadSuggestion();
+  }
+
+  Future<void> _dismissSuggestion() async {
+    final suggestion = _suggestion;
+    if (suggestion == null) return;
+    suggestion
+      ..status = SuggestionStatus.dismissed
+      ..syncStatus = SyncStatus.pending;
+    await DatabaseService.saveSuggestion(suggestion);
+    await _loadSuggestion();
   }
 
   GroupedAttachments get _grouped =>
@@ -592,6 +649,51 @@ class _MemoCardState extends State<_MemoCard> {
                       .toList(),
                 ),
               ],
+              if (_suggestion != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: AppColors.primary.withValues(alpha: 0.5),
+                          ),
+                        ),
+                        child: Text(
+                          '? $_suggestionThreadTitle',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.onPrimarySoft(context),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.check, size: 16),
+                        color: AppColors.primary,
+                        visualDensity: VisualDensity.compact,
+                        constraints: const BoxConstraints(),
+                        padding: const EdgeInsets.all(6),
+                        tooltip: '加入事件串',
+                        onPressed: _acceptSuggestion,
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 16),
+                        color: Colors.grey[500],
+                        visualDensity: VisualDensity.compact,
+                        constraints: const BoxConstraints(),
+                        padding: const EdgeInsets.all(6),
+                        tooltip: '忽略',
+                        onPressed: _dismissSuggestion,
+                      ),
+                    ],
+                  ),
+                ),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
