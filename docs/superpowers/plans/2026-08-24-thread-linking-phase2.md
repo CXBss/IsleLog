@@ -401,7 +401,7 @@ git commit -m "feat: 事件串 Phase 2 数据库迁移与存量回填"
 - Consumes: `model.FormatID(int64) string`
 - Produces:
   - `model.ThreadSuggestion{ID, UserID, MemoID, ThreadID int64; Confidence float64; Reason, Status string; CreatedTs int64}`
-  - `func (s *ThreadSuggestion) ResourceName() string` → `"threadSuggestions/{id}"`
+  - `func (s *ThreadSuggestion) ResourceName() string` → `"thread-suggestions/{id}"`
   - `func (s *ThreadSuggestion) ToJSON(memoSnippet, threadTitle string) map[string]interface{}`
   - 常量 `SuggestionPending` / `SuggestionAccepted` / `SuggestionDismissed`
   - `const MinSuggestionConfidence = 0.7`
@@ -424,7 +424,7 @@ func TestThreadSuggestionToJSON(t *testing.T) {
 
 	result := suggestion.ToJSON("今晚又听到蛐蛐了", "工位蛐蛐")
 
-	if result["name"] != "threadSuggestions/77" {
+	if result["name"] != "thread-suggestions/77" {
 		t.Fatalf("name = %v", result["name"])
 	}
 	if result["memo"] != "memos/1001" {
@@ -503,9 +503,9 @@ type ThreadSuggestion struct {
 	CreatedTs  int64
 }
 
-// ResourceName 返回 API 资源名称，格式为 "threadSuggestions/{id}"。
+// ResourceName 返回 API 资源名称，格式为 "thread-suggestions/{id}"。
 func (s *ThreadSuggestion) ResourceName() string {
-	return "threadSuggestions/" + FormatID(s.ID)
+	return "thread-suggestions/" + FormatID(s.ID)
 }
 
 // ToJSON 构建建议的 API 响应。
@@ -2987,7 +2987,7 @@ git commit -m "feat: 事件串 AI 状态、开关与立即执行接口"
 {
   "suggestions": [
     {
-      "name": "threadSuggestions/77",
+      "name": "thread-suggestions/77",
       "memo": "memos/1001",
       "thread": "threads/20",
       "memoSnippet": "今晚又听到蛐蛐了",
@@ -3137,7 +3137,7 @@ enum SuggestionStatus { pending, accepted, dismissed }
 class ThreadSuggestionEntry {
   Id id = Isar.autoIncrement;
 
-  /// 远端资源名 "threadSuggestions/{id}"，不设 unique（同 memosName 的理由）
+  /// 远端资源名 "thread-suggestions/{id}"，不设 unique（同 memosName 的理由）
   @Index()
   String? suggestionName;
 

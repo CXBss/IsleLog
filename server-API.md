@@ -610,7 +610,7 @@ ID 也可以是评论 ID，兼容 Memos 客户端查询评论详情。
 {
   "suggestions": [
     {
-      "name": "threadSuggestions/77",
+      "name": "thread-suggestions/77",
       "memo": "memos/1001",
       "thread": "threads/20",
       "memoSnippet": "今晚又听到蛐蛐了",
