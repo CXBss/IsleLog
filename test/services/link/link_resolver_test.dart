@@ -96,4 +96,46 @@ void main() {
       LinkAction.missing,
     );
   });
+
+  test('链接无远端名、目标此后已同步，仍按 lid 打开', () {
+    // spec 第 3 节：离线创建内链（仅有 lid），目标后来同步获得 remoteName，
+    // 但 lid 兜底仍然在本机有效，不应判为失效。
+    expect(
+      decideLinkAction(
+        ref: _unsynced,
+        byRemoteName: null,
+        byLocalId: const LinkedEntitySnapshot(remoteName: 'memos/500'),
+      ),
+      LinkAction.openByLocalId,
+    );
+  });
+
+  test('本地 id 命中但已软删除、且链接有远端名，同样判失效', () {
+    expect(
+      decideLinkAction(
+        ref: _synced,
+        byRemoteName: null,
+        byLocalId: const LinkedEntitySnapshot(
+          remoteName: 'memos/123',
+          isDeleted: true,
+        ),
+      ),
+      LinkAction.missing,
+    );
+  });
+
+  test('远端名命中的那条已删除、而 lid 命中的那条存活时，以存活的为准', () {
+    // 底层数据不一致时的兜底行为：同一远端名同时存在一条已删和一条存活。
+    expect(
+      decideLinkAction(
+        ref: _synced,
+        byRemoteName: const LinkedEntitySnapshot(
+          remoteName: 'memos/123',
+          isDeleted: true,
+        ),
+        byLocalId: const LinkedEntitySnapshot(remoteName: 'memos/123'),
+      ),
+      LinkAction.openByLocalId,
+    );
+  });
 }

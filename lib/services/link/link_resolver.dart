@@ -46,10 +46,13 @@ LinkAction decideLinkAction({
       return LinkAction.missing;
     }
 
-    // 本地 id 在别的设备上指向完全不同的条目。若命中的条目自己有远端名、
-    // 却和链接里的对不上，说明这不是同一条。
+    // 撞车守卫只在两边都有远端名时才成立：只有那时"对不上"才有意义。
+    // 链接没有远端名，说明它是在目标同步前创建的，此时 lid 是唯一权威标识，
+    // 命中即放行 —— spec 第 3 节的"lid 兜底仍然在本机有效"依赖这一点。
     final sameEntity =
-        byLocalId.remoteName == null || byLocalId.remoteName == ref.remoteName;
+        ref.remoteName == null ||
+        byLocalId.remoteName == null ||
+        byLocalId.remoteName == ref.remoteName;
     if (sameEntity) return LinkAction.openByLocalId;
 
     // 本地 id 撞车，它指向了另一条条目
