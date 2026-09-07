@@ -29,17 +29,23 @@ class LinkNavigator {
       // 这里用 try/catch 而不是 canLaunchUrlString 前置判断：Android 11+ 的
       // 包可见性限制会让 canLaunch 对实际能打开的链接也返回 false，前置判断会误杀。
       try {
-        await launchUrlString(href, mode: LaunchMode.externalApplication);
+        final ok = await launchUrlString(
+          href,
+          mode: LaunchMode.externalApplication,
+        );
+        // iOS/macOS 插件失败时是返回 false 而不是抛异常，只 catch 会漏掉它们。
+        if (!ok) _toast(messenger, '无法打开链接');
       } catch (_) {
         _toast(messenger, '无法打开链接');
       }
       return;
     }
 
-    if (ref.kind == LinkKind.memo) {
-      await _openMemo(navigator, messenger, ref);
-    } else {
-      await _openArticle(navigator, messenger, ref);
+    switch (ref.kind) {
+      case LinkKind.memo:
+        await _openMemo(navigator, messenger, ref);
+      case LinkKind.article:
+        await _openArticle(navigator, messenger, ref);
     }
   }
 

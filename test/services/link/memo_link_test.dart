@@ -95,6 +95,14 @@ void main() {
     test('连续空白折叠并去掉首尾空白', () {
       expect(MemoLink.sanitizeLabel('  a    b  '), 'a b');
     });
+
+    test('去掉标签的 # 号，避免被 extractTags 重新识别成引用方的标签', () {
+      expect(MemoLink.sanitizeLabel('#随笔 今天下雨'), '随笔 今天下雨');
+    });
+
+    test('# 不在标签位置（前面紧跟非空白字符）时原样保留', () {
+      expect(MemoLink.sanitizeLabel('C#语言'), 'C#语言');
+    });
   });
 
   group('firstLineSummary', () {
@@ -180,6 +188,15 @@ void main() {
       );
       expect(label, isNot(contains('[')));
       expect(label, isNot(contains(']')));
+    });
+
+    test('正文首行是标签时不把 # 带进链接文字', () {
+      final label = MemoLink.labelForMemo(
+        content: '#随笔 今天下雨',
+        createdAt: DateTime(2026, 3, 12),
+        now: now,
+      );
+      expect(label, isNot(contains('#')));
     });
   });
 

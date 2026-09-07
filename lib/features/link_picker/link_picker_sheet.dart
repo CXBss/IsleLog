@@ -164,7 +164,10 @@ class _LinkPickerSheetState extends State<_LinkPickerSheet> {
       autofocus: false,
       textInputAction: TextInputAction.search,
       onChanged: _onQueryChanged,
-      onSubmitted: (_) => _runSearch(),
+      onSubmitted: (_) {
+        _debounce?.cancel();
+        _runSearch();
+      },
       decoration: InputDecoration(
         isDense: true,
         hintText: '搜索日期或关键字，如 3-12 / 暴雨',
@@ -234,9 +237,9 @@ class _LinkPickerSheetState extends State<_LinkPickerSheet> {
         style: const TextStyle(fontSize: 14),
       ),
       subtitle: Text(
-        '${target.createdAt.year}-'
-        '${target.createdAt.month.toString().padLeft(2, '0')}-'
-        '${target.createdAt.day.toString().padLeft(2, '0')}',
+        target.preview,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(fontSize: 11, color: Colors.grey[600]),
       ),
       trailing: target.isSynced

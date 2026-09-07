@@ -79,9 +79,11 @@ class MemoLink {
   /// 清洗链接显示文字。
   ///
   /// 方括号会撑破 `[label](uri)` 语法，换行会让内联链接失效，
-  /// 因此必须在拼 Markdown 之前处理掉。
+  /// `#标签` 一旦原样带进引用方正文，会被 `extractTags` 重新识别成
+  /// 引用方自己的标签（污染标签侧栏），因此都必须在拼 Markdown 之前处理掉。
   static String sanitizeLabel(String raw) => raw
       .replaceAll(RegExp(r'[\[\]]'), '')
+      .replaceAll(RegExp(r'(?<!\S)#'), '') // 不能让目标的标签跟着标签跑进引用方
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
 
