@@ -200,6 +200,7 @@ class SyncService {
       _weatherConditionFromJson(memo.weatherJson),
     );
     final weatherDetail = _weatherDetailFromJson(memo.weatherJson);
+    final hasMoodWeather = _hasMoodWeather(moodInt, weatherInt, weatherDetail);
 
     if (memo.memosName == null) {
       final remoteData = await api.createMemo(
@@ -220,6 +221,7 @@ class SyncService {
       final latest = await DatabaseService.completeMemoPush(
         memo,
         remoteName: remoteName,
+        moodWeatherSynced: hasMoodWeather,
       );
       if (memo.isPinned) {
         await api.pinMemo(remoteName);
@@ -234,6 +236,7 @@ class SyncService {
         locationPlaceholder: memo.location,
         latitude: memo.latitude,
         longitude: memo.longitude,
+        syncMoodWeather: hasMoodWeather || memo.moodWeatherSynced,
         mood: moodInt,
         weather: weatherInt,
         weatherDetail: weatherDetail,
@@ -244,7 +247,10 @@ class SyncService {
       } else {
         await api.unpinMemo(memo.memosName!);
       }
-      final latest = await DatabaseService.completeMemoPush(memo);
+      final latest = await DatabaseService.completeMemoPush(
+        memo,
+        moodWeatherSynced: hasMoodWeather,
+      );
       if (latest?.syncStatus == SyncStatus.pending) {
         debugPrint('[Sync] pushSingleMemo 更新期间检测到新编辑，保留 pending id=${memo.id}');
       }
@@ -611,6 +617,7 @@ class SyncService {
       _weatherConditionFromJson(memo.weatherJson),
     );
     final weatherDetail = _weatherDetailFromJson(memo.weatherJson);
+    final hasMoodWeather = _hasMoodWeather(moodInt, weatherInt, weatherDetail);
 
     if (memo.memosName == null) {
       // ── 处理新建 ──
@@ -651,6 +658,7 @@ class SyncService {
       final latest = await DatabaseService.completeMemoPush(
         memo,
         remoteName: remoteName,
+        moodWeatherSynced: hasMoodWeather,
       );
       debugPrint('[Sync] 新建成功，memosName=${latest?.memosName}');
     } else {
@@ -667,6 +675,7 @@ class SyncService {
         locationPlaceholder: memo.location,
         latitude: memo.latitude,
         longitude: memo.longitude,
+        syncMoodWeather: hasMoodWeather || memo.moodWeatherSynced,
         mood: moodInt,
         weather: weatherInt,
         weatherDetail: weatherDetail,
@@ -678,7 +687,10 @@ class SyncService {
       } else {
         await api.unpinMemo(memo.memosName!);
       }
-      final latest = await DatabaseService.completeMemoPush(memo);
+      final latest = await DatabaseService.completeMemoPush(
+        memo,
+        moodWeatherSynced: hasMoodWeather,
+      );
       debugPrint('[Sync] 更新成功，memosName=${memo.memosName}');
       if (latest?.syncStatus == SyncStatus.pending) {
         debugPrint('[Sync] 更新期间检测到新编辑，保留 pending id=${memo.id}');
@@ -1239,6 +1251,15 @@ class SyncService {
       ..attachments = newAttachments;
   }
 
+  /// 本次 Push 是否带有真实的 mood / weather 值。
+  ///
+  /// 决定是否把这三个字段写进 `updateMask`：无值且从未同步过时跳过，
+  /// 避免在服务端版本历史里留下 null→0 的噪声。
+  static bool _hasMoodWeather(int? moodInt, int weatherInt, String? detail) =>
+      moodInt != null ||
+      weatherInt != 0 ||
+      (detail != null && detail.isNotEmpty);
+
   /// 从远端数据中解析 mood / weather int 并写入 memo
   ///
   /// 远端为 0 或缺失时清空本地对应字段（服务端以 0 表示未设置）。
@@ -1248,6 +1269,12 @@ class SyncService {
 
     final remoteWeather = (data['weather'] as num?)?.toInt() ?? 0;
     final remoteDetail = data['weatherDetail'] as String? ?? '';
+
+    // 远端已有 mood/weather → 记下"曾同步过"，这样以后本地清空时会显式推 0
+    // 清除远端值，而不是被下次 Pull 重新灌回。
+    if (remoteMood != 0 || remoteWeather != 0) {
+      memo.moodWeatherSynced = true;
+    }
 
     if (remoteWeather == 0) {
       // 服务端无天气 → 保留本地已有数据，不覆盖

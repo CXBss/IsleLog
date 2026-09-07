@@ -109,6 +109,7 @@ class DatabaseService {
   static Future<MemoEntry?> completeMemoPush(
     MemoEntry submitted, {
     String? remoteName,
+    bool? moodWeatherSynced,
   }) async {
     final isar = await db;
     final latest = await isar.writeTxn(() async {
@@ -118,6 +119,7 @@ class DatabaseService {
         latest: current,
         submitted: submitted,
         remoteName: remoteName,
+        moodWeatherSynced: moodWeatherSynced,
       );
       await isar.memoEntrys.put(current);
       return current;

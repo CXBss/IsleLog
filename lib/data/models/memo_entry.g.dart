@@ -82,40 +82,45 @@ const MemoEntrySchema = CollectionSchema(
       name: r'mood',
       type: IsarType.string,
     ),
-    r'originalContent': PropertySchema(
+    r'moodWeatherSynced': PropertySchema(
       id: 13,
+      name: r'moodWeatherSynced',
+      type: IsarType.bool,
+    ),
+    r'originalContent': PropertySchema(
+      id: 14,
       name: r'originalContent',
       type: IsarType.string,
     ),
     r'pendingTodoCount': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'pendingTodoCount',
       type: IsarType.long,
     ),
     r'syncStatus': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrysyncStatusEnumValueMap,
     ),
     r'tags': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'tags',
       type: IsarType.stringList,
     ),
     r'todoStatus': PropertySchema(
-      id: 17,
+      id: 18,
       name: r'todoStatus',
       type: IsarType.byte,
       enumMap: _MemoEntrytodoStatusEnumValueMap,
     ),
     r'updatedAt': PropertySchema(
-      id: 18,
+      id: 19,
       name: r'updatedAt',
       type: IsarType.dateTime,
     ),
     r'weatherJson': PropertySchema(
-      id: 19,
+      id: 20,
       name: r'weatherJson',
       type: IsarType.string,
     )
@@ -266,13 +271,14 @@ void _memoEntrySerialize(
   writer.writeDouble(offsets[10], object.longitude);
   writer.writeString(offsets[11], object.memosName);
   writer.writeString(offsets[12], object.mood);
-  writer.writeString(offsets[13], object.originalContent);
-  writer.writeLong(offsets[14], object.pendingTodoCount);
-  writer.writeByte(offsets[15], object.syncStatus.index);
-  writer.writeStringList(offsets[16], object.tags);
-  writer.writeByte(offsets[17], object.todoStatus.index);
-  writer.writeDateTime(offsets[18], object.updatedAt);
-  writer.writeString(offsets[19], object.weatherJson);
+  writer.writeBool(offsets[13], object.moodWeatherSynced);
+  writer.writeString(offsets[14], object.originalContent);
+  writer.writeLong(offsets[15], object.pendingTodoCount);
+  writer.writeByte(offsets[16], object.syncStatus.index);
+  writer.writeStringList(offsets[17], object.tags);
+  writer.writeByte(offsets[18], object.todoStatus.index);
+  writer.writeDateTime(offsets[19], object.updatedAt);
+  writer.writeString(offsets[20], object.weatherJson);
 }
 
 MemoEntry _memoEntryDeserialize(
@@ -296,17 +302,18 @@ MemoEntry _memoEntryDeserialize(
   object.longitude = reader.readDoubleOrNull(offsets[10]);
   object.memosName = reader.readStringOrNull(offsets[11]);
   object.mood = reader.readStringOrNull(offsets[12]);
-  object.originalContent = reader.readStringOrNull(offsets[13]);
-  object.pendingTodoCount = reader.readLong(offsets[14]);
+  object.moodWeatherSynced = reader.readBool(offsets[13]);
+  object.originalContent = reader.readStringOrNull(offsets[14]);
+  object.pendingTodoCount = reader.readLong(offsets[15]);
   object.syncStatus =
-      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[15])] ??
+      _MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offsets[16])] ??
           SyncStatus.pending;
-  object.tags = reader.readStringList(offsets[16]) ?? [];
+  object.tags = reader.readStringList(offsets[17]) ?? [];
   object.todoStatus =
-      _MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offsets[17])] ??
+      _MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offsets[18])] ??
           TodoStatus.none;
-  object.updatedAt = reader.readDateTime(offsets[18]);
-  object.weatherJson = reader.readStringOrNull(offsets[19]);
+  object.updatedAt = reader.readDateTime(offsets[19]);
+  object.weatherJson = reader.readStringOrNull(offsets[20]);
   return object;
 }
 
@@ -344,20 +351,22 @@ P _memoEntryDeserializeProp<P>(
     case 12:
       return (reader.readStringOrNull(offset)) as P;
     case 13:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 14:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 15:
+      return (reader.readLong(offset)) as P;
+    case 16:
       return (_MemoEntrysyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           SyncStatus.pending) as P;
-    case 16:
-      return (reader.readStringList(offset) ?? []) as P;
     case 17:
+      return (reader.readStringList(offset) ?? []) as P;
+    case 18:
       return (_MemoEntrytodoStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           TodoStatus.none) as P;
-    case 18:
-      return (reader.readDateTime(offset)) as P;
     case 19:
+      return (reader.readDateTime(offset)) as P;
+    case 20:
       return (reader.readStringOrNull(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -2206,6 +2215,16 @@ extension MemoEntryQueryFilter
   }
 
   QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
+      moodWeatherSyncedEqualTo(bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'moodWeatherSynced',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterFilterCondition>
       originalContentIsNull() {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(const FilterCondition.isNull(
@@ -3102,6 +3121,19 @@ extension MemoEntryQuerySortBy on QueryBuilder<MemoEntry, MemoEntry, QSortBy> {
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByMoodWeatherSynced() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'moodWeatherSynced', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy>
+      sortByMoodWeatherSyncedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'moodWeatherSynced', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> sortByOriginalContent() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'originalContent', Sort.asc);
@@ -3336,6 +3368,19 @@ extension MemoEntryQuerySortThenBy
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByMoodWeatherSynced() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'moodWeatherSynced', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy>
+      thenByMoodWeatherSyncedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'moodWeatherSynced', Sort.desc);
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QAfterSortBy> thenByOriginalContent() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'originalContent', Sort.asc);
@@ -3496,6 +3541,12 @@ extension MemoEntryQueryWhereDistinct
     });
   }
 
+  QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByMoodWeatherSynced() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'moodWeatherSynced');
+    });
+  }
+
   QueryBuilder<MemoEntry, MemoEntry, QDistinct> distinctByOriginalContent(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -3627,6 +3678,12 @@ extension MemoEntryQueryProperty
   QueryBuilder<MemoEntry, String?, QQueryOperations> moodProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'mood');
+    });
+  }
+
+  QueryBuilder<MemoEntry, bool, QQueryOperations> moodWeatherSyncedProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'moodWeatherSynced');
     });
   }
 

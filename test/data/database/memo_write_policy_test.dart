@@ -87,6 +87,38 @@ void main() {
       expect(latest.originalContent, isNull);
     });
 
+    test('moodWeatherSynced 跟随本次推送的实际结果翻转', () {
+      final revision = DateTime(2026, 6, 8, 12);
+      MemoEntry make() => MemoEntry()
+        ..id = 1
+        ..content = 'A'
+        ..updatedAt = revision
+        ..syncStatus = SyncStatus.pending;
+
+      // 推了真实心情 → 置为 true
+      final setValue = make()..moodWeatherSynced = false;
+      reconcileMemoPushSuccess(
+        latest: setValue,
+        submitted: make(),
+        moodWeatherSynced: true,
+      );
+      expect(setValue.moodWeatherSynced, isTrue);
+
+      // 推的是清空 → 置回 false
+      final cleared = make()..moodWeatherSynced = true;
+      reconcileMemoPushSuccess(
+        latest: cleared,
+        submitted: make(),
+        moodWeatherSynced: false,
+      );
+      expect(cleared.moodWeatherSynced, isFalse);
+
+      // 不传该参数 → 保持原值不动
+      final untouched = make()..moodWeatherSynced = true;
+      reconcileMemoPushSuccess(latest: untouched, submitted: make());
+      expect(untouched.moodWeatherSynced, isTrue);
+    });
+
     test(
       'stores uploaded attachment data when the local revision is unchanged',
       () {

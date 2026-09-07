@@ -26,9 +26,18 @@ void reconcileMemoPushSuccess({
   required MemoEntry submitted,
   String? remoteName,
   DateTime? syncedAt,
+  bool? moodWeatherSynced,
 }) {
   latest.memosName ??= remoteName ?? submitted.memosName;
   latest.lastSyncAt = syncedAt ?? DateTime.now();
+
+  // 远端现在等于 submitted，记录本次是否把真实的 mood/weather 推了上去：
+  // - true  → 远端现在有值，将来本地清空需显式推 0 才能同步清除；
+  // - false → 远端已无值（没推或推的就是清空），无需再动。
+  // 两个分支都要更新：即便请求期间又有新编辑，远端状态仍由本次 submitted 决定。
+  if (moodWeatherSynced != null) {
+    latest.moodWeatherSynced = moodWeatherSynced;
+  }
 
   if (mergePreparedMemoForPush(latest, submitted)) {
     // 附件上传会更新正文 URL 和附件资源名，需要将实际提交的数据落盘。

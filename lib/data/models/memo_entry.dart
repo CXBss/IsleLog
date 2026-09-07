@@ -102,6 +102,15 @@ class MemoEntry {
 
   /// 心情（如 "happy" / "calm" / "sad" 等，null 表示未设置）
   String? mood;
+
+  /// 是否曾把 mood / weather 推送到过远端。
+  ///
+  /// 用于区分「从未设置过」与「用户清空了原有值」：
+  /// - false 且本地也无值 → Push 时不写 mood/weather 字段，避免每次编辑都在
+  ///   服务端版本历史里留下 null→0 的噪声记录；
+  /// - true 但本地已清空 → Push 时显式写 0，让远端同步清除（否则下次 Pull 会把
+  ///   旧值重新灌回本地）。
+  bool moodWeatherSynced = false;
 }
 
 /// [MemoEntry] 附件读写扩展

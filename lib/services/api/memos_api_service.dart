@@ -9,6 +9,61 @@ import 'package:mime/mime.dart';
 import '../../data/models/memo_revision.dart';
 import '../debug/file_logger.dart';
 
+/// 构造 `PATCH /api/v1/memos/:id` 的请求体与 `updateMask`。
+///
+/// 关键点：只有真正想改的字段才进入 `updateMask`，未列入的字段服务端不会碰。
+/// 这样未设置 mood/weather 的日记每次编辑时不会被写成 0，也就不会在服务端版本
+/// 历史里留下 null→0 的噪声记录。
+///
+/// [syncMoodWeather] 为 true 时才写 mood/weather/weatherDetail：
+/// - 本地有值 → 正常同步；
+/// - 本地已清空但曾同步过 → 显式写 0，让远端一并清除。
+({Map<String, dynamic> body, List<String> mask}) buildMemoUpdatePayload({
+  required String content,
+  String visibility = 'PRIVATE',
+  List<String> attachmentNames = const [],
+  DateTime? createTime,
+  String? locationPlaceholder,
+  double? latitude,
+  double? longitude,
+  bool syncMoodWeather = false,
+  int? mood,
+  int? weather,
+  String? weatherDetail,
+  String? state,
+}) {
+  final body = <String, dynamic>{
+    'content': content,
+    'visibility': visibility,
+    'attachments': attachmentNames.map((n) => {'name': n}).toList(),
+  };
+  final mask = <String>['content', 'visibility', 'attachments'];
+
+  if (createTime != null) {
+    body['createTime'] = createTime.toUtc().toIso8601String();
+    mask.add('createTime');
+  }
+  if (locationPlaceholder != null || (latitude != null && longitude != null)) {
+    body['location'] = {
+      'placeholder': locationPlaceholder ?? '',
+      'latitude': latitude,
+      'longitude': longitude,
+    };
+    mask.add('location');
+  }
+  if (state != null) {
+    body['state'] = state;
+    mask.add('state');
+  }
+  if (syncMoodWeather) {
+    body['mood'] = mood ?? 0;
+    body['weather'] = weather ?? 0;
+    body['weatherDetail'] = weatherDetail ?? '';
+    mask.addAll(const ['mood', 'weather', 'weatherDetail']);
+  }
+  return (body: body, mask: mask);
+}
+
 /// Memos API 请求异常
 ///
 /// 封装网络请求失败时的错误信息，由 [MemosApiService._wrap] 统一转换。
@@ -183,6 +238,9 @@ class MemosApiService {
   /// [visibility]：新的可见性
   /// [state]：新的归档状态（`NORMAL` / `ARCHIVED`），null 时不更新
   /// [attachmentNames]：附件资源名列表（如 ["attachments/xxx"]），传空列表则清空附件
+  ///
+  /// [syncMoodWeather]：是否更新 mood/weather/weatherDetail。默认 false，
+  /// 未传时服务端保持原值不变（避免未设置心情天气的日记每次编辑都被写成 0）。
   Future<Map<String, dynamic>> updateMemo({
     required String name,
     required String content,
@@ -192,6 +250,7 @@ class MemosApiService {
     String? locationPlaceholder,
     double? latitude,
     double? longitude,
+    bool syncMoodWeather = false,
     int? mood,
     int? weather,
     String? weatherDetail,
@@ -203,26 +262,25 @@ class MemosApiService {
       ),
     );
     try {
-      final body = <String, dynamic>{
-        'content': content,
-        'visibility': visibility,
-        'attachments': attachmentNames.map((n) => {'name': n}).toList(),
-        if (createTime != null)
-          'createTime': createTime.toUtc().toIso8601String(),
-        'updateTime': DateTime.now().toUtc().toIso8601String(),
-        if (locationPlaceholder != null ||
-            (latitude != null && longitude != null))
-          'location': {
-            'placeholder': locationPlaceholder ?? '',
-            'latitude': latitude,
-            'longitude': longitude,
-          },
-        if (state != null) 'state': state,
-        'mood': mood ?? 0,
-        'weather': weather ?? 0,
-        'weatherDetail': weatherDetail ?? '',
-      };
-      final res = await _dio.patch('/api/v1/$name', data: body);
+      final payload = buildMemoUpdatePayload(
+        content: content,
+        visibility: visibility,
+        attachmentNames: attachmentNames,
+        createTime: createTime,
+        locationPlaceholder: locationPlaceholder,
+        latitude: latitude,
+        longitude: longitude,
+        syncMoodWeather: syncMoodWeather,
+        mood: mood,
+        weather: weather,
+        weatherDetail: weatherDetail,
+        state: state,
+      );
+      final res = await _dio.patch(
+        '/api/v1/$name',
+        queryParameters: {'updateMask': payload.mask.join(',')},
+        data: payload.body,
+      );
       final result = Map<String, dynamic>.from(res.data);
       unawaited(FileLogger.log('[API] updateMemo 成功'));
       return result;
