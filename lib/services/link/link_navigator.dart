@@ -17,16 +17,24 @@ class LinkNavigator {
     if (href == null || href.isEmpty) return;
 
     final ref = MemoLink.parse(href);
-    if (ref == null) {
-      // 普通外链。用 launchUrlString 而非 Uri，理由同 location_service：
-      // 绕过 Uri 对汉字的自动 percent-encode。
-      await launchUrlString(href, mode: LaunchMode.externalApplication);
-      return;
-    }
 
     // await 之前先取出，避免跨异步边界用 context。
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
+
+    if (ref == null) {
+      // 普通外链。用 launchUrlString 而非 Uri，理由同 location_service：
+      // 绕过 Uri 对汉字的自动 percent-encode。
+      //
+      // 这里用 try/catch 而不是 canLaunchUrlString 前置判断：Android 11+ 的
+      // 包可见性限制会让 canLaunch 对实际能打开的链接也返回 false，前置判断会误杀。
+      try {
+        await launchUrlString(href, mode: LaunchMode.externalApplication);
+      } catch (_) {
+        _toast(messenger, '无法打开链接');
+      }
+      return;
+    }
 
     if (ref.kind == LinkKind.memo) {
       await _openMemo(navigator, messenger, ref);
