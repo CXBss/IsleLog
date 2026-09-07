@@ -23,6 +23,7 @@ import '../../services/ai/ai_service.dart';
 import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/attachment/video_playback_support.dart';
+import '../../services/link/link_insertion.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/pending_memo_conflict_policy.dart';
@@ -32,6 +33,7 @@ import '../../shared/constants/app_constants.dart';
 import '../../shared/widgets/video_attachment_card.dart';
 import '../../shared/widgets/video_viewer_page.dart';
 import '../conflict/conflict_overview_page.dart';
+import '../link_picker/link_picker_sheet.dart';
 import 'ai/ai_action_sheet.dart';
 import 'ai/cloud_ai_consent_dialog.dart';
 import 'ai/polish_preview_page.dart';
@@ -1013,6 +1015,28 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
   /// 在当前行行首插入 `- [ ] `
   void _insertTodo() => _insertLinePrefix('- [ ] ');
 
+  /// 弹出内链选择器，把选中的日记/文章作为 Markdown 链接插到光标处。
+  Future<void> _insertLink() async {
+    final target = await showLinkPickerSheet(
+      context,
+      excludeMemoId: widget.editingMemo?.id,
+    );
+    if (target == null || !mounted) return;
+
+    final ctrl = _contentCtrl;
+    final sel = ctrl.selection;
+    final result = insertAtCursor(
+      text: ctrl.text,
+      cursor: sel.isValid ? sel.baseOffset : ctrl.text.length,
+      insert: target.toMarkdown(),
+    );
+    ctrl.value = TextEditingValue(
+      text: result.text,
+      selection: TextSelection.collapsed(offset: result.cursor),
+    );
+    _contentFocus.requestFocus();
+  }
+
   // ── AI 编辑辅助 ───────────────────────────────────────────────
 
   Future<AiGateway> _resolveAiGateway() async {
@@ -1670,6 +1694,11 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
                           icon: Icons.check_box_outline_blank,
                           tooltip: 'Todo',
                           onTap: _insertTodo,
+                        ),
+                        _FmtButton(
+                          icon: Icons.add_link,
+                          tooltip: '插入内链',
+                          onTap: _insertLink,
                         ),
                         const SizedBox(width: 8),
                         // 日期时间
