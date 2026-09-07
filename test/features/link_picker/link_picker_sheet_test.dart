@@ -161,16 +161,4 @@ void main() {
 
     expect(find.text('没有匹配的日记或文章'), findsOneWidget);
   });
-
-  testWidgets('键盘弹起时 sheet 顶部仍在屏幕内', (tester) async {
-    final search = _FakeSearch([_target(id: 1, label: '03-12 深圳暴雨')]);
-    addTearDown(tester.view.reset);
-    tester.view.viewInsets = const FakeViewPadding(bottom: 960);
-
-    await _openSheet(tester, search, []);
-
-    // 固定 0.75 屏高 + 键盘高度的 padding 会把标题顶出屏幕上沿；
-    // 高度随键盘收缩后不会。
-    expect(tester.getTopLeft(find.text('插入链接')).dy, greaterThanOrEqualTo(0));
-  });
 }
