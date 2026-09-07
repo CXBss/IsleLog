@@ -19,12 +19,14 @@ import '../../data/models/memo_entry.dart';
 import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/attachment/video_playback_support.dart';
+import '../../services/link/link_insertion.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
 import '../../shared/widgets/video_attachment_card.dart';
 import '../../shared/widgets/video_viewer_page.dart';
 import '../conflict/article_conflict_overview_page.dart';
+import '../link_picker/link_picker_sheet.dart';
 import '../revision_history/revision_history_page.dart';
 
 /// 文章新建 / 编辑页面
@@ -38,7 +40,17 @@ class ArticleEditorPage extends StatefulWidget {
   /// 新建时可预设文件夹
   final FolderEntry? initialFolder;
 
-  const ArticleEditorPage({super.key, this.editingArticle, this.initialFolder});
+  /// 打开时直接进入预览（阅读）模式。
+  ///
+  /// 内链跳转到文章时用：点链接是"去读"，不是"去改"。
+  final bool openInPreview;
+
+  const ArticleEditorPage({
+    super.key,
+    this.editingArticle,
+    this.initialFolder,
+    this.openInPreview = false,
+  });
 
   @override
   State<ArticleEditorPage> createState() => _ArticleEditorPageState();
@@ -79,6 +91,7 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
     final article = widget.editingArticle;
     _titleCtrl = TextEditingController(text: article?.title ?? '');
     _contentCtrl = TextEditingController(text: article?.content ?? '');
+    _previewMode = widget.openInPreview;
     _contentFocus = FocusNode(onKeyEvent: _onKeyEvent);
     _visibility = article?.visibility ?? 'PRIVATE';
     _selectedFolder = widget.initialFolder;
@@ -522,6 +535,28 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
     _contentFocus.requestFocus();
   }
 
+  /// 弹出内链选择器，把选中的日记/文章作为 Markdown 链接插到光标处。
+  Future<void> _insertLink() async {
+    final target = await showLinkPickerSheet(
+      context,
+      excludeArticleId: widget.editingArticle?.id,
+    );
+    if (target == null || !mounted) return;
+
+    final ctrl = _contentCtrl;
+    final sel = ctrl.selection;
+    final result = insertAtCursor(
+      text: ctrl.text,
+      cursor: sel.isValid ? sel.baseOffset : ctrl.text.length,
+      insert: target.toMarkdown(),
+    );
+    ctrl.value = ctrl.value.copyWith(
+      text: result.text,
+      selection: TextSelection.collapsed(offset: result.cursor),
+    );
+    _contentFocus.requestFocus();
+  }
+
   // ── build ──────────────────────────────────────────────────────
 
   @override
@@ -689,6 +724,8 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
                       onTap: () => _insertAtCursor('\n---\n')),
                   _ToolbarBtn(icon: Icons.format_quote, tooltip: '引用',
                       onTap: () => _insertLinePrefix('> ')),
+                  _ToolbarBtn(icon: Icons.add_link, tooltip: '插入内链',
+                      onTap: _insertLink),
                 ],
               ),
             ),
