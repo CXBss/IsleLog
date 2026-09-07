@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../data/models/memo_entry.dart';
 import '../../../shared/constants/app_constants.dart';
-import 'highlighted_text.dart';
+import '../../../shared/widgets/highlighted_text.dart';
 
 /// 隐私空间里展示「主库普通日记」的卡片。
 ///

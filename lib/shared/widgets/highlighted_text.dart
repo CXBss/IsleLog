@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 
-import '../../../shared/constants/app_constants.dart';
+import '../constants/app_constants.dart';
 
 /// 把 [text] 中命中 [query] 的片段高亮显示。
 ///
 /// [query] 为空时退化为普通 Text，不产生额外的 span 开销。
-/// 大小写不敏感，与 [VaultBrowseModel.apply] 的搜索口径保持一致。
+/// 大小写不敏感，与调用方的搜索口径保持一致。
 class HighlightedText extends StatelessWidget {
   final String text;
   final String query;

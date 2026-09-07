@@ -379,6 +379,46 @@ class DatabaseService {
     return result;
   }
 
+  /// 获取 [start]（含）到 [endExclusive]（不含）之间创建的未删除、未归档日记。
+  ///
+  /// 供内链选择器按月/按日筛选使用。Isar 的 createdAtBetween 两端都含，
+  /// 因此上界减 1 毫秒来实现半开区间。
+  static Future<List<MemoEntry>> getMemosBetween(
+    DateTime start,
+    DateTime endExclusive,
+  ) async {
+    final isar = await db;
+    final result = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .createdAtBetween(
+          start,
+          endExclusive.subtract(const Duration(milliseconds: 1)),
+        )
+        .sortByCreatedAtDesc()
+        .findAll();
+    debugPrint('[DB] getMemosBetween($start, $endExclusive) → ${result.length} 条');
+    return result;
+  }
+
+  /// 获取最近更新的未删除、未归档日记。
+  ///
+  /// 与 getMemosPaged 的区别：**不排除置顶条目**。置顶只影响时间线的排布，
+  /// 不应该让一条日记在内链选择器里消失。
+  static Future<List<MemoEntry>> getRecentMemos({int limit = 20}) async {
+    final isar = await db;
+    final result = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .sortByUpdatedAtDesc()
+        .limit(limit)
+        .findAll();
+    debugPrint('[DB] getRecentMemos limit=$limit → ${result.length} 条');
+    return result;
+  }
+
   // ────────────────────────────────────────────────────────────────
   // 读操作 — 其他
   // ────────────────────────────────────────────────────────────────
@@ -1182,6 +1222,42 @@ class DatabaseService {
             .toList()
           ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     debugPrint('[DB] searchArticles "$query" → ${result.length} 条');
+    return result;
+  }
+
+  /// 获取 [start]（含）到 [endExclusive]（不含）之间创建的未删除、未归档文章。
+  static Future<List<ArticleEntry>> getArticlesBetween(
+    DateTime start,
+    DateTime endExclusive,
+  ) async {
+    final isar = await db;
+    final result = await isar.articleEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .createdAtBetween(
+          start,
+          endExclusive.subtract(const Duration(milliseconds: 1)),
+        )
+        .sortByCreatedAtDesc()
+        .findAll();
+    debugPrint(
+      '[DB] getArticlesBetween($start, $endExclusive) → ${result.length} 条',
+    );
+    return result;
+  }
+
+  /// 获取最近更新的未删除、未归档文章。
+  static Future<List<ArticleEntry>> getRecentArticles({int limit = 20}) async {
+    final isar = await db;
+    final result = await isar.articleEntrys
+        .filter()
+        .isDeletedEqualTo(false)
+        .isArchivedEqualTo(false)
+        .sortByUpdatedAtDesc()
+        .limit(limit)
+        .findAll();
+    debugPrint('[DB] getRecentArticles limit=$limit → ${result.length} 条');
     return result;
   }
 

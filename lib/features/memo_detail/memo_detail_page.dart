@@ -16,6 +16,7 @@ import '../../data/models/thread_entry.dart';
 import '../../data/models/weather_info.dart';
 import '../../services/attachment/attachment_grouping.dart';
 import '../../services/attachment/video_playback_support.dart';
+import '../../services/link/link_navigator.dart';
 import '../../services/location/location_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
@@ -480,6 +481,8 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                       child: MarkdownBody(
                         data: _displayContent,
                         styleSheet: _mdStyle(context),
+                        onTapLink: (_, href, _) =>
+                            LinkNavigator.openHref(context, href),
                         checkboxBuilder: (checked) {
                           final idx = checkboxIdx++;
                           return GestureDetector(
