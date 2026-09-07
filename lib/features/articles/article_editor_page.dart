@@ -20,6 +20,7 @@ import '../../services/api/memos_api_service.dart';
 import '../../services/attachment/attachment_service.dart';
 import '../../services/attachment/video_playback_support.dart';
 import '../../services/link/link_insertion.dart';
+import '../../services/link/link_navigator.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
@@ -657,6 +658,8 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
                 ? Markdown(
                     data: _contentCtrl.text.isEmpty ? '*（内容为空）*' : _contentCtrl.text,
                     padding: const EdgeInsets.all(16),
+                    onTapLink: (_, href, _) =>
+                        LinkNavigator.openHref(context, href),
                   )
                 : TextField(
                     controller: _contentCtrl,
