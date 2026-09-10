@@ -413,7 +413,8 @@ Expected: FAIL，报 `The function 'sortForLinkBackfill' isn't defined`（Task 1
 /// 「文件夹先于文章」「事件串最后推送」是同一个套路。
 ///
 /// 只考虑同批次内、同类型的依赖：目标不在本批次（已同步或不存在）不构成依赖。
-/// 成环时把剩余条目按原序输出，不死循环——受影响的链接下次编辑该条目时再补。
+/// 成环时把剩余条目按原序输出，不死循环——受影响的链接会永久保持光杆
+/// （已同步条目不再回写，见 [canBackfillLinks]）。
 List<T> sortForLinkBackfill<T>(
   List<T> pending, {
   required LinkKind kind,

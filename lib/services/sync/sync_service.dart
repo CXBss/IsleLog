@@ -560,23 +560,15 @@ class SyncService {
     );
     debugPrint('[Sync] _pushPending: 待推送 ${pendingList.length} 条');
     int count = 0;
-    // 记录本轮推送失败的条目 id，供下面的依赖检查使用（Fix 2）。
-    final failedIds = <int>{};
 
+    // 这里刻意**不**因为"依赖的目标本轮推送失败"而跳过引用方。
+    //
+    // 曾经加过那样的兜底（让引用方跟着依赖等下一轮，好让链接补全），但它引入了
+    // 更坏的失败模式：目标若永久推送失败（例如服务端对它的内容持续校验失败），
+    // 引用方就会被无限期跳过，用户的日记正文永远同步不上去。
+    // 丢一个链接是外观问题，一条日记永远不上云是数据风险——绝不能让"把链接补完整"
+    // 挡住正文抵达服务端。因此宁可让那条链接永久保持光杆（spec 第 6 节已写明并接受）。
     for (final memo in pendingList) {
-      // 加了 canBackfillLinks 守卫之后，一条从未同步过的日记只有这一次
-      // 回写机会：推送成功即变成 synced，此后正文里的光杆链接再也不会被
-      // 触碰。若它引用的目标恰好在本轮推送失败，而它自己推送成功，那条
-      // 链接就会永久保持光杆。这里让它跟着依赖一起等下一轮——保持
-      // pending、不写服务端，因此不产生版本噪声。
-      // 已同步的条目本来就不参与回写（见 canBackfillLinks），不需要等。
-      if (canBackfillLinks(remoteName: memo.memosName)) {
-        final deps = bareLinkTargets(memo.content, LinkKind.memo);
-        if (deps.any(failedIds.contains)) {
-          debugPrint('[Sync] 依赖的目标本轮推送失败，跳过等待下一轮 id=${memo.id}');
-          continue;
-        }
-      }
       try {
         if (memo.isDeleted) {
           // ── 处理软删除：远端有 ID 则先删远端，再本地物理删除 ──
@@ -598,7 +590,6 @@ class SyncService {
       } catch (e) {
         // 单条失败不中断整体流程
         debugPrint('[Sync] 单条推送失败 id=${memo.id}: $e（保持 pending）');
-        failedIds.add(memo.id);
       }
     }
 
