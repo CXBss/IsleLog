@@ -16,6 +16,8 @@ import '../../shared/constants/app_constants.dart';
 import '../../shared/constants/build_flags.dart';
 import '../api/memos_api_service.dart';
 import '../attachment/attachment_service.dart';
+import '../link/link_backfill.dart';
+import '../link/memo_link.dart';
 import '../settings/settings_service.dart';
 import '../vault/vault_sync.dart';
 import 'pending_memo_conflict_policy.dart';
@@ -548,7 +550,14 @@ class SyncService {
     String url,
     String token,
   ) async {
-    final pendingList = await DatabaseService.getPendingSyncMemos();
+    final rawPending = await DatabaseService.getPendingSyncMemos();
+    // 被引用的日记先推，引用方才补得上远端名（同「文件夹先于文章」的套路）
+    final pendingList = sortForLinkBackfill(
+      rawPending,
+      kind: LinkKind.memo,
+      localIdOf: (m) => m.id,
+      contentOf: (m) => m.content,
+    );
     debugPrint('[Sync] _pushPending: 待推送 ${pendingList.length} 条');
     int count = 0;
 
@@ -605,6 +614,10 @@ class SyncService {
   }) async {
     // ── 补传离线附件 ──
     await _uploadPendingAttachments(api, memo, url, token);
+
+    // ── 补全正文里缺远端名的内链 ──
+    // 与上面的附件 URL 替换同理：改写后的正文既发给服务端也随本次推送落盘。
+    memo.content = await _backfillContentLinks(memo.content);
 
     // 收集已上传的附件资源名
     final attachmentNames = memo.attachments
@@ -696,6 +709,28 @@ class SyncService {
         debugPrint('[Sync] 更新期间检测到新编辑，保留 pending id=${memo.id}');
       }
     }
+  }
+
+  /// 把正文里缺远端名的内链补全（查不到的原样保留）。
+  ///
+  /// 查询是异步的，而 [backfillLinks] 是同步纯函数，因此先把用到的
+  /// 本地 id 一次性查成映射表，再交给纯函数替换。
+  static Future<String> _backfillContentLinks(String content) async {
+    final memoIds = bareLinkTargets(content, LinkKind.memo);
+    final articleIds = bareLinkTargets(content, LinkKind.article);
+    if (memoIds.isEmpty && articleIds.isEmpty) return content;
+
+    final names = <(LinkKind, int), String>{};
+    for (final id in memoIds) {
+      final name = (await DatabaseService.getMemoById(id))?.memosName;
+      if (name != null) names[(LinkKind.memo, id)] = name;
+    }
+    for (final id in articleIds) {
+      final name = (await DatabaseService.getArticleById(id))?.articleName;
+      if (name != null) names[(LinkKind.article, id)] = name;
+    }
+
+    return backfillLinks(content, (kind, id) => names[(kind, id)]);
   }
 
   /// 推送所有 pending 评论到远端
