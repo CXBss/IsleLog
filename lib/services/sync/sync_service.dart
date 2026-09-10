@@ -1541,11 +1541,23 @@ class SyncService {
 
   /// 推送所有 pending 文章到远端
   static Future<int> _pushPendingArticles(MemosApiService api) async {
-    final pending = await DatabaseService.getPendingSyncArticles();
+    final rawPending = await DatabaseService.getPendingSyncArticles();
+    // 被引用的文章先推，引用方才补得上远端名
+    final pending = sortForLinkBackfill(
+      rawPending,
+      kind: LinkKind.article,
+      localIdOf: (a) => a.id,
+      contentOf: (a) => a.content,
+    );
     debugPrint('[Sync] _pushPendingArticles: ${pending.length} 篇待推送');
     int count = 0;
     for (final article in pending) {
       try {
+        // ── 补全正文里缺远端名的内链 ──
+        // 文章的两个分支都以 saveArticle(skipTimestamp: true) 收尾，
+        // 因此这里改写 content 会随本次推送一并落盘。
+        article.content = await _backfillContentLinks(article.content);
+
         // 如果 folderName 还空但有 localFolderId，尝试从本地获取
         if (article.folderName == null && article.localFolderId != null) {
           final isar = await DatabaseService.db;
