@@ -139,5 +139,108 @@ void main() {
       expect(backfillLinks(content, _lookup), content);
     });
   });
+
+  group('sortForLinkBackfill', () {
+    /// 测试用的最小条目：只有 id 和正文。
+    ({int id, String content}) item(int id, [String content = '']) =>
+        (id: id, content: content);
+
+    List<({int id, String content})> sortItems(
+      List<({int id, String content})> items,
+    ) => sortForLinkBackfill(
+      items,
+      kind: LinkKind.memo,
+      localIdOf: (i) => i.id,
+      contentOf: (i) => i.content,
+    );
+
+    test('引用方排到被引用者之后', () {
+      final sorted = sortItems([
+        item(1, '见[x](islelog://memo?lid=2)'),
+        item(2),
+      ]);
+
+      expect(sorted.map((i) => i.id), [2, 1]);
+    });
+
+    test('无引用关系时保持原序', () {
+      final sorted = sortItems([item(1), item(2), item(3)]);
+
+      expect(sorted.map((i) => i.id), [1, 2, 3]);
+    });
+
+    test('目标不在本批次时不影响原序', () {
+      final sorted = sortItems([
+        item(1, '见[x](islelog://memo?lid=99)'),
+        item(2),
+      ]);
+
+      expect(sorted.map((i) => i.id), [1, 2]);
+    });
+
+    test('已完整的链接不产生依赖', () {
+      final sorted = sortItems([
+        item(1, '见[x](islelog://memo/memos/500?lid=2)'),
+        item(2),
+      ]);
+
+      expect(sorted.map((i) => i.id), [1, 2]);
+    });
+
+    test('链式依赖按拓扑序排开', () {
+      // 1 → 2 → 3，期望 3、2、1
+      final sorted = sortItems([
+        item(1, '[x](islelog://memo?lid=2)'),
+        item(2, '[x](islelog://memo?lid=3)'),
+        item(3),
+      ]);
+
+      expect(sorted.map((i) => i.id), [3, 2, 1]);
+    });
+
+    test('成环时按原序输出且不死循环', () {
+      final sorted = sortItems([
+        item(1, '[x](islelog://memo?lid=2)'),
+        item(2, '[x](islelog://memo?lid=1)'),
+      ]);
+
+      expect(sorted.map((i) => i.id), [1, 2]);
+    });
+
+    test('环之外的条目仍然被正确排序', () {
+      // 3 无依赖应先出；1 和 2 互相引用，按原序补在后面
+      final sorted = sortItems([
+        item(1, '[x](islelog://memo?lid=2)'),
+        item(2, '[x](islelog://memo?lid=1)'),
+        item(3),
+      ]);
+
+      expect(sorted.first.id, 3);
+      expect(sorted.map((i) => i.id).skip(1), [1, 2]);
+    });
+
+    test('自引用不会把自己卡死', () {
+      final sorted = sortItems([
+        item(1, '[x](islelog://memo?lid=1)'),
+        item(2),
+      ]);
+
+      expect(sorted.map((i) => i.id).toSet(), {1, 2});
+      expect(sorted.length, 2);
+    });
+
+    test('空列表与单元素原样返回', () {
+      expect(sortItems([]), isEmpty);
+      expect(sortItems([item(7)]).single.id, 7);
+    });
+
+    test('不修改传入的列表', () {
+      final input = [item(1, '[x](islelog://memo?lid=2)'), item(2)];
+
+      sortItems(input);
+
+      expect(input.map((i) => i.id), [1, 2]);
+    });
+  });
 }
 

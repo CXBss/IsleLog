@@ -54,3 +54,51 @@ String backfillLinks(String content, RemoteNameLookup lookup) {
     );
   });
 }
+
+/// 把待推送列表排序，使「正文里带光杆链接的条目」排在它引用的条目之后。
+///
+/// 这样被引用者先拿到远端名，引用方推送时才补得上。与既有的
+/// 「文件夹先于文章」「事件串最后推送」是同一个套路。
+///
+/// 只考虑同批次内、同类型的依赖：目标不在本批次（已同步或不存在）不构成依赖。
+/// 成环时把剩余条目按原序输出，不死循环——受影响的链接下次编辑该条目时再补。
+List<T> sortForLinkBackfill<T>(
+  List<T> pending, {
+  required LinkKind kind,
+  required int Function(T) localIdOf,
+  required String Function(T) contentOf,
+}) {
+  if (pending.length < 2) return List<T>.of(pending);
+
+  final idsInBatch = pending.map(localIdOf).toSet();
+  final deps = <int, Set<int>>{};
+  for (final item in pending) {
+    final self = localIdOf(item);
+    deps[self] = bareLinkTargets(contentOf(item), kind)
+        // 自引用不构成依赖，否则它永远等不到自己
+        .where((id) => id != self && idsInBatch.contains(id))
+        .toSet();
+  }
+
+  final sorted = <T>[];
+  final emitted = <int>{};
+  final remaining = List<T>.of(pending);
+
+  while (remaining.isNotEmpty) {
+    final ready = remaining
+        .where((item) => deps[localIdOf(item)]!.every(emitted.contains))
+        .toList();
+    if (ready.isEmpty) {
+      // 成环：剩下的按原序输出，保证函数一定终止
+      sorted.addAll(remaining);
+      break;
+    }
+    for (final item in ready) {
+      sorted.add(item);
+      emitted.add(localIdOf(item));
+    }
+    remaining.removeWhere((item) => emitted.contains(localIdOf(item)));
+  }
+
+  return sorted;
+}
