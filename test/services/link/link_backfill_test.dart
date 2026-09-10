@@ -140,6 +140,21 @@ void main() {
     });
   });
 
+  group('canBackfillLinks', () {
+    test('从未同步过的条目可以回写', () {
+      expect(canBackfillLinks(remoteName: null), isTrue);
+    });
+
+    test('已同步的条目不可回写', () {
+      // 它的正文可能是从别台设备拉来的，里面的 lid 属于那台设备的 id 空间
+      expect(canBackfillLinks(remoteName: 'memos/500'), isFalse);
+    });
+
+    test('空串的远端名也视为已同步，不可回写', () {
+      expect(canBackfillLinks(remoteName: ''), isFalse);
+    });
+  });
+
   group('sortForLinkBackfill', () {
     /// 测试用的最小条目：只有 id 和正文。
     ({int id, String content}) item(int id, [String content = '']) =>

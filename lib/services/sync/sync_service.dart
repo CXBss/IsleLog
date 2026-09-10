@@ -560,8 +560,23 @@ class SyncService {
     );
     debugPrint('[Sync] _pushPending: 待推送 ${pendingList.length} 条');
     int count = 0;
+    // 记录本轮推送失败的条目 id，供下面的依赖检查使用（Fix 2）。
+    final failedIds = <int>{};
 
     for (final memo in pendingList) {
+      // 加了 canBackfillLinks 守卫之后，一条从未同步过的日记只有这一次
+      // 回写机会：推送成功即变成 synced，此后正文里的光杆链接再也不会被
+      // 触碰。若它引用的目标恰好在本轮推送失败，而它自己推送成功，那条
+      // 链接就会永久保持光杆。这里让它跟着依赖一起等下一轮——保持
+      // pending、不写服务端，因此不产生版本噪声。
+      // 已同步的条目本来就不参与回写（见 canBackfillLinks），不需要等。
+      if (canBackfillLinks(remoteName: memo.memosName)) {
+        final deps = bareLinkTargets(memo.content, LinkKind.memo);
+        if (deps.any(failedIds.contains)) {
+          debugPrint('[Sync] 依赖的目标本轮推送失败，跳过等待下一轮 id=${memo.id}');
+          continue;
+        }
+      }
       try {
         if (memo.isDeleted) {
           // ── 处理软删除：远端有 ID 则先删远端，再本地物理删除 ──
@@ -583,6 +598,7 @@ class SyncService {
       } catch (e) {
         // 单条失败不中断整体流程
         debugPrint('[Sync] 单条推送失败 id=${memo.id}: $e（保持 pending）');
+        failedIds.add(memo.id);
       }
     }
 
@@ -617,7 +633,12 @@ class SyncService {
 
     // ── 补全正文里缺远端名的内链 ──
     // 与上面的附件 URL 替换同理：改写后的正文既发给服务端也随本次推送落盘。
-    memo.content = await _backfillContentLinks(memo.content);
+    // 只对从未同步过的条目做回写：拉取写入的正文原样保留着别台设备的 lid，
+    // 若对已同步条目也回写，会把外来 lid 解析成本机同号但毫不相干的条目，
+    // 并把这个错误链接推到服务端扩散出去（见 Fix 1 的复现序列）。
+    if (canBackfillLinks(remoteName: memo.memosName)) {
+      memo.content = await _backfillContentLinks(memo.content);
+    }
 
     // 收集已上传的附件资源名
     final attachmentNames = memo.attachments
@@ -1556,7 +1577,12 @@ class SyncService {
         // ── 补全正文里缺远端名的内链 ──
         // 文章的两个分支都以 saveArticle(skipTimestamp: true) 收尾，
         // 因此这里改写 content 会随本次推送一并落盘。
-        article.content = await _backfillContentLinks(article.content);
+        // 只对从未同步过的文章做回写：拉取写入的正文原样保留着别台设备的 lid，
+        // 若对已同步文章也回写，会把外来 lid 解析成本机同号但毫不相干的条目，
+        // 并把这个错误链接推到服务端扩散出去（见 Fix 1 的复现序列）。
+        if (canBackfillLinks(remoteName: article.articleName)) {
+          article.content = await _backfillContentLinks(article.content);
+        }
 
         // 如果 folderName 还空但有 localFolderId，尝试从本地获取
         if (article.folderName == null && article.localFolderId != null) {

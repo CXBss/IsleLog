@@ -26,6 +26,13 @@ Set<int> bareLinkTargets(String content, LinkKind kind) {
   return ids;
 }
 
+/// 判断一条待推送条目的正文是否可以安全回写。
+///
+/// 只有**从未同步过**的条目才安全：它的正文一定是在本机写的，里面的 lid 也就一定
+/// 指向本机的条目。已同步条目的正文可能是从别台设备拉来的，其中的 lid 属于那台
+/// 设备的 id 空间，在本机解析会命中一条同号但毫不相干的条目。
+bool canBackfillLinks({required String? remoteName}) => remoteName == null;
+
 /// 把正文里缺远端名的内链补全。
 ///
 /// 只改 URI，不碰链接的显示文字。只补「缺远端名且有 lid」的链接，因此天然幂等——

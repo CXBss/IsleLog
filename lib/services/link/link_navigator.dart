@@ -87,7 +87,10 @@ class LinkNavigator {
           MaterialPageRoute(builder: (_) => MemoDetailPage(memo: byId!)),
         );
       case LinkAction.notSynced:
-        _toast(messenger, '这条日记还没同步到本设备');
+        // 硬删除模型下两台设备最终都会把删除方推的删除应用到本地，
+        // 因此"没拉下来"往往不是暂态——链接指向的日记也可能已被删除，
+        // 但 notSynced 判据永远也等不到 isDeleted 的证据（见 Fix 3）。
+        _toast(messenger, '找不到这条日记（可能还没同步到本设备，或已被删除）');
       case LinkAction.missing:
         _toast(messenger, '链接的条目已不存在或已被删除');
     }
@@ -137,7 +140,8 @@ class LinkNavigator {
           ),
         );
       case LinkAction.notSynced:
-        _toast(messenger, '这篇文章还没同步到本设备');
+        // 理由同 _openMemo：硬删除下"没拉下来"往往不是暂态。
+        _toast(messenger, '找不到这篇文章（可能还没同步到本设备，或已被删除）');
       case LinkAction.missing:
         _toast(messenger, '链接的条目已不存在或已被删除');
     }
