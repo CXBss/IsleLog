@@ -41,6 +41,12 @@ void main() {
 
       expect(bareLinkTargets(content, LinkKind.memo), {45});
     });
+
+    test('显示文字里的同名串不算目标', () {
+      const content = '[islelog://memo?lid=45](https://example.com)';
+
+      expect(bareLinkTargets(content, LinkKind.memo), isEmpty);
+    });
   });
 
   group('backfillLinks', () {
@@ -118,5 +124,20 @@ void main() {
 
       expect(backfillLinks(content, emptyLookup), content);
     });
+
+    test('链接显示文字里的同名串不被改写', () {
+      // labelForMemo 取目标首行做标签，首行里若粘过内链地址，标签就会带着它。
+      // 回写只能动 URI，不能动用户看得见的文字。
+      const content = '[islelog://memo?lid=45](https://example.com)';
+
+      expect(backfillLinks(content, _lookup), content);
+    });
+
+    test('纯文本里裸写的地址不被改写', () {
+      const content = '我把地址贴在这儿：islelog://memo?lid=45';
+
+      expect(backfillLinks(content, _lookup), content);
+    });
   });
 }
+

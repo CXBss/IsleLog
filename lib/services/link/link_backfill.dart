@@ -3,10 +3,12 @@ import 'memo_link.dart';
 /// 查询某个本地 id 对应实体的远端资源名；查不到返回 null。
 typedef RemoteNameLookup = String? Function(LinkKind kind, int localId);
 
-/// 匹配正文里的内链 URI。
+/// 匹配 markdown 链接目标位置上的内链 URI。
 ///
-/// Markdown 链接的目标以 `)` 收尾，正文里裸写时以空白收尾，两者都排除即可。
-final RegExp _linkUri = RegExp(r'islelog://[^\s)]+');
+/// 必须锚定在 `]( ` 与 `)` 之间：正文里别处出现的同名串（尤其是链接的**显示文字**里
+/// 粘进来的地址）不能被改写，否则会动到用户看得见的文字。
+final RegExp _linkUri = RegExp(r'(?<=\]\()islelog://[^\s)]+(?=\s*\))');
+
 
 /// 找出正文里所有「只有本地 id、缺远端名」的 [kind] 类目标的本地 id。
 ///
