@@ -43,15 +43,16 @@ void main() {
     );
   });
 
-  test('本地 id 撞到了远端名不一致的条目，判定为失效', () {
-    // 换设备后 Isar 自增 id 会撞车，没有这一步会跳到完全无关的日记
+  test('本地 id 撞到了远端名不一致的条目，判定为未同步', () {
+    // 换设备后本地 id 会撞车。既然对不上，就不能猜着开；
+    // 而"找不到"不等于"被删了"，所以是 notSynced 而不是 missing。
     expect(
       decideLinkAction(
         ref: _synced,
         byRemoteName: null,
         byLocalId: const LinkedEntitySnapshot(remoteName: 'memos/999'),
       ),
-      LinkAction.missing,
+      LinkAction.notSynced,
     );
   });
 
@@ -90,10 +91,11 @@ void main() {
     );
   });
 
-  test('链接有远端名但两边都查不到，说明条目已不存在', () {
+  test('链接有远端名但两边都查不到，说明还没同步到本设备', () {
+    // 手里没有实物，就不能断言它被删了——多设备下更可能只是还没拉下来
     expect(
       decideLinkAction(ref: _synced, byRemoteName: null, byLocalId: null),
-      LinkAction.missing,
+      LinkAction.notSynced,
     );
   });
 
@@ -136,6 +138,21 @@ void main() {
         byLocalId: const LinkedEntitySnapshot(remoteName: 'memos/123'),
       ),
       LinkAction.openByLocalId,
+    );
+  });
+
+  test('撞上一条无关的已删除条目，仍报未同步而不是已删除', () {
+    // 那具"尸体"不是链接指向的东西，不能拿它当"目标已删除"的证据
+    expect(
+      decideLinkAction(
+        ref: _synced,
+        byRemoteName: null,
+        byLocalId: const LinkedEntitySnapshot(
+          remoteName: 'memos/999',
+          isDeleted: true,
+        ),
+      ),
+      LinkAction.notSynced,
     );
   });
 }

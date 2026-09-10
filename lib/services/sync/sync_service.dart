@@ -16,6 +16,8 @@ import '../../shared/constants/app_constants.dart';
 import '../../shared/constants/build_flags.dart';
 import '../api/memos_api_service.dart';
 import '../attachment/attachment_service.dart';
+import '../link/link_backfill.dart';
+import '../link/memo_link.dart';
 import '../settings/settings_service.dart';
 import '../vault/vault_sync.dart';
 import 'pending_memo_conflict_policy.dart';
@@ -548,10 +550,24 @@ class SyncService {
     String url,
     String token,
   ) async {
-    final pendingList = await DatabaseService.getPendingSyncMemos();
+    final rawPending = await DatabaseService.getPendingSyncMemos();
+    // 被引用的日记先推，引用方才补得上远端名（同「文件夹先于文章」的套路）
+    final pendingList = sortForLinkBackfill(
+      rawPending,
+      kind: LinkKind.memo,
+      localIdOf: (m) => m.id,
+      contentOf: (m) => m.content,
+    );
     debugPrint('[Sync] _pushPending: 待推送 ${pendingList.length} 条');
     int count = 0;
 
+    // 这里刻意**不**因为"依赖的目标本轮推送失败"而跳过引用方。
+    //
+    // 曾经加过那样的兜底（让引用方跟着依赖等下一轮，好让链接补全），但它引入了
+    // 更坏的失败模式：目标若永久推送失败（例如服务端对它的内容持续校验失败），
+    // 引用方就会被无限期跳过，用户的日记正文永远同步不上去。
+    // 丢一个链接是外观问题，一条日记永远不上云是数据风险——绝不能让"把链接补完整"
+    // 挡住正文抵达服务端。因此宁可让那条链接永久保持光杆（spec 第 6 节已写明并接受）。
     for (final memo in pendingList) {
       try {
         if (memo.isDeleted) {
@@ -605,6 +621,15 @@ class SyncService {
   }) async {
     // ── 补传离线附件 ──
     await _uploadPendingAttachments(api, memo, url, token);
+
+    // ── 补全正文里缺远端名的内链 ──
+    // 与上面的附件 URL 替换同理：改写后的正文既发给服务端也随本次推送落盘。
+    // 只对从未同步过的条目做回写：拉取写入的正文原样保留着别台设备的 lid，
+    // 若对已同步条目也回写，会把外来 lid 解析成本机同号但毫不相干的条目，
+    // 并把这个错误链接推到服务端扩散出去（见 Fix 1 的复现序列）。
+    if (canBackfillLinks(remoteName: memo.memosName)) {
+      memo.content = await _backfillContentLinks(memo.content);
+    }
 
     // 收集已上传的附件资源名
     final attachmentNames = memo.attachments
@@ -696,6 +721,28 @@ class SyncService {
         debugPrint('[Sync] 更新期间检测到新编辑，保留 pending id=${memo.id}');
       }
     }
+  }
+
+  /// 把正文里缺远端名的内链补全（查不到的原样保留）。
+  ///
+  /// 查询是异步的，而 [backfillLinks] 是同步纯函数，因此先把用到的
+  /// 本地 id 一次性查成映射表，再交给纯函数替换。
+  static Future<String> _backfillContentLinks(String content) async {
+    final memoIds = bareLinkTargets(content, LinkKind.memo);
+    final articleIds = bareLinkTargets(content, LinkKind.article);
+    if (memoIds.isEmpty && articleIds.isEmpty) return content;
+
+    final names = <(LinkKind, int), String>{};
+    for (final id in memoIds) {
+      final name = (await DatabaseService.getMemoById(id))?.memosName;
+      if (name != null) names[(LinkKind.memo, id)] = name;
+    }
+    for (final id in articleIds) {
+      final name = (await DatabaseService.getArticleById(id))?.articleName;
+      if (name != null) names[(LinkKind.article, id)] = name;
+    }
+
+    return backfillLinks(content, (kind, id) => names[(kind, id)]);
   }
 
   /// 推送所有 pending 评论到远端
@@ -1506,11 +1553,28 @@ class SyncService {
 
   /// 推送所有 pending 文章到远端
   static Future<int> _pushPendingArticles(MemosApiService api) async {
-    final pending = await DatabaseService.getPendingSyncArticles();
+    final rawPending = await DatabaseService.getPendingSyncArticles();
+    // 被引用的文章先推，引用方才补得上远端名
+    final pending = sortForLinkBackfill(
+      rawPending,
+      kind: LinkKind.article,
+      localIdOf: (a) => a.id,
+      contentOf: (a) => a.content,
+    );
     debugPrint('[Sync] _pushPendingArticles: ${pending.length} 篇待推送');
     int count = 0;
     for (final article in pending) {
       try {
+        // ── 补全正文里缺远端名的内链 ──
+        // 文章的两个分支都以 saveArticle(skipTimestamp: true) 收尾，
+        // 因此这里改写 content 会随本次推送一并落盘。
+        // 只对从未同步过的文章做回写：拉取写入的正文原样保留着别台设备的 lid，
+        // 若对已同步文章也回写，会把外来 lid 解析成本机同号但毫不相干的条目，
+        // 并把这个错误链接推到服务端扩散出去（见 Fix 1 的复现序列）。
+        if (canBackfillLinks(remoteName: article.articleName)) {
+          article.content = await _backfillContentLinks(article.content);
+        }
+
         // 如果 folderName 还空但有 localFolderId，尝试从本地获取
         if (article.folderName == null && article.localFolderId != null) {
           final isar = await DatabaseService.db;
