@@ -26,42 +26,38 @@ enum LinkAction {
   missing,
 }
 
+/// 判断 [snap] 是否就是 [ref] 指向的那一条。
+///
+/// 撞车守卫只在两边都有远端名时才成立：只有那时"对不上"才有意义。
+/// 链接没有远端名说明它是在目标同步前创建的，此时 lid 是唯一权威标识。
+bool _sameEntity(MemoLinkRef ref, LinkedEntitySnapshot snap) =>
+    ref.remoteName == null || snap.remoteName == ref.remoteName;
+
 /// 由两次查库的结果判定该打开谁、或报哪种失效。
 ///
-/// 归档条目照常打开——是用户主动点的，读得到才合理；软删除则按失效处理。
+/// 两段式：先找一个还活着的目标；都没有活的，再看有没有"目标确实被删了"的
+/// 证据来决定说哪句话。
+///
+/// 归档条目照常打开——是用户主动点的，读得到才合理。
+/// `missing` 只在**拿到实物且它是软删除**时才成立；其余一切找不到的情况
+/// （没拉下来、撞车判否、链接只有 lid 而本机没有）一律 `notSynced`。
+/// 把"我找不到"说成"它被删了"会吓到用户，而且多设备下前者常见得多。
 LinkAction decideLinkAction({
   required MemoLinkRef ref,
   required LinkedEntitySnapshot? byRemoteName,
   required LinkedEntitySnapshot? byLocalId,
 }) {
-  // 优先用远端名查到的结果
+  // 第一段：任何一个活着的目标都可以打开，远端名优先
   if (byRemoteName != null && !byRemoteName.isDeleted) {
     return LinkAction.openByRemoteName;
   }
-
-  // 次选是本地 id
-  if (byLocalId != null) {
-    if (byLocalId.isDeleted) {
-      // 找到了但已删除，说明目标已不存在
-      return LinkAction.missing;
-    }
-
-    // 撞车守卫只在两边都有远端名时才成立：只有那时"对不上"才有意义。
-    // 链接没有远端名，说明它是在目标同步前创建的，此时 lid 是唯一权威标识，
-    // 命中即放行 —— spec 第 3 节的"lid 兜底仍然在本机有效"依赖这一点。
-    final sameEntity =
-        ref.remoteName == null ||
-        byLocalId.remoteName == null ||
-        byLocalId.remoteName == ref.remoteName;
-    if (sameEntity) return LinkAction.openByLocalId;
-
-    // 本地 id 撞车，它指向了另一条条目
-    return LinkAction.missing;
+  final localIsSame = byLocalId != null && _sameEntity(ref, byLocalId);
+  if (localIsSame && !byLocalId.isDeleted) {
+    return LinkAction.openByLocalId;
   }
 
-  // 两边都没查到：区分是"从未同步"还是"已不存在"
-  // 链接本身就没有远端名，说明目标当初就没同步过，换设备自然找不到。
-  if (ref.remoteName == null) return LinkAction.notSynced;
-
-  return LinkAction.missing;
+  // 第二段：没有活的，看是否见到了目标本身的"尸体"
+  final sawDeletedTarget =
+      (byRemoteName?.isDeleted ?? false) || (localIsSame && byLocalId.isDeleted);
+  return sawDeletedTarget ? LinkAction.missing : LinkAction.notSynced;
 }
