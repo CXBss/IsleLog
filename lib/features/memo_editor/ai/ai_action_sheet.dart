@@ -46,8 +46,13 @@ class _AiActionSheetState extends State<_AiActionSheet> {
   late AiProvider _provider;
 
   /// 本次可选的已启用 Provider（至少一个；测试或无启用时退化为默认）。
-  List<AiProvider> get _enabledProviders =>
-      widget.providers.where((p) => p.enabled).map((p) => p.name).toList();
+  ///
+  /// LOCAL_EMBEDDING 只用于状态展示，不是可选的对话模型，排除在外——否则会被
+  /// 误当成一个可选项显示在这里，且下方的 SegmentedButton 会把它标成"DeepSeek"。
+  List<AiProvider> get _enabledProviders => widget.providers
+      .where((p) => p.enabled && p.name != AiProvider.localEmbedding)
+      .map((p) => p.name)
+      .toList();
 
   /// 默认选择已启用的 Provider；LOCAL 启用时优先 LOCAL。
   /// 保证 DeepSeek-only 部署不会误请求 LOCAL 而得到 503。

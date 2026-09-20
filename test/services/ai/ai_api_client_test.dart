@@ -278,5 +278,264 @@ void main() {
         ),
       );
     });
+
+    test('解析 LOCAL_EMBEDDING 状态项', () async {
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              handler.resolve(
+                Response(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: [
+                    {
+                      'name': 'LOCAL_EMBEDDING',
+                      'enabled': true,
+                      'available': true,
+                      'model': 'bge-m3',
+                      'contextLength': 0,
+                      'checkedAt': '2026-09-15T10:00:00Z',
+                    },
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      final client = AiApiClient.fromDio(dio);
+      final result = await client.listProviders();
+
+      expect(result.single.name, AiProvider.localEmbedding);
+      expect(result.single.model, 'bge-m3');
+    });
+  });
+
+  group('AiApiClient.memorySearch', () {
+    test('携带 query/provider/cloudConsent/topK 并解析有依据的结果', () async {
+      late RequestOptions captured;
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              captured = options;
+              handler.resolve(
+                Response(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {
+                    'answer': '去年夏天你去过厦门。',
+                    'sources': [
+                      {
+                        'memo': 'memos/1001',
+                        'displayTime': '2025-07-12T10:00:00Z',
+                        'snippet': '去了厦门',
+                        'similarity': 0.81,
+                      },
+                    ],
+                    'insufficientEvidence': false,
+                    'indexIncomplete': false,
+                    'usage': {'promptTokens': 10, 'completionTokens': 5},
+                  },
+                ),
+              );
+            },
+          ),
+        );
+      final client = AiApiClient.fromDio(dio);
+      final result = await client.memorySearch(
+        query: '去年夏天去过哪里？',
+        provider: AiProvider.local,
+        cloudConsent: false,
+        topK: 5,
+      );
+
+      expect(captured.path, '/api/v1/ai/memory-search');
+      expect((captured.data as Map)['query'], '去年夏天去过哪里？');
+      expect((captured.data as Map)['provider'], 'LOCAL');
+      expect((captured.data as Map)['topK'], 5);
+      expect(result.insufficientEvidence, isFalse);
+      expect(result.answer, '去年夏天你去过厦门。');
+      expect(result.sources, hasLength(1));
+      expect(result.sources.single.memo, 'memos/1001');
+      expect(result.sources.single.similarity, 0.81);
+    });
+
+    test('无依据结果不携带 topK 时不发送该字段', () async {
+      late RequestOptions captured;
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              captured = options;
+              handler.resolve(
+                Response(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {
+                    'answer': '',
+                    'sources': [],
+                    'insufficientEvidence': true,
+                    'indexIncomplete': false,
+                  },
+                ),
+              );
+            },
+          ),
+        );
+      final client = AiApiClient.fromDio(dio);
+      final result = await client.memorySearch(
+        query: '不存在的话题',
+        provider: AiProvider.local,
+        cloudConsent: false,
+      );
+
+      expect((captured.data as Map).containsKey('topK'), isFalse);
+      expect(result.insufficientEvidence, isTrue);
+      expect(result.answer, isEmpty);
+      expect(result.sources, isEmpty);
+    });
+  });
+
+  group('AiApiClient.relatedMemories', () {
+    test('请求路径拼接 memoName 并解析结果', () async {
+      late RequestOptions captured;
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              captured = options;
+              handler.resolve(
+                Response(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {
+                    'relatedMemos': [
+                      {
+                        'memo': 'memos/998',
+                        'displayTime': '2025-08-02T09:00:00Z',
+                        'snippet': '……',
+                        'similarity': 0.71,
+                        'matchReason': '地点相近 · 标签重合',
+                      },
+                    ],
+                    'pending': false,
+                  },
+                ),
+              );
+            },
+          ),
+        );
+      final client = AiApiClient.fromDio(dio);
+      final result = await client.relatedMemories(
+        memoName: 'memos/1001',
+        limit: 5,
+      );
+
+      expect(captured.path, '/api/v1/memos/1001/related-memories');
+      expect(captured.queryParameters['limit'], 5);
+      expect(result.pending, isFalse);
+      expect(result.relatedMemos, hasLength(1));
+      expect(result.relatedMemos.single.matchReason, '地点相近 · 标签重合');
+    });
+
+    test('pending 为 true 时结果列表为空', () async {
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              handler.resolve(
+                Response(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {'relatedMemos': [], 'pending': true},
+                ),
+              );
+            },
+          ),
+        );
+      final client = AiApiClient.fromDio(dio);
+      final result = await client.relatedMemories(memoName: 'memos/1001');
+
+      expect(result.pending, isTrue);
+      expect(result.relatedMemos, isEmpty);
+    });
+  });
+
+  group('AiApiClient.onThisDayCompare', () {
+    test('携带 memo/provider/cloudConsent 并解析 now.available=true 的结果', () async {
+      late RequestOptions captured;
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              captured = options;
+              handler.resolve(
+                Response(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {
+                    'past': {
+                      'summary': '当时在纠结要不要换工作。',
+                      'sources': ['memos/456'],
+                    },
+                    'now': {
+                      'available': true,
+                      'summary': '最近在筹备发布会。',
+                      'sources': ['memos/9001', 'memos/9007'],
+                    },
+                    'usage': {'promptTokens': 30, 'completionTokens': 5},
+                  },
+                ),
+              );
+            },
+          ),
+        );
+      final client = AiApiClient.fromDio(dio);
+      final result = await client.onThisDayCompare(
+        memoName: 'memos/456',
+        provider: AiProvider.deepSeek,
+        cloudConsent: true,
+      );
+
+      expect(captured.path, '/api/v1/ai/on-this-day-compare');
+      expect((captured.data as Map)['memo'], 'memos/456');
+      expect((captured.data as Map)['provider'], 'DEEPSEEK');
+      expect((captured.data as Map)['cloudConsent'], isTrue);
+      expect(result.pastSummary, '当时在纠结要不要换工作。');
+      expect(result.now.available, isTrue);
+      expect(result.now.summary, '最近在筹备发布会。');
+      expect(result.now.sources, ['memos/9001', 'memos/9007']);
+    });
+
+    test('now.available=false 时不要求 summary/sources 字段', () async {
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              handler.resolve(
+                Response(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {
+                    'past': {'summary': '当时很平静。', 'sources': ['memos/456']},
+                    'now': {'available': false},
+                  },
+                ),
+              );
+            },
+          ),
+        );
+      final client = AiApiClient.fromDio(dio);
+      final result = await client.onThisDayCompare(
+        memoName: 'memos/456',
+        provider: AiProvider.local,
+        cloudConsent: false,
+      );
+
+      expect(result.now.available, isFalse);
+      expect(result.now.summary, isEmpty);
+      expect(result.now.sources, isEmpty);
+    });
   });
 }

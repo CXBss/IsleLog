@@ -62,7 +62,9 @@ class PolishResultController {
 
   /// 组合文本：只替换被接受片段对应的连续来源段落，其余保持原文。
   ///
-  /// 全部拒绝时逐字返回原文；返回前执行全局保护校验，失败抛 [StateError]。
+  /// 全部拒绝时逐字返回原文。是否改变了标签/日期等受保护内容由服务端在
+  /// [AiPolishSegment.protectedElementsChanged] 里逐段标出，交给用户在预览里
+  /// 自己判断要不要接受，这里不再做整体拦截。
   String buildText() {
     final buffer = StringBuffer();
     var p = 0;
@@ -79,11 +81,6 @@ class PolishResultController {
         p++;
       }
     }
-    final result = buffer.toString();
-    final protection = MarkdownProtection.validate(original, result);
-    if (!protection.isValid) {
-      throw StateError('保护校验失败：${protection.message}');
-    }
-    return result;
+    return buffer.toString();
   }
 }

@@ -1058,7 +1058,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       if (mounted) {
         setState(() {
           _aiStatuses = statuses;
-          _aiAvailable = statuses.any((s) => s.enabled);
+          _aiAvailable = statuses.any(
+            (s) => s.enabled && s.name != AiProvider.localEmbedding,
+          );
         });
       }
     } catch (e) {
@@ -1080,7 +1082,9 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       if (!mounted) return;
     }
     if (widget.aiCapabilityOverride != true &&
-        !_aiStatuses.any((s) => s.enabled)) {
+        !_aiStatuses.any(
+            (s) => s.enabled && s.name != AiProvider.localEmbedding,
+          )) {
       _showAiSnack('AI 模型服务暂时不可用，请稍后再试');
       return;
     }

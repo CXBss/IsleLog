@@ -86,7 +86,7 @@ void main() {
       expect(controller.buildText(), '一段\n\n二三合并。');
     });
 
-    test('修订改变受保护内容时抛 StateError', () {
+    test('修订改变受保护内容时仍按用户选择正常组合，不再拦截', () {
       const original = '记录 #工作';
       final controller = PolishResultController(original, const [
         AiPolishSegment(
@@ -94,10 +94,11 @@ void main() {
           originalText: '记录 #工作',
           revisedText: '记录 #生活',
           reason: 'x',
+          protectedElementsChanged: true,
         ),
       ]);
       controller.setAccepted(0, true);
-      expect(controller.buildText, throwsStateError);
+      expect(controller.buildText(), '记录 #生活');
     });
 
     test('构造时校验来源索引不完整', () {

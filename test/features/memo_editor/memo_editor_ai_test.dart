@@ -87,6 +87,36 @@ class FakeAiGateway implements AiGateway {
     if (gate != null) await gate.future;
     return polishSegments;
   }
+
+  @override
+  Future<MemorySearchResult> memorySearch({
+    required String query,
+    required AiProvider provider,
+    required bool cloudConsent,
+    int? topK,
+    CancelToken? cancelToken,
+  }) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<RelatedMemoriesResult> relatedMemories({
+    required String memoName,
+    int? limit,
+    CancelToken? cancelToken,
+  }) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<OnThisDayCompareResult> onThisDayCompare({
+    required String memoName,
+    required AiProvider provider,
+    required bool cloudConsent,
+    CancelToken? cancelToken,
+  }) async {
+    throw UnimplementedError();
+  }
 }
 
 void main() {

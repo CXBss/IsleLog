@@ -854,6 +854,140 @@ Thread 响应结构相应新增 `summaryLocked`。
 
 ---
 
+## 记忆检索
+
+> **仅适用于 IsleLog 自建服务**，不属于标准 Memos v0.25 API；标准 Memos 服务端返回 404。
+>
+> embedding（把日记原文变成向量）永远走本地，不接受 `provider`/`cloudConsent`，由服务端
+> 自动为每条日记建索引，客户端无需关心。只有"问答/生成"这一步（记忆检索问答、往年今日
+> AI 对照）才是用户显式发起的请求，适用与标签建议/润色相同的 `provider` + `cloudConsent`
+> 规则。"相关记忆"完全不调用生成模型，纯向量相似度计算。
+>
+> **无依据 ≠ 报错**：候选检索不到、或模型认为候选不足以回答时，接口返回 200 和
+> `insufficientEvidence: true` / `now.available: false`，不是失败。服务端只信任真正
+> 传给模型的候选日记 id，模型编造或引用候选之外 id 的内容一律在服务端被剔除。
+
+### 自然语言问答
+
+`POST /api/v1/ai/memory-search` **[IsleLog 扩展]**
+
+**请求体**
+```json
+{
+  "query": "去年夏天我去过哪些地方？",
+  "provider": "LOCAL",
+  "cloudConsent": false,
+  "topK": 8
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `query` | 问题，必填非空 |
+| `provider` | `LOCAL` / `DEEPSEEK`，只影响"生成答案"这一步；检索候选的 embedding 永远本地 |
+| `cloudConsent` | `provider=DEEPSEEK` 时必须为 `true`，否则返回 403 |
+| `topK` | 可选，召回候选条数，默认 8，最大 20 |
+
+**响应（有依据）**
+```json
+{
+  "answer": "去年夏天你提到去过厦门（7月）和黄山（8月）。",
+  "sources": [
+    {"memo": "memos/1001", "displayTime": "2025-07-12T10:00:00Z", "snippet": "…", "similarity": 0.81}
+  ],
+  "insufficientEvidence": false,
+  "indexIncomplete": false,
+  "usage": { "promptTokens": 480, "completionTokens": 60 }
+}
+```
+
+**响应（无依据）**
+```json
+{ "answer": "", "sources": [], "insufficientEvidence": true, "indexIncomplete": false }
+```
+
+> `indexIncomplete: true` 表示还有日记尚未建完索引，结果可能不全，但不影响本次已返回的结果。
+> `sources` 只包含模型真实引用、且确实出现在候选集合里的日记，模型编造的引用不会出现。
+
+### 相关记忆
+
+`GET /api/v1/memos/:memo/related-memories?limit=5` **[IsleLog 扩展]**
+
+- 纯向量相似度 + 标签/地点/时间加权，**不调用任何生成模型**，可在打开详情页时直接调用。
+- `limit` 范围 2～5，默认 3。
+- 目标日记自己还没建好索引时返回空列表 + `pending: true`，客户端应展示"正在分析"而不是
+  长期显示空白，也不要因此判定为"没有相关记忆"。
+
+**响应**
+```json
+{
+  "relatedMemos": [
+    {
+      "memo": "memos/998",
+      "displayTime": "2025-08-02T09:00:00Z",
+      "snippet": "……",
+      "similarity": 0.71,
+      "matchReason": "地点相近 · 标签重合"
+    }
+  ],
+  "pending": false
+}
+```
+
+### 往年今日 AI 对照
+
+`POST /api/v1/ai/on-this-day-compare` **[IsleLog 扩展]**
+
+**请求体**
+```json
+{ "memo": "memos/456", "provider": "LOCAL", "cloudConsent": false }
+```
+
+- 服务端自动拉取最近 7 天的日记作为"现在"素材，客户端不需要自己组装、发送近期日记。
+- 最近 7 天没有任何日记，或近期素材不足以总结出有意义的近况时，`now.available` 为
+  `false`，客户端应展示"最近没有记录，暂时无法对照"，而不是显示一段空内容。
+
+**响应**
+```json
+{
+  "past": { "summary": "当时在纠结要不要换工作。", "sources": ["memos/456"] },
+  "now": {
+    "available": true,
+    "summary": "最近在筹备发布会，工作推进比较稳定。",
+    "sources": ["memos/9001", "memos/9007"]
+  },
+  "usage": { "promptTokens": 300, "completionTokens": 50 }
+}
+```
+
+`now.available: false` 时响应中不含 `now.summary` / `now.sources`。
+
+### 记忆检索错误码
+
+复用 AI 错误码表（400/403/429/502/503）；额外说明：
+
+| 状态码 | 场景 |
+|--------|------|
+| 404 | `memo` 参数指向的日记不存在，或不属于当前用户 |
+| 503 | embedding 服务未配置（`AI_LOCAL_EMBEDDING_BASE_URL` 未设置），记忆检索整体不可用 |
+
+### Provider 状态扩展
+
+`GET /api/v1/ai/providers` 响应数组新增一项，供客户端判断"记忆检索"入口是否可用：
+
+```json
+{
+  "name": "LOCAL_EMBEDDING",
+  "enabled": true,
+  "available": true,
+  "model": "bge-m3",
+  "contextLength": 0,
+  "checkedAt": "2026-09-15T10:00:00Z"
+}
+```
+
+---
+
 ## 健康检查
 
 `GET /healthz` **[IsleLog 扩展]**

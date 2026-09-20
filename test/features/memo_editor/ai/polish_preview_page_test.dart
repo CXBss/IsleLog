@@ -95,7 +95,7 @@ void main() {
     expect(result, '第一段。\n\n第二段。');
   });
 
-  testWidgets('保护失败时禁用应用并显示原因', (tester) async {
+  testWidgets('受保护内容变化时显示警示但仍可应用，由用户自己判断', (tester) async {
     result = null;
     await tester.pumpWidget(
       MaterialApp(
@@ -113,6 +113,7 @@ void main() {
                         originalText: '记录 #工作',
                         revisedText: '记录 #生活',
                         reason: 'x',
+                        protectedElementsChanged: true,
                       ),
                     ],
                   ),
@@ -127,25 +128,14 @@ void main() {
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
 
+    // 警示文案在未勾选接受时也应展示，方便用户提前判断
+    expect(find.textContaining('请仔细核对'), findsOneWidget);
+
     await tester.tap(find.text('全部接受'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('应用所选'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('受保护'), findsOneWidget);
-    final button = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '应用所选'),
-    );
-    expect(button.onPressed, isNull);
-    expect(result, isNull);
-
-    // 取消勾选坏片段后错误清除、按钮恢复
-    await tester.tap(find.byType(Checkbox).first);
-    await tester.pumpAndSettle();
-    expect(find.textContaining('受保护'), findsNothing);
-    final recovered = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '应用所选'),
-    );
-    expect(recovered.onPressed, isNotNull);
+    expect(result, '记录 #生活');
   });
 }

@@ -26,6 +26,7 @@ import '../../features/memo_editor/memo_editor_page.dart';
 import '../../features/revision_history/revision_history_page.dart';
 import '../threads/thread_detail_page.dart';
 import '../threads/thread_picker_sheet.dart';
+import 'widgets/related_memories_section.dart';
 import 'widgets/thread_nav_bar.dart';
 import '../../shared/constants/app_constants.dart';
 import '../../shared/widgets/image_grid.dart';
@@ -671,6 +672,10 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
                   // ── 底部元信息（修改时间 + 字数）─────────────────────
                   const SizedBox(height: 16),
                   _MetaInfoRow(memo: memo),
+
+                  // ── 相关记忆（未同步的本地日记没有服务端资源名，跳过）──
+                  if (memo.memosName != null)
+                    RelatedMemoriesSection(memoName: memo.memosName!),
 
                   // ── 评论区 ────────────────────────────────────────────
                   const SizedBox(height: 20),

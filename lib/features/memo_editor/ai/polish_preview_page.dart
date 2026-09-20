@@ -25,7 +25,6 @@ class PolishPreviewPage extends StatefulWidget {
 
 class _PolishPreviewPageState extends State<PolishPreviewPage> {
   late final PolishResultController _controller;
-  String? _protectionError;
 
   @override
   void initState() {
@@ -34,18 +33,11 @@ class _PolishPreviewPageState extends State<PolishPreviewPage> {
   }
 
   void _apply() {
-    try {
-      final result = _controller.buildText();
-      Navigator.pop(context, result);
-    } on StateError catch (e) {
-      setState(() => _protectionError = e.message);
-    }
+    Navigator.pop(context, _controller.buildText());
   }
 
-  /// 每次勾选变化后重新校验保护，失败原因可随取消勾选恢复。
   void _setAccepted(int index, bool accepted) {
     setState(() => _controller.setAccepted(index, accepted));
-    _validateProtection();
   }
 
   void _setAll(bool accepted) {
@@ -54,18 +46,6 @@ class _PolishPreviewPageState extends State<PolishPreviewPage> {
         _controller.setAccepted(i, accepted);
       }
     });
-    _validateProtection();
-  }
-
-  void _validateProtection() {
-    try {
-      _controller.buildText();
-      if (_protectionError != null) {
-        setState(() => _protectionError = null);
-      }
-    } on StateError catch (e) {
-      setState(() => _protectionError = e.message);
-    }
   }
 
   @override
@@ -96,16 +76,6 @@ class _PolishPreviewPageState extends State<PolishPreviewPage> {
               },
             ),
           ),
-          if (_protectionError != null)
-            Container(
-              width: double.infinity,
-              color: Colors.red.withValues(alpha: 0.08),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(
-                '无法应用：$_protectionError',
-                style: const TextStyle(fontSize: 12, color: Colors.red),
-              ),
-            ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -123,7 +93,7 @@ class _PolishPreviewPageState extends State<PolishPreviewPage> {
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
-                    onPressed: _protectionError == null ? _apply : null,
+                    onPressed: _apply,
                     child: const Text('应用所选'),
                   ),
                 ],
@@ -149,10 +119,17 @@ class _SegmentCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final flagged = segment.protectedElementsChanged;
     return Material(
       color: Theme.of(context).colorScheme.surface,
       borderRadius: BorderRadius.circular(10),
-      child: Padding(
+      child: Container(
+        decoration: flagged
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange, width: 1),
+              )
+            : null,
         padding: const EdgeInsets.fromLTRB(8, 8, 12, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -175,6 +152,26 @@ class _SegmentCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (flagged)
+              Padding(
+                padding: const EdgeInsets.only(left: 12, bottom: 6),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.warning_amber_rounded,
+                      size: 14,
+                      color: Colors.orange,
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '标签、日期、数值等内容可能有变化，请仔细核对再决定是否接受',
+                        style: TextStyle(fontSize: 11, color: Colors.orange[800]),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.only(left: 12),
               child: _DiffText(

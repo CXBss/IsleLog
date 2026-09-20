@@ -4,6 +4,7 @@ import '../../data/database/database_service.dart';
 import '../../data/models/memo_entry.dart';
 import '../../shared/constants/app_constants.dart';
 import '../home/widgets/memo_timeline_card.dart';
+import 'widgets/on_this_day_ai_compare.dart';
 
 /// 往年今日页面
 ///
@@ -237,9 +238,17 @@ class _YearSection extends StatelessWidget {
             ],
           ),
         ),
-        ...memos.map((memo) => MemoTimelineCard(
-              memo: memo,
-              showTime: true,
+        ...memos.map((memo) => Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                MemoTimelineCard(
+                  memo: memo,
+                  showTime: true,
+                ),
+                // 未同步的本地日记没有服务端资源名，无法调用对照接口
+                if (memo.memosName != null)
+                  OnThisDayAiCompare(memoName: memo.memosName!),
+              ],
             )),
         const SizedBox(height: 4),
       ],

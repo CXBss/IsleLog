@@ -25,6 +25,33 @@ abstract interface class AiGateway {
     required bool cloudConsent,
     CancelToken? cancelToken,
   });
+
+  /// 自然语言记忆检索问答。
+  ///
+  /// 检索不到依据、或模型认为候选不足以回答时，返回
+  /// `insufficientEvidence: true` 的正常结果，不是异常。
+  Future<MemorySearchResult> memorySearch({
+    required String query,
+    required AiProvider provider,
+    required bool cloudConsent,
+    int? topK,
+    CancelToken? cancelToken,
+  });
+
+  /// 获取指定日记的"相关记忆"。纯向量相似度计算，不涉及 provider/cloudConsent。
+  Future<RelatedMemoriesResult> relatedMemories({
+    required String memoName,
+    int? limit,
+    CancelToken? cancelToken,
+  });
+
+  /// "往年今日"AI 对照。
+  Future<OnThisDayCompareResult> onThisDayCompare({
+    required String memoName,
+    required AiProvider provider,
+    required bool cloudConsent,
+    CancelToken? cancelToken,
+  });
 }
 
 /// IsleLog 自建服务 AI 网关客户端。
@@ -148,6 +175,105 @@ class AiApiClient implements AiGateway {
           .toList();
       debugPrint(
         '[AI] polish 完成 ${result.length} 段，耗时 ${sw.elapsedMilliseconds}ms',
+      );
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  @override
+  Future<MemorySearchResult> memorySearch({
+    required String query,
+    required AiProvider provider,
+    required bool cloudConsent,
+    int? topK,
+    CancelToken? cancelToken,
+  }) async {
+    final sw = Stopwatch()..start();
+    debugPrint('[AI] memorySearch provider=${provider.serverValue}');
+    try {
+      final res = await _dio.post(
+        '/api/v1/ai/memory-search',
+        data: {
+          'query': query,
+          'provider': provider.serverValue,
+          'cloudConsent': cloudConsent,
+          if (topK != null) 'topK': topK,
+        },
+        cancelToken: cancelToken,
+      );
+      final data = res.data;
+      if (data is! Map<String, dynamic>) {
+        throw const AiApiException('AI 返回的数据格式无效');
+      }
+      final result = MemorySearchResult.fromJson(data);
+      debugPrint(
+        '[AI] memorySearch 完成，insufficientEvidence=${result.insufficientEvidence} '
+        '来源数=${result.sources.length}，耗时 ${sw.elapsedMilliseconds}ms',
+      );
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  @override
+  Future<RelatedMemoriesResult> relatedMemories({
+    required String memoName,
+    int? limit,
+    CancelToken? cancelToken,
+  }) async {
+    final sw = Stopwatch()..start();
+    debugPrint('[AI] relatedMemories $memoName');
+    try {
+      final res = await _dio.get(
+        '/api/v1/$memoName/related-memories',
+        queryParameters: {if (limit != null) 'limit': limit},
+        cancelToken: cancelToken,
+      );
+      final data = res.data;
+      if (data is! Map<String, dynamic>) {
+        throw const AiApiException('AI 返回的数据格式无效');
+      }
+      final result = RelatedMemoriesResult.fromJson(data);
+      debugPrint(
+        '[AI] relatedMemories 完成 ${result.relatedMemos.length} 条，'
+        '耗时 ${sw.elapsedMilliseconds}ms',
+      );
+      return result;
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
+  @override
+  Future<OnThisDayCompareResult> onThisDayCompare({
+    required String memoName,
+    required AiProvider provider,
+    required bool cloudConsent,
+    CancelToken? cancelToken,
+  }) async {
+    final sw = Stopwatch()..start();
+    debugPrint('[AI] onThisDayCompare $memoName provider=${provider.serverValue}');
+    try {
+      final res = await _dio.post(
+        '/api/v1/ai/on-this-day-compare',
+        data: {
+          'memo': memoName,
+          'provider': provider.serverValue,
+          'cloudConsent': cloudConsent,
+        },
+        cancelToken: cancelToken,
+      );
+      final data = res.data;
+      if (data is! Map<String, dynamic>) {
+        throw const AiApiException('AI 返回的数据格式无效');
+      }
+      final result = OnThisDayCompareResult.fromJson(data);
+      debugPrint(
+        '[AI] onThisDayCompare 完成，nowAvailable=${result.now.available}，'
+        '耗时 ${sw.elapsedMilliseconds}ms',
       );
       return result;
     } on DioException catch (e) {

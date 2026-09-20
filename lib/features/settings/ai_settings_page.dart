@@ -202,6 +202,7 @@ class _ProviderCard extends StatelessWidget {
   String get _title => switch (status.name) {
     AiProvider.local => '私有 Qwen',
     AiProvider.deepSeek => 'DeepSeek',
+    AiProvider.localEmbedding => '语义检索模型',
   };
 
   String get _stateLabel {
