@@ -20,7 +20,11 @@ class VaultController with WidgetsBindingObserver {
   VaultController._(this._storage);
 
   @visibleForTesting
-  VaultController.forTesting(VaultStorage storage) : _storage = storage;
+  VaultController.forTesting(VaultStorage storage) : _storage = storage {
+    // 同时登记为单例：被测代码（如 VaultMigration）走的是 [instance]，
+    // 不这样做就没法把测试用的 storage 注入进去。
+    _instance = this;
+  }
 
   static VaultController? _instance;
 

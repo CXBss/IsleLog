@@ -16,6 +16,18 @@ import 'vault_controller.dart';
 
 enum VaultMigrationResult { ok, blockedPendingSync, blockedConflict, failed }
 
+/// 远端硬删的结论，见 [VaultMigration._hardDeleteRemote]。
+enum _RemoteDeleteOutcome {
+  /// 远端确认已无这条日记（删除成功，或本来就不存在）。
+  gone,
+
+  /// 远端确认删除没生效（拿到了 HTTP 错误响应），明文一定还在。
+  notDeleted,
+
+  /// 无法确认（网络中断且复核也失败）。此时保留 vault 副本，不冒丢日记的风险。
+  unknown,
+}
+
 /// 普通日记 ⇄ 隐私空间之间的移入/移出。
 class VaultMigration {
   VaultMigration._();
@@ -72,9 +84,7 @@ class VaultMigration {
         }
         if (local.localPath == null || !File(local.localPath!).existsSync()) {
           debugPrint('[VaultMigration] 附件字节取不到，中止移入：${local.filename}');
-          for (final id in attachmentIds) {
-            await VaultController.instance.storage.removeAttachment(id);
-          }
+          await _rollbackVaultWrite(attachmentIds: attachmentIds);
           return VaultMigrationResult.failed;
         }
         final bytes = await File(local.localPath!).readAsBytes();
@@ -106,15 +116,27 @@ class VaultMigration {
       // ── 2. 远端硬删除 ──
       // 顺序：先删 memo（hard=true 已级联附件），404 视为已删；再对旧附件
       // 资源做 best-effort 清理。反过来时 memo 删除失败会留下半残记录。
+      //
+      // 这一步还要决定"删失败之后怎么办"：vault 副本在上面已经写好了。
+      // 只有在**确认远端明文还在**时才允许撤销它，见 [_hardDeleteRemote]。
       if (api != null && memo.memosName != null) {
-        try {
-          await api.deleteMemo(memo.memosName!, hard: true);
-        } catch (e) {
-          if (!_isNotFound(e)) {
-            debugPrint('[VaultMigration] 远端 memo 删除失败：$e');
-            return VaultMigrationResult.failed;
+        final outcome = await _hardDeleteRemote(api, memo.memosName!);
+        if (outcome != _RemoteDeleteOutcome.gone) {
+          if (outcome == _RemoteDeleteOutcome.notDeleted) {
+            // 远端明文确认还在 ⇒ 撤掉刚写进 vault 的那一份。否则这次"移入"
+            // 只是把明文在本地藏起来，云端那份照旧存在，违背移入的本意。
+            await _rollbackVaultWrite(
+              entryId: entry.id,
+              attachmentIds: attachmentIds,
+            );
+          } else {
+            // 结果未知：保留 vault 副本。宁可多留一份密文，也不能在
+            // "远端其实已经删成功"的情况下把唯一副本丢掉（详见方法注释）。
+            debugPrint(
+              '[VaultMigration] 远端删除结果未知，保留 vault 副本 ${entry.id} 并报失败',
+            );
           }
-          debugPrint('[VaultMigration] 远端 memo 已不存在（404），按已删除继续');
+          return VaultMigrationResult.failed;
         }
         for (final att in memo.attachments) {
           if (att.remoteResName == null) continue;
@@ -151,6 +173,92 @@ class VaultMigration {
 
   static bool _isNotFound(Object e) =>
       e is MemosApiException && e.statusCode == 404;
+
+  /// 硬删远端 memo 的三种结论。
+  ///
+  /// 为什么不是 try/catch 一把梭：客户端移入隐私空间是"**先写 vault、再删远端**"。
+  /// 若远端其实已经删成功、而客户端因超时误判成失败并撤销 vault 副本，那么本地
+  /// 这条日记会在下一次同步时被 changelog 的 DELETE 记录连带物理删除——vault 和
+  /// 本地同时没有，等于永久丢日记。因此**只有确认远端还在时才允许撤销**。
+  static Future<_RemoteDeleteOutcome> _hardDeleteRemote(
+    MemosApiService api,
+    String memosName,
+  ) async {
+    try {
+      await api.deleteMemo(memosName, hard: true);
+      return _RemoteDeleteOutcome.gone;
+    } on MemosApiException catch (e) {
+      if (_isNotFound(e)) {
+        // 远端本来就没有（例如用户重复点了一次）：目标状态已达成。
+        debugPrint('[VaultMigration] 远端 memo 已不存在（404），按已删除继续');
+        return _RemoteDeleteOutcome.gone;
+      }
+      if (e.statusCode != null) {
+        // 拿到了 HTTP 响应 ⇒ 请求确实到达服务端且被拒绝（403 / 500 等）。
+        // 服务端 HardDelete 是单事务，失败即未提交，远端明文一定还在。
+        debugPrint('[VaultMigration] 远端 memo 删除被拒绝（${e.statusCode}）：$e');
+        return _RemoteDeleteOutcome.notDeleted;
+      }
+      // 没有 HTTP 响应（超时 / 断连）：删除可能已经生效，必须复核。
+      return _verifyRemoteGone(api, memosName);
+    }
+  }
+
+  /// 网络层失败后的复核：查一次远端，判断 memo 那行是否还在。
+  ///
+  /// 注意服务端 `GetMemo`（handler/memo.go:197）在 memos 表查不到该 id 时会回退去
+  /// comments 表里找同 id 的记录并返回 200——那是**评论**，不是这条日记。反过来
+  /// 说，只要返回的不是这条 memo 本身，就证明 memos 表里已经没有它了，删除其实
+  /// 成功了。这正是我们要的判断依据（两边都存 id，跨表撞号是常见情况）。
+  static Future<_RemoteDeleteOutcome> _verifyRemoteGone(
+    MemosApiService api,
+    String memosName,
+  ) async {
+    final id = memosName.split('/').last;
+    try {
+      final data = await api.getMemo(id);
+      if (data['name'] == memosName) {
+        debugPrint('[VaultMigration] 复核：远端 memo 仍在，按删除失败处理');
+        return _RemoteDeleteOutcome.notDeleted;
+      }
+      debugPrint(
+        '[VaultMigration] 复核：远端 memo 行已不存在（返回 ${data['name']}），'
+        '按已删除继续',
+      );
+      return _RemoteDeleteOutcome.gone;
+    } on MemosApiException catch (e) {
+      if (_isNotFound(e)) {
+        debugPrint('[VaultMigration] 复核：远端 memo 已不存在（404）');
+        return _RemoteDeleteOutcome.gone;
+      }
+      debugPrint('[VaultMigration] 复核失败，无法确认远端是否已删：$e');
+      return _RemoteDeleteOutcome.unknown;
+    }
+  }
+
+  /// 撤掉刚写进 vault 的条目与附件，让状态回到"什么都没发生"。
+  ///
+  /// 尽力而为：回滚本身失败只留日志，不改变返回值——真正的失败原因仍然是远端
+  /// 没删掉，返回值不该被回滚的失败改写。
+  static Future<void> _rollbackVaultWrite({
+    String? entryId,
+    List<String> attachmentIds = const [],
+  }) async {
+    if (entryId != null) {
+      try {
+        await VaultController.instance.deleteEntry(entryId);
+      } catch (e) {
+        debugPrint('[VaultMigration] 回滚 vault 条目失败（$entryId）：$e');
+      }
+    }
+    for (final id in attachmentIds) {
+      try {
+        await VaultController.instance.storage.removeAttachment(id);
+      } catch (e) {
+        debugPrint('[VaultMigration] 回滚 vault 附件失败（$id）：$e');
+      }
+    }
+  }
 
   /// vault → 普通日记。附件字节完整还原，不静默销毁。
   static Future<VaultMigrationResult> moveOutOfVault(VaultEntry entry) async {
