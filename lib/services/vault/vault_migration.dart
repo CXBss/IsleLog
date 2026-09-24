@@ -24,7 +24,8 @@ enum _RemoteDeleteOutcome {
   /// 远端确认删除没生效（拿到了 HTTP 错误响应），明文一定还在。
   notDeleted,
 
-  /// 无法确认（网络中断且复核也失败）。此时保留 vault 副本，不冒丢日记的风险。
+  /// 无法确认（超时 / 断连，没拿到任何响应）。此时保留 vault 副本：宁可多留
+  /// 一份密文，也不冒"远端其实已删、副本又被撤掉"而永久丢日记的风险。
   unknown,
 }
 
@@ -180,6 +181,11 @@ class VaultMigration {
   /// 若远端其实已经删成功、而客户端因超时误判成失败并撤销 vault 副本，那么本地
   /// 这条日记会在下一次同步时被 changelog 的 DELETE 记录连带物理删除——vault 和
   /// 本地同时没有，等于永久丢日记。因此**只有确认远端还在时才允许撤销**。
+  ///
+  /// 判据是"有没有拿到 HTTP 响应"，不是错误类型：
+  /// - 拿到了响应 ⇒ 请求确实到达服务端并被拒绝。服务端 `HardDelete`
+  ///   （service/memo.go:464）是单事务，失败即未提交，远端明文一定还在。
+  /// - 没有响应（超时 / 断连）⇒ 无法确认，宁可多留一份密文也不冒丢日记的风险。
   static Future<_RemoteDeleteOutcome> _hardDeleteRemote(
     MemosApiService api,
     String memosName,
@@ -194,47 +200,28 @@ class VaultMigration {
         return _RemoteDeleteOutcome.gone;
       }
       if (e.statusCode != null) {
-        // 拿到了 HTTP 响应 ⇒ 请求确实到达服务端且被拒绝（403 / 500 等）。
-        // 服务端 HardDelete 是单事务，失败即未提交，远端明文一定还在。
         debugPrint('[VaultMigration] 远端 memo 删除被拒绝（${e.statusCode}）：$e');
         return _RemoteDeleteOutcome.notDeleted;
       }
-      // 没有 HTTP 响应（超时 / 断连）：删除可能已经生效，必须复核。
-      return _verifyRemoteGone(api, memosName);
-    }
-  }
-
-  /// 网络层失败后的复核：查一次远端，判断 memo 那行是否还在。
-  ///
-  /// 注意服务端 `GetMemo`（handler/memo.go:197）在 memos 表查不到该 id 时会回退去
-  /// comments 表里找同 id 的记录并返回 200——那是**评论**，不是这条日记。反过来
-  /// 说，只要返回的不是这条 memo 本身，就证明 memos 表里已经没有它了，删除其实
-  /// 成功了。这正是我们要的判断依据（两边都存 id，跨表撞号是常见情况）。
-  static Future<_RemoteDeleteOutcome> _verifyRemoteGone(
-    MemosApiService api,
-    String memosName,
-  ) async {
-    final id = memosName.split('/').last;
-    try {
-      final data = await api.getMemo(id);
-      if (data['name'] == memosName) {
-        debugPrint('[VaultMigration] 复核：远端 memo 仍在，按删除失败处理');
-        return _RemoteDeleteOutcome.notDeleted;
-      }
-      debugPrint(
-        '[VaultMigration] 复核：远端 memo 行已不存在（返回 ${data['name']}），'
-        '按已删除继续',
-      );
-      return _RemoteDeleteOutcome.gone;
-    } on MemosApiException catch (e) {
-      if (_isNotFound(e)) {
-        debugPrint('[VaultMigration] 复核：远端 memo 已不存在（404）');
-        return _RemoteDeleteOutcome.gone;
-      }
-      debugPrint('[VaultMigration] 复核失败，无法确认远端是否已删：$e');
+      debugPrint('[VaultMigration] 远端 memo 删除无响应（超时/断连）：$e');
       return _RemoteDeleteOutcome.unknown;
     }
   }
+
+  // 曾经想在这里补一次 GET /memos/:id 复核"memo 那行是否还在"，结论是**不可行**，
+  // 所以没做。原因记在这里，避免以后有人再走一遍这条路：
+  //
+  //  1. 服务端 `GetMemo`（handler/memo.go:197）在 memos 表查不到该 id 时会回退去
+  //     comments 表里找**同 id** 的评论，并返回 200 + 那条评论；
+  //  2. 而 `Comment.ResourceName()`（model/comment.go:23）和
+  //     `Memo.ResourceName()`（model/memo.go:35）返回的**完全同格式**：
+  //     都是 "memos/" + 十进制 id；
+  //  3. 两个 ToJSON 的基础字段集也几乎一致，`relations[].type == "COMMENT"`
+  //     同样区分不了——memo 自带评论时 `GetRelationsJSON` 也发这个类型。
+  //
+  // 也就是说"返回的是不是这条 memo"从响应上判不出来；一旦误判成"memo 还在"，
+  // 就会去撤销副本，而远端其实已经删了 —— 正好导致丢日记。跨表 id 撞号在这里
+  // 不是理论风险：两张表各自 `INTEGER PRIMARY KEY`，只用删掉最大 id 再新建就会撞。
 
   /// 撤掉刚写进 vault 的条目与附件，让状态回到"什么都没发生"。
   ///
