@@ -677,7 +677,9 @@ Thread 响应结构相应新增 `summaryLocked`。
 }
 ```
 
-> 若无任何变更记录，返回 `{ "changelog": null }`，客户端游标存 `-1`。
+> 若无任何变更记录，返回 `{ "changelog": null }`，客户端游标存 `0`（`-1` 表示「从未全量同步过」，会触发全量）。
+>
+> 客户端应在全量拉取**开始前**调用本接口，拉取结束后再保存游标，避免漏掉拉取期间产生的变更。
 
 ---
 
@@ -713,7 +715,15 @@ Thread 响应结构相应新增 `summaryLocked`。
 }
 ```
 
-> `action` 取值：`CREATE` / `UPDATE` / `DELETE`。`entity` 取值：`memo` / `article` / `comment` / `attachment` / `thread`。
+> `action` 取值：`CREATE` / `UPDATE` / `DELETE`。`entity` 取值：`memo` / `article` / `folder` / `comment` / `attachment` / `thread`。
+
+> `entity=article` 时，`entityId` 格式为 `articles/{id}`，用 `GET /api/v1/articles/{id}` 拉取；注意文章响应里的 `name` 是 `memos/{id}`，客户端比对本地文章时要换算。
+>
+> `entity=folder` 时，`entityId` 格式为 `folders/{id}`，用 `GET /api/v1/folders/{id}` 拉取。
+>
+> 附件关联变化（`PATCH /memos/{id}/attachments` 列表有增删、`PATCH /attachments/{id}` 改名或换绑、`DELETE /attachments/{id}`）除 `attachment` 记录外，还会给归属的日记/文章各追加一条 `memo`/`article` 的 `UPDATE`，客户端只需关注这两类实体。
+>
+> 删除文件夹时，数据库会把子文件夹和子文章挪到根目录；服务端会为它们各追加一条 `folder`/`article` 的 `UPDATE`。
 
 > `entity=thread` 时，`entityId` 格式为 `threads/{id}`，用 `GET /api/v1/threads/{id}` 拉取，其响应包含全部成员。
 >

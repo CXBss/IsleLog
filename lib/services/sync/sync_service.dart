@@ -20,6 +20,7 @@ import '../link/link_backfill.dart';
 import '../link/memo_link.dart';
 import '../settings/settings_service.dart';
 import '../vault/vault_sync.dart';
+import 'changelog_batch.dart';
 import 'pending_article_conflict_policy.dart';
 import 'pending_memo_conflict_policy.dart';
 import 'sync_task_queue.dart';
@@ -124,8 +125,8 @@ class SyncService {
 
     final api = MemosApiService(baseUrl: url, token: token);
     try {
-      // 先 pull：检测冲突，将远端更新拉到本地
-      final (pulled, deleted, memosWithComments) = await _pullUpdates(
+      // 先 pull：检测冲突，将远端更新拉到本地（日记、文件夹、文章、事件串）
+      final (pulled, deleted, memosWithComments) = await _pullAll(
         api,
         url,
         full: full,
@@ -133,20 +134,13 @@ class SyncService {
       if (memosWithComments.isNotEmpty) {
         await _pullCommentsBatch(api, memosWithComments);
       }
-      // 拉取文件夹和文章（先文件夹，再文章）
-      await _pullFolders(api);
-      await _pullArticles(api, url);
-      // 事件串依赖已拉取的日记，确保成员可映射为本地 id。
-      await _pullThreads(api);
       // 建议在事件串之后拉取，保证 threadLocalId 能映射到本地
       await _pullSuggestions(api);
       // 再 push：冲突条目已被标记为 conflict（不是 pending），不会被推送
       final pushed = await _pushPending(api, url, token);
       await SettingsService.setLastSyncTime(DateTime.now());
 
-      // 全量同步完成后，获取最新 changelogId 作为下次增量同步游标
       if (full) {
-        await _saveLatestChangelogId(api);
         // 全量同步完成后重建待办索引（Pull 的数据通过 skipTimestamp 写入，绕过了 saveMemo 的自动更新）
         await DatabaseService.rebuildTodoStatus();
       }
@@ -167,15 +161,18 @@ class SyncService {
     }
   }
 
-  /// 全量同步后调用，将服务端最新 changelogId 保存为增量游标
-  static Future<void> _saveLatestChangelogId(MemosApiService api) async {
+  /// 全量拉取**开始前**取服务端最新 changelogId，拉完后作为增量游标保存。
+  ///
+  /// 必须在拉取前取：拉取过程中别的设备产生的变更 id 更大，下次增量还能看到；
+  /// 拉完再取会把这段时间的变更跳过去。服务端尚无任何记录时返回 0（而非 -1），
+  /// 否则每次同步都会因「无游标」退回全量。请求失败返回 null，不更新游标。
+  static Future<int?> _fetchChangelogCursor(MemosApiService api) async {
     try {
       final latest = await api.getLatestChangelog();
-      final id = latest != null ? (latest['id'] as int?) ?? -1 : -1;
-      await SettingsService.setLastChangelogId(id);
-      debugPrint('[Sync] 已保存 changelogId 游标: $id');
+      return latest != null ? (latest['id'] as int?) ?? 0 : 0;
     } catch (e) {
-      debugPrint('[Sync] 获取最新 changelogId 失败（忽略）: $e');
+      debugPrint('[Sync] 获取最新 changelogId 失败（本轮不更新游标）: $e');
+      return null;
     }
   }
 
@@ -326,11 +323,7 @@ class SyncService {
 
     final api = MemosApiService(baseUrl: url, token: token);
     try {
-      final (_, __, memosWithComments) = await _pullUpdates(
-        api,
-        url,
-        full: false,
-      );
+      final (_, __, memosWithComments) = await _pullAll(api, url, full: false);
       if (memosWithComments.isNotEmpty) {
         await _pullCommentsBatch(api, memosWithComments);
       }
@@ -377,7 +370,7 @@ class SyncService {
       // 新建日记：无远端 ID，直接走完整 pull+push（拉取可能与新内容相关的变更）
       if (memo.memosName == null) {
         debugPrint('[Sync] 新建日记，走完整 pull+push');
-        final (_, __, memosWithComments) = await _pullUpdates(
+        final (_, __, memosWithComments) = await _pullAll(
           api,
           url,
           full: false,
@@ -399,7 +392,7 @@ class SyncService {
       } catch (e) {
         // changelog 请求失败 → 降级完整 pull+push
         debugPrint('[Sync] listChangelogs 失败，降级完整 pull+push：$e');
-        final (_, __, memosWithComments) = await _pullUpdates(
+        final (_, __, memosWithComments) = await _pullAll(
           api,
           url,
           full: false,
@@ -462,72 +455,20 @@ class SyncService {
 
       // 无论当前 memo 是否冲突，都用同批 changelog 处理其余条目 + 推送
       // （当前 memo 若已标记 conflict，_pushPending 会自动跳过它）
-      await _applyChangelogData(api, url, changelogs);
+      final (_, _, memosWithComments, complete) = await _applyChangelogs(
+        api,
+        url,
+        changelogs,
+      );
+      if (memosWithComments.isNotEmpty) {
+        await _pullCommentsBatch(api, memosWithComments);
+      }
       await _pushPending(api, url, token);
       await SettingsService.setLastSyncTime(DateTime.now());
 
-      // 更新 changelog 游标
-      if (changelogs.isNotEmpty) {
-        final newId = changelogs.last['id'] as int;
-        await SettingsService.setLastChangelogId(newId);
-        debugPrint('[Sync] 更新 changelogId 游标: $newId');
-      }
+      if (complete) await _advanceChangelogCursor(changelogs);
     } catch (e) {
       debugPrint('[Sync] checkConflictAndPush 静默失败：$e');
-    }
-  }
-
-  /// 将已获取的 changelog 列表应用到本地（供 [checkConflictAndPush] 复用，避免二次请求）
-  ///
-  /// 逻辑与 [_pullByChangelog] 的核心处理部分相同，但跳过 changelog 请求和游标更新。
-  static Future<void> _applyChangelogData(
-    MemosApiService api,
-    String baseUrl,
-    List<Map<String, dynamic>> changelogs,
-  ) async {
-    final memoNames = <String>{};
-    final deletedNames = <String>{};
-
-    for (final log in changelogs) {
-      final entity = log['entity'] as String? ?? '';
-      final entityId = log['entityId'] as String? ?? '';
-      final action = log['action'] as String? ?? '';
-      if (entity != 'memo' || entityId.isEmpty) continue;
-      if (action == 'DELETE') {
-        deletedNames.add(entityId);
-      } else {
-        memoNames.add(entityId);
-      }
-    }
-    memoNames.removeAll(deletedNames);
-
-    debugPrint(
-      '[Sync] _applyChangelogData: 更新/新增 ${memoNames.length} 条，删除 ${deletedNames.length} 条',
-    );
-
-    final memosWithComments = <String>{};
-    for (final name in memoNames) {
-      try {
-        final idPart = name.split('/').last;
-        final data = await api.getMemo(idPart);
-        final state = data['state'] as String? ?? 'NORMAL';
-        await _applyRemoteMemo(data, baseUrl, archived: state == 'ARCHIVED');
-        _collectCommentRefs(data, memosWithComments);
-      } catch (e) {
-        debugPrint('[Sync] _applyChangelogData 拉取 $name 失败：$e');
-      }
-    }
-
-    for (final name in deletedNames) {
-      final local = await DatabaseService.getMemoByMemosName(name);
-      if (local != null && local.syncStatus == SyncStatus.synced) {
-        await DatabaseService.hardDelete(local.id);
-        debugPrint('[Sync] changelog 删除本地 memo $name');
-      }
-    }
-
-    if (memosWithComments.isNotEmpty) {
-      await _pullCommentsBatch(api, memosWithComments);
     }
   }
 
@@ -823,28 +764,97 @@ class SyncService {
 
   // ── Pull（远端 → 本地）──────────────────────────────────────
 
-  /// 从远端拉取更新并合并到本地。
+  /// 从远端拉取更新并合并到本地：日记、文件夹、文章、事件串。
   ///
-  /// [full]：true = 全量拉取 + 远端删除检测；
-  ///         false = 基于 changelog 增量拉取，若变更数超阈值则自动降级全量。
-  /// 返回 (合并条目数, 删除条目数, 有评论的日记 memosName 集合)。
-  static Future<(int, int, Set<String>)> _pullUpdates(
+  /// [full]：true = 全部实体全量拉取 + 远端删除检测；
+  ///         false = 基于 changelog 增量拉取。无游标、changelog 请求失败或
+  ///         变更数超阈值时，所有实体一起降级全量。
+  /// 返回 (合并日记数, 删除日记数, 有评论的日记 memosName 集合)。
+  static Future<(int, int, Set<String>)> _pullAll(
     MemosApiService api,
     String baseUrl, {
     bool full = false,
   }) async {
     if (!full) {
-      return _pullByChangelog(api, baseUrl);
+      final changelogs = await _listChangelogsForIncremental(api);
+      if (changelogs != null) {
+        final (pulled, deleted, memosWithComments, complete) =
+            await _applyChangelogs(api, baseUrl, changelogs);
+        if (complete) await _advanceChangelogCursor(changelogs);
+        return (pulled, deleted, memosWithComments);
+      }
     }
-    return _pullFull(api, baseUrl);
+    return _pullEverything(api, baseUrl);
   }
 
-  /// 全量拉取：拉取所有条目 + 删除检测
-  static Future<(int, int, Set<String>)> _pullFull(
+  /// 取增量 changelog；返回 null 表示本轮应降级全量。
+  ///
+  /// 动态阈值 = max(300, 本地总日记数 × 0.3)，
+  /// 避免小库用户阈值过低、大库用户阈值固定不足的问题。
+  static Future<List<Map<String, dynamic>>?> _listChangelogsForIncremental(
+    MemosApiService api,
+  ) async {
+    final sinceId = await SettingsService.lastChangelogId;
+    // 首次同步（无游标）→ 直接全量
+    if (sinceId == -1) {
+      debugPrint('[Sync] 无 changelog 游标，降级全量');
+      return null;
+    }
+
+    debugPrint('[Sync] 增量拉取，sinceId=$sinceId');
+    final List<Map<String, dynamic>> changelogs;
+    try {
+      changelogs = await api.listChangelogs(sinceId);
+    } catch (e) {
+      debugPrint('[Sync] listChangelogs 失败，降级全量：$e');
+      return null;
+    }
+    debugPrint('[Sync] changelog 数量: ${changelogs.length}');
+
+    final localTotal = await DatabaseService.getMemoCount();
+    final threshold = (localTotal * 0.3).ceil().clamp(300, 999999);
+    if (changelogs.length >= threshold) {
+      debugPrint('[Sync] changelog 超过阈值 $threshold（本地总数 $localTotal），降级全量同步');
+      return null;
+    }
+    return changelogs;
+  }
+
+  /// 游标推进到本批最后一条 changelog。
+  static Future<void> _advanceChangelogCursor(
+    List<Map<String, dynamic>> changelogs,
+  ) async {
+    if (changelogs.isEmpty) return;
+    final newId = changelogs.last['id'] as int;
+    await SettingsService.setLastChangelogId(newId);
+    debugPrint('[Sync] 更新 changelogId 游标: $newId');
+  }
+
+  /// 所有实体全量拉取，完成后把拉取前取到的最新 changelogId 存为游标。
+  static Future<(int, int, Set<String>)> _pullEverything(
     MemosApiService api,
     String baseUrl,
   ) async {
-    debugPrint('[Sync] _pullFull 全量拉取开始');
+    final cursor = await _fetchChangelogCursor(api);
+    final result = await _pullMemosFull(api, baseUrl);
+    // 先文件夹，再文章
+    await _pullFolders(api);
+    await _pullArticles(api, baseUrl);
+    // 事件串依赖已拉取的日记，确保成员可映射为本地 id。
+    await _pullThreads(api);
+    if (cursor != null) {
+      await SettingsService.setLastChangelogId(cursor);
+      debugPrint('[Sync] 已保存 changelogId 游标: $cursor');
+    }
+    return result;
+  }
+
+  /// 全量拉取日记：拉取所有条目 + 删除检测
+  static Future<(int, int, Set<String>)> _pullMemosFull(
+    MemosApiService api,
+    String baseUrl,
+  ) async {
+    debugPrint('[Sync] _pullMemosFull 全量拉取开始');
     final normalMemos = await api.listAllMemos(state: 'NORMAL');
     final archivedMemos = await api.listAllMemos(state: 'ARCHIVED');
     debugPrint(
@@ -884,78 +894,37 @@ class SyncService {
       }
     }
 
-    debugPrint('[Sync] _pullFull 完成，拉取 $pulled 条，删除 $deleted 条');
+    debugPrint('[Sync] _pullMemosFull 完成，拉取 $pulled 条，删除 $deleted 条');
     return (pulled, deleted, memosWithComments);
   }
 
-  /// 增量拉取：通过 changelog 驱动，超阈值时降级为全量
+  /// 把一批 changelog 应用到本地，按依赖顺序处理日记、文件夹、文章、事件串。
   ///
-  /// 动态阈值 = max(300, 本地总日记数 × 0.3)，
-  /// 避免小库用户阈值过低、大库用户阈值固定不足的问题。
-  static Future<(int, int, Set<String>)> _pullByChangelog(
+  /// 返回 (合并日记数, 删除日记数, 有评论的日记集合, 是否全部处理成功)。
+  /// 有条目因网络等原因拉取失败时 complete=false，调用方不推进游标，下轮重放
+  /// 这一批（合并逻辑幂等）。404 说明拉取前已被删除，对应的 DELETE 记录在
+  /// 后续批次里，不算失败。
+  static Future<(int, int, Set<String>, bool)> _applyChangelogs(
     MemosApiService api,
     String baseUrl,
+    List<Map<String, dynamic>> changelogs,
   ) async {
-    final sinceId = await SettingsService.lastChangelogId;
-
-    // 首次同步（无游标）→ 直接全量
-    if (sinceId == -1) {
-      debugPrint('[Sync] _pullByChangelog 无游标，降级全量');
-      return _pullFull(api, baseUrl);
-    }
-
-    debugPrint('[Sync] _pullByChangelog 增量，sinceId=$sinceId');
-    final List<Map<String, dynamic>> changelogs;
-    try {
-      changelogs = await api.listChangelogs(sinceId);
-    } catch (e) {
-      debugPrint('[Sync] listChangelogs 失败，降级全量：$e');
-      return _pullFull(api, baseUrl);
-    }
-
-    debugPrint('[Sync] changelog 数量: ${changelogs.length}');
-
-    // 动态阈值：max(300, 本地总数 × 30%)
-    final localTotal = await DatabaseService.getMemoCount();
-    final threshold = (localTotal * 0.3).ceil().clamp(300, 999999);
-    debugPrint('[Sync] 降级阈值: $threshold（本地总数 $localTotal）');
-
-    if (changelogs.length >= threshold) {
-      debugPrint('[Sync] changelog 超过阈值 $threshold，降级全量同步');
-      return _pullFull(api, baseUrl);
-    }
-
-    // 按 entity 分类处理
-    final memoNames = <String>{}; // 需要拉取最新数据的 memo
-    final deletedNames = <String>{}; // 需要本地删除的 memo
-
-    for (final log in changelogs) {
-      final entity = log['entity'] as String? ?? '';
-      final entityId = log['entityId'] as String? ?? '';
-      final action = log['action'] as String? ?? '';
-      if (entity != 'memo' || entityId.isEmpty) continue;
-      if (action == 'DELETE') {
-        deletedNames.add(entityId);
-      } else {
-        memoNames.add(entityId);
-      }
-    }
-    // 已删除的不再拉取
-    memoNames.removeAll(deletedNames);
-
+    final batch = groupChangelogs(changelogs);
     debugPrint(
-      '[Sync] changelog 涉及 memo: 更新/新增 ${memoNames.length} 条，删除 ${deletedNames.length} 条',
+      '[Sync] changelog 归并：memo +${batch.memos.upserts.length}/-${batch.memos.deletes.length}，'
+      'folder +${batch.folders.upserts.length}/-${batch.folders.deletes.length}，'
+      'article +${batch.articles.upserts.length}/-${batch.articles.deletes.length}，'
+      'thread +${batch.threads.upserts.length}/-${batch.threads.deletes.length}',
     );
 
+    var complete = true;
     int pulled = 0;
     int deleted = 0;
     final memosWithComments = <String>{};
 
-    // 拉取有变化的 memo 详情
-    for (final name in memoNames) {
+    for (final name in batch.memos.upserts) {
       try {
-        final idPart = name.split('/').last;
-        final data = await api.getMemo(idPart);
+        final data = await api.getMemo(name.split('/').last);
         final state = data['state'] as String? ?? 'NORMAL';
         pulled += await _applyRemoteMemo(
           data,
@@ -964,12 +933,11 @@ class SyncService {
         );
         _collectCommentRefs(data, memosWithComments);
       } catch (e) {
+        if (!_isNotFound(e)) complete = false;
         debugPrint('[Sync] 拉取 memo $name 详情失败：$e');
       }
     }
-
-    // 处理远端删除
-    for (final name in deletedNames) {
+    for (final name in batch.memos.deletes) {
       final local = await DatabaseService.getMemoByMemosName(name);
       if (local != null && local.syncStatus == SyncStatus.synced) {
         await DatabaseService.hardDelete(local.id);
@@ -978,16 +946,22 @@ class SyncService {
       }
     }
 
-    // 更新 changelog 游标为本批最后一条 id
-    if (changelogs.isNotEmpty) {
-      final newId = changelogs.last['id'] as int;
-      await SettingsService.setLastChangelogId(newId);
-      debugPrint('[Sync] 更新 changelogId 游标: $newId');
+    // 先文件夹，再文章
+    if (!await _pullFolderChanges(api, batch.folders)) complete = false;
+    if (!await _pullArticleChanges(api, baseUrl, batch.articles)) {
+      complete = false;
     }
+    // 事件串依赖已拉取的日记，确保成员可映射为本地 id。
+    if (!await _pullThreadChanges(api, batch.threads)) complete = false;
 
-    debugPrint('[Sync] _pullByChangelog 完成，拉取 $pulled 条，删除 $deleted 条');
-    return (pulled, deleted, memosWithComments);
+    debugPrint(
+      '[Sync] _applyChangelogs 完成，拉取日记 $pulled 条，删除 $deleted 条，complete=$complete',
+    );
+    return (pulled, deleted, memosWithComments, complete);
   }
+
+  static bool _isNotFound(Object e) =>
+      e is MemosApiException && e.statusCode == 404;
 
   /// 从 memo 数据中提取有评论引用的日记名（relations[type=COMMENT]）
   static void _collectCommentRefs(
@@ -1133,7 +1107,7 @@ class SyncService {
     }
   }
 
-  /// 批量拉取指定日记的评论（由 _pullUpdates 提取的有评论日记集合驱动）
+  /// 批量拉取指定日记的评论（由 _pullAll 提取的有评论日记集合驱动）
   static Future<void> _pullCommentsBatch(
     MemosApiService api,
     Set<String> memoNames,
@@ -1553,29 +1527,7 @@ class SyncService {
       final remoteNames = remoteFolders.map((f) => f['name'] as String).toSet();
 
       for (final data in remoteFolders) {
-        final name = data['name'] as String;
-        final local = await DatabaseService.getFolderByFolderName(name);
-        if (local == null) {
-          // 远端有，本地无 → 新增
-          final folder = FolderEntry()
-            ..folderName = name
-            ..title = data['title'] as String? ?? ''
-            ..parentFolderName = data['parent'] as String?
-            ..syncStatus = SyncStatus.synced
-            ..lastSyncAt = DateTime.now();
-          await DatabaseService.saveFolder(folder, skipTimestamp: true);
-          pulled++;
-        } else if (local.syncStatus == SyncStatus.synced) {
-          // 本地已同步 → 覆盖为远端最新
-          local
-            ..title = data['title'] as String? ?? ''
-            ..parentFolderName = data['parent'] as String?
-            ..syncStatus = SyncStatus.synced
-            ..lastSyncAt = DateTime.now();
-          await DatabaseService.saveFolder(local, skipTimestamp: true);
-          pulled++;
-        }
-        // 本地 pending → 保持本地版本，不覆盖
+        if (await _mergeRemoteFolder(data)) pulled++;
       }
 
       // 检测远端已删除的文件夹（本地 synced 但远端不存在）
@@ -1592,6 +1544,60 @@ class SyncService {
     }
     debugPrint('[Sync] _pullFolders 完成，拉取 $pulled 个');
     return pulled;
+  }
+
+  /// 按 changelog 增量拉取文件夹，返回是否全部处理成功（见 [_applyChangelogs]）。
+  static Future<bool> _pullFolderChanges(
+    MemosApiService api,
+    EntityChanges changes,
+  ) async {
+    var complete = true;
+    for (final name in changes.upserts) {
+      try {
+        await _mergeRemoteFolder(await api.getFolder(name));
+      } catch (e) {
+        if (!_isNotFound(e)) complete = false;
+        debugPrint('[Sync] 拉取文件夹 $name 失败：$e');
+      }
+    }
+    for (final name in changes.deletes) {
+      final local = await DatabaseService.getFolderByFolderName(name);
+      if (local != null && local.syncStatus == SyncStatus.synced) {
+        await DatabaseService.hardDeleteFolder(local.id);
+        debugPrint('[Sync] changelog 删除本地文件夹 $name');
+      }
+    }
+    return complete;
+  }
+
+  /// 把单个远端文件夹合并到本地，返回本地是否有写入。
+  ///
+  /// 本地 pending → 保持本地版本，不覆盖。
+  static Future<bool> _mergeRemoteFolder(Map<String, dynamic> data) async {
+    final name = data['name'] as String;
+    final local = await DatabaseService.getFolderByFolderName(name);
+    if (local == null) {
+      // 远端有，本地无 → 新增
+      final folder = FolderEntry()
+        ..folderName = name
+        ..title = data['title'] as String? ?? ''
+        ..parentFolderName = data['parent'] as String?
+        ..syncStatus = SyncStatus.synced
+        ..lastSyncAt = DateTime.now();
+      await DatabaseService.saveFolder(folder, skipTimestamp: true);
+      return true;
+    }
+    if (local.syncStatus == SyncStatus.synced) {
+      // 本地已同步 → 覆盖为远端最新
+      local
+        ..title = data['title'] as String? ?? ''
+        ..parentFolderName = data['parent'] as String?
+        ..syncStatus = SyncStatus.synced
+        ..lastSyncAt = DateTime.now();
+      await DatabaseService.saveFolder(local, skipTimestamp: true);
+      return true;
+    }
+    return false;
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -1766,10 +1772,7 @@ class SyncService {
   ///
   /// NORMAL 与 ARCHIVED 都要拉：删除检测依赖「远端全量名单」，只拉 NORMAL 会把
   /// 服务端处于 ARCHIVED 的文章当成"远端已删除"，从而在本地物理删除。
-  static Future<int> _pullArticles(
-    MemosApiService api,
-    String baseUrl,
-  ) async {
+  static Future<int> _pullArticles(MemosApiService api, String baseUrl) async {
     debugPrint('[Sync] _pullArticles 开始');
     int pulled = 0;
     try {
@@ -1791,48 +1794,8 @@ class SyncService {
         bool archived,
       ) async {
         for (final data in list) {
-          final name = data['name'] as String?;
-          if (name == null || name.isEmpty) continue;
-          final local = await DatabaseService.getArticleByArticleName(name);
-          if (local == null) {
-            final article = _articleFromRemote(data, baseUrl, archived: archived);
-            await DatabaseService.saveArticle(article, skipTimestamp: true);
-            unawaited(_downloadArticleAttachments(article, baseUrl));
+          if (await _mergeRemoteArticle(data, baseUrl, archived: archived)) {
             pulled++;
-          } else if (local.syncStatus == SyncStatus.synced) {
-            _applyRemoteArticle(local, data, baseUrl, archived: archived);
-            await DatabaseService.saveArticle(local, skipTimestamp: true);
-            unawaited(_downloadArticleAttachments(local, baseUrl));
-            pulled++;
-          } else if (local.syncStatus == SyncStatus.pending) {
-            // 用编辑基线判断，而不是"本地 pending 就冲突"——后者会把所有
-            // 离线编辑误判成冲突（见 decidePendingArticle 文档）。
-            switch (decidePendingArticle(local, data, archived: archived)) {
-              case PendingArticleDecision.alreadySynced:
-                debugPrint('[Sync] 文章 pending 内容已存在于远端，标记 synced: $name');
-                markArticleSynced(local);
-                await DatabaseService.saveArticle(local, skipTimestamp: true);
-              case PendingArticleDecision.pushLocal:
-                debugPrint('[Sync] 文章远端仍为编辑基线，保留 pending 等待推送: $name');
-              case PendingArticleDecision.conflict:
-                local
-                  ..conflictRemoteContent = data['content'] as String?
-                  ..conflictRemoteTitle = data['title'] as String?
-                  ..syncStatus = SyncStatus.conflict;
-                await DatabaseService.saveArticle(local, skipTimestamp: true);
-                debugPrint('[Sync] 文章冲突 articleName=$name');
-            }
-          } else if (local.syncStatus == SyncStatus.conflict) {
-            // 已是冲突状态，远端又有新版本 → 只更新远端版本内容，不覆盖本地
-            final remoteContent = data['content'] as String?;
-            final remoteTitle = data['title'] as String?;
-            if (remoteContent != local.conflictRemoteContent ||
-                remoteTitle != local.conflictRemoteTitle) {
-              local
-                ..conflictRemoteContent = remoteContent
-                ..conflictRemoteTitle = remoteTitle;
-              await DatabaseService.saveArticle(local, skipTimestamp: true);
-            }
           }
         }
       }
@@ -1854,6 +1817,85 @@ class SyncService {
     }
     debugPrint('[Sync] _pullArticles 完成，拉取 $pulled 篇');
     return pulled;
+  }
+
+  /// 把单篇远端文章合并到本地，返回本地是否新增或覆盖了该文章。
+  static Future<bool> _mergeRemoteArticle(
+    Map<String, dynamic> data,
+    String baseUrl, {
+    required bool archived,
+  }) async {
+    final name = data['name'] as String?;
+    if (name == null || name.isEmpty) return false;
+    final local = await DatabaseService.getArticleByArticleName(name);
+    if (local == null) {
+      final article = _articleFromRemote(data, baseUrl, archived: archived);
+      await DatabaseService.saveArticle(article, skipTimestamp: true);
+      unawaited(_downloadArticleAttachments(article, baseUrl));
+      return true;
+    } else if (local.syncStatus == SyncStatus.synced) {
+      _applyRemoteArticle(local, data, baseUrl, archived: archived);
+      await DatabaseService.saveArticle(local, skipTimestamp: true);
+      unawaited(_downloadArticleAttachments(local, baseUrl));
+      return true;
+    } else if (local.syncStatus == SyncStatus.pending) {
+      // 用编辑基线判断，而不是"本地 pending 就冲突"——后者会把所有
+      // 离线编辑误判成冲突（见 decidePendingArticle 文档）。
+      switch (decidePendingArticle(local, data, archived: archived)) {
+        case PendingArticleDecision.alreadySynced:
+          debugPrint('[Sync] 文章 pending 内容已存在于远端，标记 synced: $name');
+          markArticleSynced(local);
+          await DatabaseService.saveArticle(local, skipTimestamp: true);
+        case PendingArticleDecision.pushLocal:
+          debugPrint('[Sync] 文章远端仍为编辑基线，保留 pending 等待推送: $name');
+        case PendingArticleDecision.conflict:
+          local
+            ..conflictRemoteContent = data['content'] as String?
+            ..conflictRemoteTitle = data['title'] as String?
+            ..syncStatus = SyncStatus.conflict;
+          await DatabaseService.saveArticle(local, skipTimestamp: true);
+          debugPrint('[Sync] 文章冲突 articleName=$name');
+      }
+    } else if (local.syncStatus == SyncStatus.conflict) {
+      // 已是冲突状态，远端又有新版本 → 只更新远端版本内容，不覆盖本地
+      final remoteContent = data['content'] as String?;
+      final remoteTitle = data['title'] as String?;
+      if (remoteContent != local.conflictRemoteContent ||
+          remoteTitle != local.conflictRemoteTitle) {
+        local
+          ..conflictRemoteContent = remoteContent
+          ..conflictRemoteTitle = remoteTitle;
+        await DatabaseService.saveArticle(local, skipTimestamp: true);
+      }
+    }
+    return false;
+  }
+
+  /// 按 changelog 增量拉取文章，返回是否全部处理成功（见 [_applyChangelogs]）。
+  static Future<bool> _pullArticleChanges(
+    MemosApiService api,
+    String baseUrl,
+    EntityChanges changes,
+  ) async {
+    var complete = true;
+    for (final name in changes.upserts) {
+      try {
+        final data = await api.getArticle(name.split('/').last);
+        final state = data['state'] as String? ?? 'NORMAL';
+        await _mergeRemoteArticle(data, baseUrl, archived: state == 'ARCHIVED');
+      } catch (e) {
+        if (!_isNotFound(e)) complete = false;
+        debugPrint('[Sync] 拉取文章 $name 失败：$e');
+      }
+    }
+    for (final name in changes.deletes) {
+      final local = await DatabaseService.getArticleByArticleName(name);
+      if (local != null && local.syncStatus == SyncStatus.synced) {
+        await DatabaseService.hardDeleteArticle(local.id);
+        debugPrint('[Sync] changelog 删除本地文章 $name');
+      }
+    }
+    return complete;
   }
 
   /// 将文章的远端附件下载到本地，并更新 DB（后台执行，不阻塞同步主流程）。
@@ -1990,43 +2032,7 @@ class SyncService {
           .whereType<String>()
           .toSet();
       for (final summary in remoteList) {
-        final name = summary['name'] as String?;
-        if (name == null) continue;
-        final local = await DatabaseService.getThreadByThreadName(name);
-        final remoteUpdatedAt =
-            DateTime.tryParse(
-              summary['updateTime'] as String? ?? '',
-            )?.toLocal() ??
-            DateTime.now();
-        switch (decideThreadPull(
-          local: local,
-          remoteUpdatedAt: remoteUpdatedAt,
-        )) {
-          case ThreadPullAction.skip:
-            continue;
-          case ThreadPullAction.markConflict:
-            local!
-              ..syncStatus = SyncStatus.conflict
-              ..lastSyncAt = DateTime.now();
-            await DatabaseService.saveThread(local, skipTimestamp: true);
-            continue;
-          case ThreadPullAction.insert:
-          case ThreadPullAction.overwrite:
-            final detail = await api.getThread(name);
-            final thread = local ?? ThreadEntry();
-            _applyRemoteThread(thread, detail);
-            thread
-              ..memberLocalIds = await _resolveRemoteMembers(
-                detail['members'] as List<dynamic>? ?? [],
-              )
-              ..createdAt = local?.createdAt ?? remoteUpdatedAt
-              ..updatedAt = remoteUpdatedAt
-              ..syncStatus = SyncStatus.synced
-              ..lastSyncAt = DateTime.now()
-              ..isDeleted = false;
-            await DatabaseService.saveThread(thread, skipTimestamp: true);
-            pulled++;
-        }
+        if (await _mergeRemoteThread(api, summary)) pulled++;
       }
       final localSynced = await DatabaseService.getAllSyncedThreads();
       for (final thread in localSynced) {
@@ -2039,6 +2045,76 @@ class SyncService {
       debugPrint('[Sync] _pullThreads 失败: $e');
     }
     return pulled;
+  }
+
+  /// 把单个远端事件串合并到本地，返回本地是否新增或覆盖了该事件串。
+  ///
+  /// [data] 是列表摘要（不含成员，需要时再取详情）或已取到的详情（[isDetail]）。
+  static Future<bool> _mergeRemoteThread(
+    MemosApiService api,
+    Map<String, dynamic> data, {
+    bool isDetail = false,
+  }) async {
+    final name = data['name'] as String?;
+    if (name == null) return false;
+    final local = await DatabaseService.getThreadByThreadName(name);
+    final remoteUpdatedAt =
+        DateTime.tryParse(data['updateTime'] as String? ?? '')?.toLocal() ??
+        DateTime.now();
+    switch (decideThreadPull(local: local, remoteUpdatedAt: remoteUpdatedAt)) {
+      case ThreadPullAction.skip:
+        return false;
+      case ThreadPullAction.markConflict:
+        local!
+          ..syncStatus = SyncStatus.conflict
+          ..lastSyncAt = DateTime.now();
+        await DatabaseService.saveThread(local, skipTimestamp: true);
+        return false;
+      case ThreadPullAction.insert:
+      case ThreadPullAction.overwrite:
+        final detail = isDetail ? data : await api.getThread(name);
+        final thread = local ?? ThreadEntry();
+        _applyRemoteThread(thread, detail);
+        thread
+          ..memberLocalIds = await _resolveRemoteMembers(
+            detail['members'] as List<dynamic>? ?? [],
+          )
+          ..createdAt = local?.createdAt ?? remoteUpdatedAt
+          ..updatedAt = remoteUpdatedAt
+          ..syncStatus = SyncStatus.synced
+          ..lastSyncAt = DateTime.now()
+          ..isDeleted = false;
+        await DatabaseService.saveThread(thread, skipTimestamp: true);
+        return true;
+    }
+  }
+
+  /// 按 changelog 增量拉取事件串，返回是否全部处理成功（见 [_applyChangelogs]）。
+  static Future<bool> _pullThreadChanges(
+    MemosApiService api,
+    EntityChanges changes,
+  ) async {
+    var complete = true;
+    for (final name in changes.upserts) {
+      try {
+        await _mergeRemoteThread(
+          api,
+          await api.getThread(name),
+          isDetail: true,
+        );
+      } catch (e) {
+        if (!_isNotFound(e)) complete = false;
+        debugPrint('[Sync] 拉取事件串 $name 失败：$e');
+      }
+    }
+    for (final name in changes.deletes) {
+      final local = await DatabaseService.getThreadByThreadName(name);
+      if (local != null && local.syncStatus == SyncStatus.synced) {
+        await DatabaseService.hardDeleteThread(local.id);
+        debugPrint('[Sync] changelog 删除本地事件串 $name');
+      }
+    }
+    return complete;
   }
 
   /// 在日记推送完成后再推送事件串，保障成员资源名完整。
@@ -2148,7 +2224,9 @@ class SyncService {
           ..status = SuggestionStatus.pending
           ..syncStatus = SyncStatus.synced
           ..createdAt =
-              DateTime.tryParse(data['createTime'] as String? ?? '')?.toLocal() ??
+              DateTime.tryParse(
+                data['createTime'] as String? ?? '',
+              )?.toLocal() ??
               DateTime.now();
         await DatabaseService.saveSuggestion(entry);
         pulled++;

@@ -797,6 +797,17 @@ class MemosApiService {
     }
   }
 
+  /// 获取单个文件夹，[name] 为 "folders/xxx"
+  Future<Map<String, dynamic>> getFolder(String name) async {
+    debugPrint('[API] getFolder name=$name');
+    try {
+      final res = await _dio.get('/api/v1/$name');
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   /// 创建文件夹
   Future<Map<String, dynamic>> createFolder({
     required String title,
@@ -964,7 +975,10 @@ class MemosApiService {
   /// 切换自动分析总开关
   Future<void> setThreadAiEnabled(bool enabled) async {
     try {
-      await _dio.patch('/api/v1/ai/thread-settings', data: {'enabled': enabled});
+      await _dio.patch(
+        '/api/v1/ai/thread-settings',
+        data: {'enabled': enabled},
+      );
     } on DioException catch (e) {
       throw _wrap(e);
     }
