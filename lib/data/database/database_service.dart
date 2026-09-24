@@ -3,6 +3,7 @@ import 'package:isar/isar.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:rxdart/rxdart.dart';
 
+import '../../services/sync/pending_article_conflict_policy.dart';
 import '../models/article_entry.dart';
 import '../models/comment_entry.dart';
 import '../models/folder_entry.dart';
@@ -128,7 +129,44 @@ class DatabaseService {
       '[DB] completeMemoPush id=${submitted.id}, '
       'memosName=${latest?.memosName}, status=${latest?.syncStatus.name}',
     );
+    // 日记拿到远端名后，把它名下的离线评论接到这个父名上（详见方法注释）
+    final pushedName = latest?.memosName;
+    if (pushedName != null && pushedName.isNotEmpty) {
+      await adoptCommentsForMemo(submitted.id, pushedName);
+    }
     return latest;
+  }
+
+  /// 把某个本地日记名下「还没有 parentMemosName」的评论接到 [memosName] 上。
+  ///
+  /// 离线写评论时父日记可能还没同步（memosName 为 null），当时的评论只能靠
+  /// [CommentEntry.memoId] 关联。若不在日记拿到远端名后补上父名，会出现两个后果：
+  ///  1. 推送端要求 parentMemosName 才能建评论，缺了它这些评论每轮都被跳过，
+  ///     永远不会上云；
+  ///  2. 详情页在日记有 memosName 后改用 [getCommentsByMemosName] 查询，
+  ///     按 memoId 关联的评论会从界面上消失（本地还在，但看不见）。
+  static Future<void> adoptCommentsForMemo(
+    int memoId,
+    String memosName,
+  ) async {
+    final isar = await db;
+    final orphans = await isar.commentEntrys
+        .filter()
+        .memoIdEqualTo(memoId)
+        .parentMemosNameIsNull()
+        .isDeletedEqualTo(false)
+        .findAll();
+    if (orphans.isEmpty) return;
+    await isar.writeTxn(() async {
+      for (final comment in orphans) {
+        comment
+          ..parentMemosName = memosName
+          // 父名变了意味着这条评论还没上云，必须保持 pending 才会被推送
+          ..syncStatus = SyncStatus.pending;
+      }
+      await isar.commentEntrys.putAll(orphans);
+    });
+    debugPrint('[DB] adoptCommentsForMemo memoId=$memoId → $memosName，接管 ${orphans.length} 条评论');
   }
 
   /// 仅把远端资源名写回最新本地记录，并保持 pending 状态。
@@ -148,6 +186,53 @@ class DatabaseService {
     debugPrint(
       '[DB] attachMemoRemoteName id=$id → $remoteName，写入=${attached ? '成功' : '未找到记录'}',
     );
+    if (attached) await adoptCommentsForMemo(id, remoteName);
+  }
+
+  /// 远端 memo 已被别处删除、本地决定按「编辑优先」重建时，清掉旧远端名。
+  ///
+  /// 与 [attachMemoRemoteName] 相反，同时把受影响的关联交还给推送端：
+  ///  - 挂在旧远端名下的评论：清掉自己的远端名、改为按 memoId 关联，等日记
+  ///    拿到新远端名后由 [adoptCommentsForMemo] 接过去，重新在新日记下创建
+  ///    （旧评论随旧日记一起在远端不可见了）；
+  ///  - 包含这篇日记的事件串：标 pending，重推时带上新的远端名。
+  static Future<void> detachMemoRemoteName(int id, String? oldName) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      final latest = await isar.memoEntrys.get(id);
+      if (latest != null) {
+        latest
+          ..memosName = null
+          ..syncStatus = SyncStatus.pending;
+        await isar.memoEntrys.put(latest);
+      }
+
+      if (oldName != null && oldName.isNotEmpty) {
+        final comments = await isar.commentEntrys
+            .filter()
+            .parentMemosNameEqualTo(oldName)
+            .isDeletedEqualTo(false)
+            .findAll();
+        for (final comment in comments) {
+          comment
+            ..memoId = id
+            ..parentMemosName = null
+            ..memosName = null
+            ..syncStatus = SyncStatus.pending;
+        }
+        await isar.commentEntrys.putAll(comments);
+      }
+
+      final threads = await isar.threadEntrys
+          .filter()
+          .memberLocalIdsElementEqualTo(id)
+          .findAll();
+      for (final thread in threads) {
+        thread.syncStatus = SyncStatus.pending;
+      }
+      await isar.threadEntrys.putAll(threads);
+    });
+    debugPrint('[DB] detachMemoRemoteName id=$id 脱离已删除的远端 $oldName');
   }
 
   /// 软删除（将 isDeleted 置为 true，syncStatus 置为 pending）。
@@ -1323,6 +1408,9 @@ class DatabaseService {
                 .localFolderIdEqualTo(id)
                 .findAll();
       for (final article in articles) {
+        // 先记基线再改：否则同步先拉后推时，拉取阶段看到本地文件夹与远端
+        // 不一致又无基线可比，会把这次移动误判成冲突
+        captureArticleEditBaseline(article);
         article.folderName = null;
         article.localFolderId = null;
         article.syncStatus = SyncStatus.pending;
@@ -1519,6 +1607,114 @@ class DatabaseService {
     }
     if (fixed > 0) {
       debugPrint('[DB] repairUnlockedManualSummaries → 修复 $fixed 个事件串');
+    }
+    return fixed;
+  }
+
+  /// 把「已软删除、却被同步判成 synced/conflict」的日记与文章改回 pending。
+  ///
+  /// 历史缺陷：pull 阶段的冲突判定不看 `isDeleted`，于是本地刚软删、还没推送的
+  /// 条目会被判成「远端与本地一致」（日记 → `synced`）或直接标冲突（文章），
+  /// 而推送端只挑 pending，删除请求因此永远发不出去：本地到处过滤 `isDeleted`
+  /// 所以看着是删掉了，远端和其他设备却一直留着。
+  ///
+  /// 修复逻辑只针对**已软删除**的条目，把它们交还给 pending 让下次同步真正执行
+  /// 删除；`SyncService` 侧的判定已在 `decidePendingMemo`/`decidePendingArticle`
+  /// 加了 isDeleted 守卫，但已经落成 synced/conflict 的存量记录不会自己恢复，
+  /// 所以需要这次启动自愈。幂等：修好之后不会有记录再命中。
+  static Future<int> repairDroppedDeletions() async {
+    final isar = await db;
+    var fixed = 0;
+
+    final deletedMemos = await isar.memoEntrys
+        .filter()
+        .isDeletedEqualTo(true)
+        .findAll();
+    final droppedMemos = deletedMemos
+        .where((m) => m.syncStatus != SyncStatus.pending)
+        .toList();
+    if (droppedMemos.isNotEmpty) {
+      for (final memo in droppedMemos) {
+        memo.syncStatus = SyncStatus.pending;
+      }
+      await isar.writeTxn(() => isar.memoEntrys.putAll(droppedMemos));
+      for (final memo in droppedMemos) {
+        debugPrint(
+          '[DB] repairDroppedDeletions: 日记 id=${memo.id} '
+          'memosName=${memo.memosName} 交还 pending 等待推送删除',
+        );
+      }
+      fixed += droppedMemos.length;
+    }
+
+    final deletedArticles = await isar.articleEntrys
+        .filter()
+        .isDeletedEqualTo(true)
+        .findAll();
+    final droppedArticles = deletedArticles
+        .where((a) => a.syncStatus != SyncStatus.pending)
+        .toList();
+    if (droppedArticles.isNotEmpty) {
+      for (final article in droppedArticles) {
+        article.syncStatus = SyncStatus.pending;
+      }
+      await isar.writeTxn(() => isar.articleEntrys.putAll(droppedArticles));
+      for (final article in droppedArticles) {
+        debugPrint(
+          '[DB] repairDroppedDeletions: 文章 id=${article.id} '
+          'articleName=${article.articleName} 交还 pending 等待推送删除',
+        );
+      }
+      fixed += droppedArticles.length;
+    }
+
+    if (fixed > 0) {
+      debugPrint('[DB] repairDroppedDeletions → 修复 $fixed 条丢失的删除');
+    }
+    return fixed;
+  }
+
+  /// 修复卡住的评论，让它们重新进入推送队列。
+  ///
+  /// 两类历史遗留：
+  ///  1. 旧版拉取时把「本地有未推送编辑」的评论标成 conflict，而评论没有任何
+  ///     冲突处理入口、推送端又只挑 pending，这些评论永远推不上去；
+  ///  2. 离线写在未同步日记下的评论，日记后来同步了却没补上 parentMemosName
+  ///     （[adoptCommentsForMemo] 之前的版本没有这一步），推送端缺父名一直跳过。
+  ///
+  /// 同步侧已修正这两处，但存量记录不会自己恢复，需要启动时自愈。幂等。
+  static Future<int> repairStuckComments() async {
+    final isar = await db;
+    var fixed = 0;
+
+    final conflicted = await isar.commentEntrys
+        .filter()
+        .syncStatusEqualTo(SyncStatus.conflict)
+        .findAll();
+    if (conflicted.isNotEmpty) {
+      for (final comment in conflicted) {
+        comment.syncStatus = SyncStatus.pending;
+      }
+      await isar.writeTxn(() => isar.commentEntrys.putAll(conflicted));
+      fixed += conflicted.length;
+    }
+
+    final orphans = await isar.commentEntrys
+        .filter()
+        .parentMemosNameIsNull()
+        .memoIdIsNotNull()
+        .isDeletedEqualTo(false)
+        .findAll();
+    final memoIds = orphans.map((c) => c.memoId!).toSet();
+    for (final memoId in memoIds) {
+      final memoName = (await isar.memoEntrys.get(memoId))?.memosName;
+      if (memoName == null || memoName.isEmpty) continue;
+      await adoptCommentsForMemo(memoId, memoName);
+      fixed += orphans.where((c) => c.memoId == memoId).length;
+    }
+
+    if (fixed > 0) {
+      debugPrint('[DB] repairStuckComments → 修复 $fixed 条卡住的评论');
     }
     return fixed;
   }

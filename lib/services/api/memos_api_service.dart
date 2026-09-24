@@ -384,6 +384,34 @@ class MemosApiService {
     }
   }
 
+  /// 更新评论（PATCH /api/v1/comments/{id}）
+  ///
+  /// 注意：**不能**改用 `updateMemo('/api/v1/memos/{id}')`。评论 id 属于服务端
+  /// comments 表，`PATCH /memos/:id` 只在 memos 表查询并 404（只有 GET / DELETE
+  /// 带评论回退分支）。
+  ///
+  /// 服务端该接口没有 updateMask，会把 body 里的四个字段全量写回
+  /// （`UPDATE comments SET content=?, location=?, latitude=?, longitude=?`），
+  /// 所以 [location] 必须一并回传，否则会被写成 NULL。
+  Future<Map<String, dynamic>> updateComment({
+    required String name,
+    required String content,
+    String? location,
+  }) async {
+    final id = name.split('/').last;
+    debugPrint('[API] updateComment id=$id');
+    try {
+      final res = await _dio.patch(
+        '/api/v1/comments/$id',
+        data: {'content': content, 'location': location},
+      );
+      debugPrint('[API] updateComment 成功');
+      return Map<String, dynamic>.from(res.data as Map);
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
+
   // ── Attachment CRUD (v0.25) ───────────────────────────────────
 
   /// 上传附件（POST /api/v1/attachments）

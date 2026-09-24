@@ -20,6 +20,7 @@ import '../link/link_backfill.dart';
 import '../link/memo_link.dart';
 import '../settings/settings_service.dart';
 import '../vault/vault_sync.dart';
+import 'pending_article_conflict_policy.dart';
 import 'pending_memo_conflict_policy.dart';
 import 'sync_task_queue.dart';
 
@@ -134,7 +135,7 @@ class SyncService {
       }
       // 拉取文件夹和文章（先文件夹，再文章）
       await _pullFolders(api);
-      await _pullArticles(api);
+      await _pullArticles(api, url);
       // 事件串依赖已拉取的日记，确保成员可映射为本地 id。
       await _pullThreads(api);
       // 建议在事件串之后拉取，保证 threadLocalId 能映射到本地
@@ -230,20 +231,27 @@ class SyncService {
       }
       debugPrint('[Sync] pushSingleMemo 新建成功，memosName=${latest?.memosName}');
     } else {
-      await api.updateMemo(
-        name: memo.memosName!,
-        content: memo.content,
-        attachmentNames: attachmentNames,
-        createTime: memo.createdAt,
-        locationPlaceholder: memo.location,
-        latitude: memo.latitude,
-        longitude: memo.longitude,
-        syncMoodWeather: hasMoodWeather || memo.moodWeatherSynced,
-        mood: moodInt,
-        weather: weatherInt,
-        weatherDetail: weatherDetail,
-        state: memo.isArchived ? 'ARCHIVED' : 'NORMAL',
-      );
+      try {
+        await api.updateMemo(
+          name: memo.memosName!,
+          content: memo.content,
+          attachmentNames: attachmentNames,
+          createTime: memo.createdAt,
+          locationPlaceholder: memo.location,
+          latitude: memo.latitude,
+          longitude: memo.longitude,
+          syncMoodWeather: hasMoodWeather || memo.moodWeatherSynced,
+          mood: moodInt,
+          weather: weatherInt,
+          weatherDetail: weatherDetail,
+          state: memo.isArchived ? 'ARCHIVED' : 'NORMAL',
+        );
+      } on MemosApiException catch (e) {
+        if (e.statusCode != 404) rethrow;
+        // 远端已被别处删除：编辑优先，脱离旧远端名后按新建重推
+        await _detachDeletedRemoteMemo(memo);
+        return pushSingleMemo(memo);
+      }
       if (memo.isPinned) {
         await api.pinMemo(memo.memosName!);
       } else {
@@ -283,31 +291,15 @@ class SyncService {
       }
     }
 
-    if (article.articleName == null) {
-      final data = await api.createArticle(
-        title: article.title,
-        content: article.content,
-        visibility: article.visibility,
-        parent: article.folderName,
-      );
-      article
-        ..articleName = data['name'] as String?
-        ..syncStatus = SyncStatus.synced
-        ..lastSyncAt = DateTime.now();
-    } else {
-      await api.updateArticle(
-        name: article.articleName!,
-        title: article.title,
-        content: article.content,
-        visibility: article.visibility,
-        pinned: article.isPinned,
-        parent: article.folderName,
-        updateParent: true,
-      );
-      article
-        ..syncStatus = SyncStatus.synced
-        ..lastSyncAt = DateTime.now();
-    }
+    // 附件先补传再随 create/update 关联（与批量推送同一套逻辑）
+    await _uploadPendingArticleAttachments(api, article, url, token);
+    final attachmentNames = article.attachments
+        .where((a) => a.remoteResName != null)
+        .map((a) => a.remoteResName!)
+        .toList();
+
+    await _upsertRemoteArticle(api, article, attachmentNames);
+    markArticleSynced(article);
     await DatabaseService.saveArticle(article, skipTimestamp: true);
     debugPrint(
       '[Sync] pushSingleArticle 成功 articleName=${article.articleName}',
@@ -574,7 +566,9 @@ class SyncService {
           // ── 处理软删除：远端有 ID 则先删远端，再本地物理删除 ──
           if (memo.memosName != null) {
             debugPrint('[Sync] 删除远端 memo: ${memo.memosName}');
-            await api.deleteMemo(memo.memosName!);
+            await _deleteRemoteIgnoringNotFound(
+              () => api.deleteMemo(memo.memosName!),
+            );
           }
           await DatabaseService.hardDelete(memo.id);
           debugPrint('[Sync] 本地物理删除完成 id=${memo.id}');
@@ -600,7 +594,7 @@ class SyncService {
     // ── 推送文件夹（先于文章，确保 folderName 有值）──
     count += await _pushPendingFolders(api);
     // ── 推送文章 ──
-    count += await _pushPendingArticles(api);
+    count += await _pushPendingArticles(api, url, token);
     // 事件串最后推送：离线日记先取得 memosName 后才能成为成员。
     count += await _pushPendingThreads(api);
     // 建议最后推送：接受建议引发的成员变更已在上一步推完
@@ -644,83 +638,107 @@ class SyncService {
     final weatherDetail = _weatherDetailFromJson(memo.weatherJson);
     final hasMoodWeather = _hasMoodWeather(moodInt, weatherInt, weatherDetail);
 
-    if (memo.memosName == null) {
-      // ── 处理新建 ──
-      debugPrint(
-        '[Sync] 新建远端 memo id=${memo.id}，附件 ${attachmentNames.length} 个，'
-        'state=$state',
-      );
-      final remoteData = await api.createMemo(
-        content: memo.content,
-        attachmentNames: attachmentNames,
-        createTime: memo.createdAt,
-        locationPlaceholder: memo.location,
-        latitude: memo.latitude,
-        longitude: memo.longitude,
-        mood: moodInt,
-        weather: weatherInt,
-        weatherDetail: weatherDetail,
-      );
-      final remoteName = remoteData['name'] as String?;
-      if (remoteName == null || remoteName.isEmpty) {
-        throw StateError('创建 memo 成功但响应缺少 name');
-      }
-
-      // 新建后的归档/置顶是额外请求：若其中一步失败，先写回资源名并保持
-      // pending，下次重试走 update 分支，避免重复 create 出两条远端 memo。
-      try {
-        if (state == 'ARCHIVED') {
-          await api.archiveMemo(remoteName);
-        }
-        if (memo.isPinned) {
-          await api.pinMemo(remoteName);
-        }
-      } catch (_) {
-        await DatabaseService.attachMemoRemoteName(memo.id, remoteName);
-        rethrow;
-      }
-
-      final latest = await DatabaseService.completeMemoPush(
-        memo,
-        remoteName: remoteName,
-        moodWeatherSynced: hasMoodWeather,
-      );
-      debugPrint('[Sync] 新建成功，memosName=${latest?.memosName}');
-    } else {
+    if (memo.memosName != null) {
       // ── 处理更新 ──
       debugPrint(
         '[Sync] 更新远端 memo: ${memo.memosName}，附件 ${attachmentNames.length} 个，'
         'state=$state',
       );
-      await api.updateMemo(
-        name: memo.memosName!,
-        content: memo.content,
-        attachmentNames: attachmentNames,
-        createTime: memo.createdAt,
-        locationPlaceholder: memo.location,
-        latitude: memo.latitude,
-        longitude: memo.longitude,
-        syncMoodWeather: hasMoodWeather || memo.moodWeatherSynced,
-        mood: moodInt,
-        weather: weatherInt,
-        weatherDetail: weatherDetail,
-        state: state,
-      );
-      // 同步置顶状态
-      if (memo.isPinned) {
-        await api.pinMemo(memo.memosName!);
-      } else {
-        await api.unpinMemo(memo.memosName!);
+      try {
+        await api.updateMemo(
+          name: memo.memosName!,
+          content: memo.content,
+          attachmentNames: attachmentNames,
+          createTime: memo.createdAt,
+          locationPlaceholder: memo.location,
+          latitude: memo.latitude,
+          longitude: memo.longitude,
+          syncMoodWeather: hasMoodWeather || memo.moodWeatherSynced,
+          mood: moodInt,
+          weather: weatherInt,
+          weatherDetail: weatherDetail,
+          state: state,
+        );
+      } on MemosApiException catch (e) {
+        if (e.statusCode != 404) rethrow;
+        // 远端已被别处删除：编辑优先，脱离旧远端名后走下面的新建分支
+        await _detachDeletedRemoteMemo(memo);
       }
-      final latest = await DatabaseService.completeMemoPush(
-        memo,
-        moodWeatherSynced: hasMoodWeather,
-      );
-      debugPrint('[Sync] 更新成功，memosName=${memo.memosName}');
-      if (latest?.syncStatus == SyncStatus.pending) {
-        debugPrint('[Sync] 更新期间检测到新编辑，保留 pending id=${memo.id}');
+      if (memo.memosName != null) {
+        // 同步置顶状态
+        if (memo.isPinned) {
+          await api.pinMemo(memo.memosName!);
+        } else {
+          await api.unpinMemo(memo.memosName!);
+        }
+        final latest = await DatabaseService.completeMemoPush(
+          memo,
+          moodWeatherSynced: hasMoodWeather,
+        );
+        debugPrint('[Sync] 更新成功，memosName=${memo.memosName}');
+        if (latest?.syncStatus == SyncStatus.pending) {
+          debugPrint('[Sync] 更新期间检测到新编辑，保留 pending id=${memo.id}');
+        }
+        return;
       }
     }
+
+    // ── 处理新建（含远端已删除后的重建）──
+    debugPrint(
+      '[Sync] 新建远端 memo id=${memo.id}，附件 ${attachmentNames.length} 个，'
+      'state=$state',
+    );
+    final remoteData = await api.createMemo(
+      content: memo.content,
+      attachmentNames: attachmentNames,
+      createTime: memo.createdAt,
+      locationPlaceholder: memo.location,
+      latitude: memo.latitude,
+      longitude: memo.longitude,
+      mood: moodInt,
+      weather: weatherInt,
+      weatherDetail: weatherDetail,
+    );
+    final remoteName = remoteData['name'] as String?;
+    if (remoteName == null || remoteName.isEmpty) {
+      throw StateError('创建 memo 成功但响应缺少 name');
+    }
+
+    // 新建后的归档/置顶是额外请求：若其中一步失败，先写回资源名并保持
+    // pending，下次重试走 update 分支，避免重复 create 出两条远端 memo。
+    try {
+      if (state == 'ARCHIVED') {
+        await api.archiveMemo(remoteName);
+      }
+      if (memo.isPinned) {
+        await api.pinMemo(remoteName);
+      }
+    } catch (_) {
+      await DatabaseService.attachMemoRemoteName(memo.id, remoteName);
+      rethrow;
+    }
+
+    final latest = await DatabaseService.completeMemoPush(
+      memo,
+      remoteName: remoteName,
+      moodWeatherSynced: hasMoodWeather,
+    );
+    debugPrint('[Sync] 新建成功，memosName=${latest?.memosName}');
+  }
+
+  /// 远端条目已被别处删除（更新返回 404）时，让本地日记脱离旧远端名，
+  /// 以便按「编辑优先」重新创建。
+  ///
+  /// 服务端对已删除的 memo 拒绝更新；若不处理，这条日记会永远 pending 并每轮
+  /// 报错。重建会拿到新的远端名，因此还要：
+  ///  - 把挂在旧远端名下的本地评论改回「待挂靠」，新建完成后由
+  ///    [DatabaseService.adoptCommentsForMemo] 接到新父名下并重新创建；
+  ///  - 让包含它的事件串重新推送，把新远端名写进成员列表。
+  static Future<void> _detachDeletedRemoteMemo(MemoEntry memo) async {
+    final oldName = memo.memosName;
+    debugPrint('[Sync] 远端 memo $oldName 已删除，编辑优先：重新创建 id=${memo.id}');
+    memo.memosName = null;
+    await DatabaseService.detachMemoRemoteName(memo.id, oldName);
   }
 
   /// 把正文里缺远端名的内链补全（查不到的原样保留）。
@@ -755,7 +773,9 @@ class SyncService {
       try {
         if (comment.isDeleted) {
           if (comment.memosName != null) {
-            await api.deleteMemo(comment.memosName!);
+            await _deleteRemoteIgnoringNotFound(
+              () => api.deleteMemo(comment.memosName!),
+            );
           }
           await DatabaseService.hardDeleteComment(comment.id);
           debugPrint('[Sync] 评论远端删除完成 id=${comment.id}');
@@ -777,10 +797,15 @@ class SyncService {
           await DatabaseService.saveComment(comment, skipTimestamp: true);
           debugPrint('[Sync] 评论新建成功 memosName=${comment.memosName}');
         } else {
-          // 更新评论（同普通 memo）
-          await api.updateMemo(
+          // 更新评论：走 PATCH /api/v1/comments/:id。
+          //
+          // 不能用 updateMemo：评论的 id 在服务端属于 comments 表，而
+          // PATCH /api/v1/memos/:id 只在 memos 表里查（GET/DELETE 才有评论回退分支），
+          // 因此旧写法必然 404，评论编辑永远推不上去。
+          await api.updateComment(
             name: comment.memosName!,
             content: comment.content,
+            location: comment.location,
           );
           comment
             ..syncStatus = SyncStatus.synced
@@ -1079,9 +1104,13 @@ class SyncService {
       debugPrint('[Sync] 更新评论 $remoteName');
       return 1;
     } else if (local.syncStatus == SyncStatus.pending) {
-      debugPrint('[Sync] 评论冲突 $remoteName，标记 conflict');
-      local.syncStatus = SyncStatus.conflict;
-      await DatabaseService.saveComment(local, skipTimestamp: true);
+      // 本地有未推送的编辑：保留本地版本，等推送把它送上去。
+      //
+      // 这里刻意**不**标 conflict：CommentEntry 既没有 conflictRemoteContent
+      // 也没有任何冲突处理入口（详情页只显示一个警告图标），标成 conflict 等于
+      // 永久搁置——既不推送、也无法解决，远端永远停在旧内容。合并策略因此与
+      // 文件夹一致：本地优先，由下一次 push 覆盖远端。
+      debugPrint('[Sync] 评论本地改动优先，保留 pending $remoteName');
     }
     return 0;
   }
@@ -1433,6 +1462,22 @@ class SyncService {
   // 文件夹同步
   // ────────────────────────────────────────────────────────────────
 
+  /// 执行远端删除；远端返回 404 说明它已经不在了（别的设备删过、或上次删除
+  /// 其实已生效但响应丢了），按删除成功处理。
+  ///
+  /// 若把 404 当失败，条目会一直保持 pending，每轮同步都重试并失败，本地也
+  /// 永远无法物理删除。
+  static Future<void> _deleteRemoteIgnoringNotFound(
+    Future<void> Function() delete,
+  ) async {
+    try {
+      await delete();
+    } on MemosApiException catch (e) {
+      if (e.statusCode != 404) rethrow;
+      debugPrint('[Sync] 远端已不存在（404），视为删除成功');
+    }
+  }
+
   /// 推送所有 pending 文件夹到远端
   ///
   /// 先推文件夹，再推文章，保证文章 push 时 folderName 已有值。
@@ -1444,7 +1489,9 @@ class SyncService {
       try {
         if (folder.isDeleted) {
           if (folder.folderName != null) {
-            await api.deleteFolder(folder.folderName!);
+            await _deleteRemoteIgnoringNotFound(
+              () => api.deleteFolder(folder.folderName!),
+            );
           }
           await DatabaseService.hardDeleteFolder(folder.id);
         } else if (folder.folderName == null) {
@@ -1552,7 +1599,11 @@ class SyncService {
   // ────────────────────────────────────────────────────────────────
 
   /// 推送所有 pending 文章到远端
-  static Future<int> _pushPendingArticles(MemosApiService api) async {
+  static Future<int> _pushPendingArticles(
+    MemosApiService api,
+    String url,
+    String token,
+  ) async {
     final rawPending = await DatabaseService.getPendingSyncArticles();
     // 被引用的文章先推，引用方才补得上远端名
     final pending = sortForLinkBackfill(
@@ -1575,6 +1626,16 @@ class SyncService {
           article.content = await _backfillContentLinks(article.content);
         }
 
+        // ── 补传离线附件 ──
+        // 与 memo 同理：文章附件必须先上传拿到远端资源名，才能随下面的
+        // create/update 一起关联；否则服务端只会留下没有归属的孤儿附件，
+        // 别的设备永远看不到这篇文章的附件。
+        await _uploadPendingArticleAttachments(api, article, url, token);
+        final attachmentNames = article.attachments
+            .where((a) => a.remoteResName != null)
+            .map((a) => a.remoteResName!)
+            .toList();
+
         // 如果 folderName 还空但有 localFolderId，尝试从本地获取
         if (article.folderName == null && article.localFolderId != null) {
           final isar = await DatabaseService.db;
@@ -1590,36 +1651,16 @@ class SyncService {
 
         if (article.isDeleted) {
           if (article.articleName != null) {
-            await api.deleteArticle(article.articleName!);
+            await _deleteRemoteIgnoringNotFound(
+              () => api.deleteArticle(article.articleName!),
+            );
           }
           await DatabaseService.hardDeleteArticle(article.id);
-        } else if (article.articleName == null) {
-          // 新建：folderName 为 null 且 localFolderId 也为 null → 放根目录，不传 parent
-          final data = await api.createArticle(
-            title: article.title,
-            content: article.content,
-            visibility: article.visibility,
-            parent: article.folderName, // null 时服务端放根目录
-          );
-          article
-            ..articleName = data['name'] as String?
-            ..syncStatus = SyncStatus.synced
-            ..lastSyncAt = DateTime.now();
-          await DatabaseService.saveArticle(article, skipTimestamp: true);
         } else {
-          // 更新：始终传 parent，让服务端能正确写入或清空 parent_id
-          await api.updateArticle(
-            name: article.articleName!,
-            title: article.title,
-            content: article.content,
-            visibility: article.visibility,
-            pinned: article.isPinned,
-            parent: article.folderName, // null = 根目录
-            updateParent: true,
-          );
-          article
-            ..syncStatus = SyncStatus.synced
-            ..lastSyncAt = DateTime.now();
+          await _upsertRemoteArticle(api, article, attachmentNames);
+          // 推送成功即清掉编辑基线：留着过期基线，下次非编辑器改动
+          // （移动文件夹等）会被拉取阶段误判成冲突
+          markArticleSynced(article);
           await DatabaseService.saveArticle(article, skipTimestamp: true);
         }
         count++;
@@ -1631,39 +1672,175 @@ class SyncService {
     return count;
   }
 
+  /// 把文章推到远端：没有远端名就新建，有就更新。
+  ///
+  /// 更新返回 404 说明远端已被别处删除（服务端拒绝更新已删除的文章）。按
+  /// 「编辑优先」清掉旧远端名、重新创建；否则这篇文章会永远 pending 并每轮报错。
+  /// 成功后 [ArticleEntry.articleName] 为最新的远端名，落盘由调用方负责。
+  static Future<void> _upsertRemoteArticle(
+    MemosApiService api,
+    ArticleEntry article,
+    List<String> attachmentNames,
+  ) async {
+    if (article.articleName != null) {
+      try {
+        // 更新：始终传 parent，让服务端能正确写入或清空 parent_id
+        await api.updateArticle(
+          name: article.articleName!,
+          title: article.title,
+          content: article.content,
+          visibility: article.visibility,
+          pinned: article.isPinned,
+          parent: article.folderName, // null = 根目录
+          updateParent: true,
+          attachmentNames: attachmentNames,
+        );
+        return;
+      } on MemosApiException catch (e) {
+        if (e.statusCode != 404) rethrow;
+        debugPrint(
+          '[Sync] 远端文章 ${article.articleName} 已删除，编辑优先：重新创建 id=${article.id}',
+        );
+        article.articleName = null;
+      }
+    }
+    // 新建：folderName 为 null → 服务端放根目录
+    final data = await api.createArticle(
+      title: article.title,
+      content: article.content,
+      visibility: article.visibility,
+      parent: article.folderName,
+      attachmentNames: attachmentNames,
+    );
+    article.articleName = data['name'] as String?;
+  }
+
+  /// 把文章里尚未上传的附件补传到远端，并把正文中的本地路径换成远端 URL。
+  ///
+  /// 与 [_uploadPendingAttachments]（memo 版）逻辑一致：失败的附件标记
+  /// uploadFailed=true 不抛异常，等待下次推送重试。
+  static Future<void> _uploadPendingArticleAttachments(
+    MemosApiService api,
+    ArticleEntry article,
+    String baseUrl,
+    String token,
+  ) async {
+    final attachments = article.attachments;
+    if (attachments.isEmpty) return;
+
+    var dirty = false;
+    final updated = <AttachmentInfo>[];
+    for (final att in attachments) {
+      if (att.remoteUrl != null || att.localPath == null) {
+        updated.add(att);
+        continue;
+      }
+      debugPrint('[Sync] 补传文章离线附件 ${att.filename}');
+      final newAtt = await AttachmentService.uploadPendingAttachment(
+        att,
+        baseUrl,
+        token,
+      );
+      updated.add(newAtt);
+      if (!identical(newAtt, att)) dirty = true;
+
+      if (newAtt.remoteUrl != null && att.localPath != null) {
+        final localUri = 'file://${att.localPath}';
+        if (article.content.contains(localUri)) {
+          article.content = article.content.replaceAll(
+            localUri,
+            newAtt.remoteUrl!,
+          );
+          debugPrint('[Sync] 文章正文中路径已替换：$localUri → ${newAtt.remoteUrl}');
+        }
+      }
+    }
+
+    if (dirty) {
+      article.attachments = updated;
+      await DatabaseService.saveArticle(article, skipTimestamp: true);
+    }
+  }
+
   /// 从远端拉取文章列表，合并到本地
-  static Future<int> _pullArticles(MemosApiService api) async {
+  ///
+  /// NORMAL 与 ARCHIVED 都要拉：删除检测依赖「远端全量名单」，只拉 NORMAL 会把
+  /// 服务端处于 ARCHIVED 的文章当成"远端已删除"，从而在本地物理删除。
+  static Future<int> _pullArticles(
+    MemosApiService api,
+    String baseUrl,
+  ) async {
     debugPrint('[Sync] _pullArticles 开始');
     int pulled = 0;
     try {
-      final remoteArticles = await api.listAllArticles();
-      final remoteNames = remoteArticles
-          .map((a) => a['name'] as String)
-          .toSet();
+      final normalArticles = await api.listAllArticles(state: 'NORMAL');
+      final archivedArticles = await api.listAllArticles(state: 'ARCHIVED');
+      debugPrint(
+        '[Sync] 远端文章 NORMAL=${normalArticles.length} ARCHIVED=${archivedArticles.length}',
+      );
 
-      for (final data in remoteArticles) {
-        final name = data['name'] as String;
-        final local = await DatabaseService.getArticleByArticleName(name);
-        if (local == null) {
-          final article = _articleFromRemote(data);
-          await DatabaseService.saveArticle(article, skipTimestamp: true);
-          pulled++;
-        } else if (local.syncStatus == SyncStatus.synced) {
-          _applyRemoteArticle(local, data);
-          await DatabaseService.saveArticle(local, skipTimestamp: true);
-          pulled++;
-        } else if (local.syncStatus == SyncStatus.pending) {
-          // 双方都改了 → 标记 conflict
-          local
-            ..conflictRemoteContent = data['content'] as String?
-            ..conflictRemoteTitle = data['title'] as String?
-            ..syncStatus = SyncStatus.conflict;
-          await DatabaseService.saveArticle(local, skipTimestamp: true);
-          debugPrint('[Sync] 文章冲突 articleName=$name');
+      final remoteNames = <String>{};
+      for (final data in [...normalArticles, ...archivedArticles]) {
+        final name = data['name'] as String?;
+        if (name == null || name.isEmpty) continue;
+        remoteNames.add(name);
+      }
+
+      Future<void> processList(
+        List<Map<String, dynamic>> list,
+        bool archived,
+      ) async {
+        for (final data in list) {
+          final name = data['name'] as String?;
+          if (name == null || name.isEmpty) continue;
+          final local = await DatabaseService.getArticleByArticleName(name);
+          if (local == null) {
+            final article = _articleFromRemote(data, baseUrl, archived: archived);
+            await DatabaseService.saveArticle(article, skipTimestamp: true);
+            unawaited(_downloadArticleAttachments(article, baseUrl));
+            pulled++;
+          } else if (local.syncStatus == SyncStatus.synced) {
+            _applyRemoteArticle(local, data, baseUrl, archived: archived);
+            await DatabaseService.saveArticle(local, skipTimestamp: true);
+            unawaited(_downloadArticleAttachments(local, baseUrl));
+            pulled++;
+          } else if (local.syncStatus == SyncStatus.pending) {
+            // 用编辑基线判断，而不是"本地 pending 就冲突"——后者会把所有
+            // 离线编辑误判成冲突（见 decidePendingArticle 文档）。
+            switch (decidePendingArticle(local, data, archived: archived)) {
+              case PendingArticleDecision.alreadySynced:
+                debugPrint('[Sync] 文章 pending 内容已存在于远端，标记 synced: $name');
+                markArticleSynced(local);
+                await DatabaseService.saveArticle(local, skipTimestamp: true);
+              case PendingArticleDecision.pushLocal:
+                debugPrint('[Sync] 文章远端仍为编辑基线，保留 pending 等待推送: $name');
+              case PendingArticleDecision.conflict:
+                local
+                  ..conflictRemoteContent = data['content'] as String?
+                  ..conflictRemoteTitle = data['title'] as String?
+                  ..syncStatus = SyncStatus.conflict;
+                await DatabaseService.saveArticle(local, skipTimestamp: true);
+                debugPrint('[Sync] 文章冲突 articleName=$name');
+            }
+          } else if (local.syncStatus == SyncStatus.conflict) {
+            // 已是冲突状态，远端又有新版本 → 只更新远端版本内容，不覆盖本地
+            final remoteContent = data['content'] as String?;
+            final remoteTitle = data['title'] as String?;
+            if (remoteContent != local.conflictRemoteContent ||
+                remoteTitle != local.conflictRemoteTitle) {
+              local
+                ..conflictRemoteContent = remoteContent
+                ..conflictRemoteTitle = remoteTitle;
+              await DatabaseService.saveArticle(local, skipTimestamp: true);
+            }
+          }
         }
       }
 
-      // 检测远端已删除的文章
+      await processList(normalArticles, false);
+      await processList(archivedArticles, true);
+
+      // 检测远端已删除的文章（NORMAL + ARCHIVED 都不在才算删除）
       final localSynced = await DatabaseService.getAllSyncedArticles();
       for (final local in localSynced) {
         if (local.articleName != null &&
@@ -1679,7 +1856,41 @@ class SyncService {
     return pulled;
   }
 
-  static ArticleEntry _articleFromRemote(Map<String, dynamic> data) {
+  /// 将文章的远端附件下载到本地，并更新 DB（后台执行，不阻塞同步主流程）。
+  static Future<void> _downloadArticleAttachments(
+    ArticleEntry article,
+    String baseUrl,
+  ) async {
+    final attachments = article.attachments;
+    if (attachments.isEmpty) return;
+
+    final token = await SettingsService.accessToken;
+    if (token == null || token.isEmpty) return;
+
+    bool changed = false;
+    final updated = <AttachmentInfo>[];
+    for (final att in attachments) {
+      final newAtt = await AttachmentService.downloadToLocal(
+        att,
+        baseUrl,
+        token,
+      );
+      updated.add(newAtt);
+      if (newAtt.localPath != att.localPath) changed = true;
+    }
+
+    if (changed) {
+      article.attachments = updated;
+      await DatabaseService.saveArticle(article, skipTimestamp: true);
+      debugPrint('[Sync] 文章附件下载完成，已更新 article id=${article.id}');
+    }
+  }
+
+  static ArticleEntry _articleFromRemote(
+    Map<String, dynamic> data,
+    String baseUrl, {
+    required bool archived,
+  }) {
     final article = ArticleEntry()
       ..articleName = data['name'] as String?
       ..title = data['title'] as String? ?? ''
@@ -1687,9 +1898,10 @@ class SyncService {
       ..folderName = data['parent'] as String?
       ..visibility = data['visibility'] as String? ?? 'PRIVATE'
       ..isPinned = data['pinned'] as bool? ?? false
-      ..isArchived = (data['state'] as String?) == 'ARCHIVED'
+      ..isArchived = archived
       ..syncStatus = SyncStatus.synced
-      ..lastSyncAt = DateTime.now();
+      ..lastSyncAt = DateTime.now()
+      ..attachments = _parseAttachments(data, baseUrl);
     final createTime = data['createTime'] as String?;
     if (createTime != null) {
       article.createdAt = DateTime.parse(createTime).toLocal();
@@ -1704,7 +1916,9 @@ class SyncService {
   static void _applyRemoteArticle(
     ArticleEntry article,
     Map<String, dynamic> data,
-  ) {
+    String baseUrl, {
+    required bool archived,
+  }) {
     article
       ..title = data['title'] as String? ?? ''
       ..content = data['content'] as String? ?? ''
@@ -1713,13 +1927,27 @@ class SyncService {
           null // 同步后以远端 folderName 为准，清除离线关联
       ..visibility = data['visibility'] as String? ?? 'PRIVATE'
       ..isPinned = data['pinned'] as bool? ?? false
-      ..isArchived = (data['state'] as String?) == 'ARCHIVED'
+      ..isArchived = archived
       ..syncStatus = SyncStatus.synced
       ..lastSyncAt = DateTime.now();
     final updateTime = data['updateTime'] as String?;
     if (updateTime != null) {
       article.updatedAt = DateTime.parse(updateTime).toLocal();
     }
+
+    // 合并附件：保留本地已下载的 localPath
+    final oldByResName = {
+      for (final a in article.attachments)
+        if (a.remoteResName != null) a.remoteResName!: a,
+    };
+    article.attachments = _parseAttachments(data, baseUrl).map((a) {
+      final old = a.remoteResName != null
+          ? oldByResName[a.remoteResName]
+          : null;
+      return (old?.localPath != null)
+          ? a.copyWith(localPath: old!.localPath)
+          : a;
+    }).toList();
   }
 
   // ── 事件串同步 ────────────────────────────────────────────────
@@ -1819,8 +2047,11 @@ class SyncService {
     for (final thread in await DatabaseService.getPendingSyncThreads()) {
       try {
         if (thread.isDeleted) {
-          if (thread.threadName != null)
-            await api.deleteThread(thread.threadName!);
+          if (thread.threadName != null) {
+            await _deleteRemoteIgnoringNotFound(
+              () => api.deleteThread(thread.threadName!),
+            );
+          }
           await DatabaseService.hardDeleteThread(thread.id);
           pushed++;
           continue;

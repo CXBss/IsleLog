@@ -62,6 +62,40 @@ void main() {
 
       expect(decision, PendingMemoDecision.conflict);
     });
+
+    test('keeps a pending deletion pushable even when remote matches', () {
+      // 本地刚软删、还没推送：远端此刻必然还是同一份内容。若按内容判定成
+      // alreadySynced，syncStatus 会被改成 synced，删除请求永远发不出去
+      // （远端和其他设备一直留着这条日记）。
+      final local = MemoEntry()
+        ..content = 'same content'
+        ..syncStatus = SyncStatus.pending
+        ..isDeleted = true;
+
+      final decision = decidePendingMemo(
+        local,
+        _remoteMemo(content: 'same content'),
+        archived: false,
+      );
+
+      expect(decision, PendingMemoDecision.pushLocal);
+    });
+
+    test('keeps a pending deletion pushable when remote changed', () {
+      final local = MemoEntry()
+        ..content = 'local copy'
+        ..originalContent = 'baseline'
+        ..syncStatus = SyncStatus.pending
+        ..isDeleted = true;
+
+      final decision = decidePendingMemo(
+        local,
+        _remoteMemo(content: 'remote edited elsewhere'),
+        archived: false,
+      );
+
+      expect(decision, PendingMemoDecision.pushLocal);
+    });
   });
 
   test('markMemoSynced clears edit and conflict snapshots', () {

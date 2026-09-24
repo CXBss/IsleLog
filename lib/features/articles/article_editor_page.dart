@@ -22,6 +22,7 @@ import '../../services/attachment/video_playback_support.dart';
 import '../../services/link/link_insertion.dart';
 import '../../services/link/link_navigator.dart';
 import '../../services/settings/settings_service.dart';
+import '../../services/sync/pending_article_conflict_policy.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
 import '../../shared/widgets/video_attachment_card.dart';
@@ -99,9 +100,9 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
 
     if (article != null) {
       _pendingAttachments.addAll(article.attachments);
-      // 记录编辑前快照，供冲突三方对比使用
-      article.originalContent = article.content;
-      article.originalTitle = article.title;
+      // 记录编辑前快照，供冲突三方对比使用。已有未推送改动时保留旧基线，
+      // 否则第二次离线编辑会把未推送内容当基线，拉取时误判冲突。
+      captureArticleEditBaseline(article);
     }
 
     _loadFolders(article);
@@ -444,9 +445,8 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
       // 三方对比：远端与编辑前快照相同 → 无冲突
       if (remoteTitle == originalTitle && remoteContent == originalContent) {
         debugPrint('[ArticleEditor] 无冲突，直接推送');
-        article.originalTitle = null;
-        article.originalContent = null;
-        await DatabaseService.saveArticle(article, skipTimestamp: true);
+        // 基线由推送成功后的 markArticleSynced 清理；推送失败时必须保留，
+        // 否则下一轮拉取没有基线可比，会把这次编辑误判成冲突。
         await SyncService.pushSingleArticle(article);
         if (mounted) Navigator.pop(context, true);
         return;
@@ -470,8 +470,10 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
             onResolved: (resolvedTitle, resolvedContent) async {
               article.title = resolvedTitle;
               article.content = resolvedContent;
-              article.originalTitle = null;
-              article.originalContent = null;
+              // 处理结果已吸收远端版本，基线改为远端：推送失败时下一轮拉取
+              // 仍能认出「远端没再变」，不会重复报冲突。
+              article.originalTitle = remoteTitle;
+              article.originalContent = remoteContent;
               article.syncStatus = SyncStatus.pending;
               article.conflictRemoteTitle = null;
               article.conflictRemoteContent = null;
@@ -484,9 +486,7 @@ class _ArticleEditorPageState extends State<ArticleEditorPage> {
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       debugPrint('[ArticleEditor] 冲突检测失败，降级后台推送：$e');
-      article.originalTitle = null;
-      article.originalContent = null;
-      await DatabaseService.saveArticle(article, skipTimestamp: true);
+      // 保留基线：后台同步先拉后推，拉取阶段要靠它判断能否直接推送
       unawaited(SyncService.pushPendingBackground());
       if (mounted) Navigator.pop(context, true);
     }

@@ -21,6 +21,14 @@ PendingMemoDecision decidePendingMemo(
   Map<String, dynamic> remote, {
   required bool archived,
 }) {
+  // 待删除条目直接交还给推送端，绝不做内容比对。
+  //
+  // 删除是本地唯一意图，而此刻远端必然还是旧内容（删除请求还没发出去），
+  // 于是「远端与本地一致」恒成立；若据此判成 alreadySynced，syncStatus 会被
+  // 改成 synced，_pushPending 只挑 pending，这条日记的删除就永远不会推上去
+  // ——本地看着删掉了（到处都过滤 isDeleted），远端和其他设备却一直留着。
+  if (local.isDeleted) return PendingMemoDecision.pushLocal;
+
   if (_memosMatch(local, remote, archived)) {
     return PendingMemoDecision.alreadySynced;
   }

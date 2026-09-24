@@ -35,6 +35,14 @@ Future<void> main() async {
   // 修复升级路径可能遗留的「手写简介被静默解锁」问题，详见方法注释
   await DatabaseService.repairUnlockedManualSummaries();
 
+  // 修复历史缺陷留下的「本地已删、远端还在」的日记/文章：把被同步判成
+  // synced/conflict 的待删除条目交还给 pending，下次同步才会真正推送删除
+  await DatabaseService.repairDroppedDeletions();
+
+  // 修复历史缺陷留下的「推不上去」的评论：被标 conflict 的、以及父日记已同步
+  // 却没补上父名的离线评论
+  await DatabaseService.repairStuckComments();
+
   if (kVaultEnabled) {
     await VaultController.init();
     VaultController.instance.attachLifecycleObserver();
