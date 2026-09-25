@@ -26,8 +26,8 @@ class _FakeGateway implements AiGateway {
   @override
   Future<OnThisDayCompareResult> onThisDayCompare({
     required String memoName,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
     CancelToken? cancelToken,
   }) async {
     lastProvider = provider;
@@ -44,8 +44,9 @@ class _FakeGateway implements AiGateway {
   Future<List<AiTagSuggestion>> suggestTags({
     required String content,
     required List<AiExistingTag> existingTags,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
+    bool vault = false,
     CancelToken? cancelToken,
   }) async => throw UnimplementedError();
 
@@ -53,8 +54,9 @@ class _FakeGateway implements AiGateway {
   Future<List<AiPolishSegment>> polish({
     required String content,
     required PolishMode mode,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
+    bool vault = false,
     CancelToken? cancelToken,
   }) async => throw UnimplementedError();
 
@@ -68,15 +70,15 @@ class _FakeGateway implements AiGateway {
   @override
   Future<MemorySearchResult> memorySearch({
     required String query,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
     int? topK,
     CancelToken? cancelToken,
   }) async => throw UnimplementedError();
 }
 
 void main() {
-  testWidgets('点击"查看 AI 对照"用本地模型展示当时/现在的对照', (tester) async {
+  testWidgets('点击"查看 AI 对照"用全局模型展示当时/现在的对照', (tester) async {
     final gateway = _FakeGateway()
       ..nextResult = const OnThisDayCompareResult(
         pastSummary: '当时在纠结要不要换工作。',
@@ -98,7 +100,8 @@ void main() {
     await tester.tap(find.text('查看 AI 对照'));
     await tester.pumpAndSettle();
 
-    expect(gateway.lastProvider, AiProvider.local);
+    // 不指定模型：服务端使用设置里选定的全局模型
+    expect(gateway.lastProvider, isNull);
     expect(find.text('当时在纠结要不要换工作。'), findsOneWidget);
     expect(find.text('最近在筹备发布会。'), findsOneWidget);
     expect(find.text('收起 AI 对照'), findsOneWidget);
@@ -138,30 +141,9 @@ void main() {
     expect(find.text('生成失败'), findsOneWidget);
   });
 
-  testWidgets('DeepSeek 未启用时不显示云端图标', (tester) async {
-    final gateway = _FakeGateway();
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: OnThisDayAiCompare(memoName: 'memos/456', gateway: gateway),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.byIcon(Icons.cloud_outlined), findsNothing);
-  });
-
-  testWidgets('DeepSeek 启用时点击云端图标会弹出授权确认', (tester) async {
+  testWidgets('不再提供单独的云端入口和逐次授权', (tester) async {
     final gateway = _FakeGateway()
       ..statuses = const [
-        AiProviderStatus(
-          name: AiProvider.local,
-          enabled: true,
-          available: true,
-          model: 'qwen-local',
-          contextLength: 32768,
-        ),
         AiProviderStatus(
           name: AiProvider.deepSeek,
           enabled: true,
@@ -179,14 +161,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byIcon(Icons.cloud_outlined), findsOneWidget);
-    await tester.tap(find.byIcon(Icons.cloud_outlined));
-    await tester.pumpAndSettle();
-
-    expect(find.text('使用云端模型'), findsOneWidget);
-    // 取消后不应发起请求
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
-    expect(gateway.lastProvider, isNull);
+    expect(find.byIcon(Icons.cloud_outlined), findsNothing);
+    expect(find.text('使用云端模型'), findsNothing);
   });
 }

@@ -35,7 +35,6 @@ import '../../shared/widgets/video_viewer_page.dart';
 import '../conflict/conflict_overview_page.dart';
 import '../link_picker/link_picker_sheet.dart';
 import 'ai/ai_action_sheet.dart';
-import 'ai/cloud_ai_consent_dialog.dart';
 import 'ai/polish_preview_page.dart';
 import 'ai/tag_insertion.dart';
 import 'ai/tag_suggestions_sheet.dart';
@@ -1088,7 +1087,10 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       _showAiSnack('AI 模型服务暂时不可用，请稍后再试');
       return;
     }
-    final selection = await showAiActionSheet(context, providers: _aiStatuses);
+    final selection = await showAiActionSheet(
+      context,
+      modelLabel: aiModelLabel(_aiStatuses),
+    );
     if (selection == null || !mounted) return;
     await _runAiAction(selection);
   }
@@ -1102,7 +1104,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       return;
     }
 
-    final isDeepSeek = selection.provider == AiProvider.deepSeek;
     final content = _contentCtrl.text;
     final selectionRange = _contentCtrl.selection;
     final hasSelection =
@@ -1113,26 +1114,8 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     final targetEnd = hasSelection ? selectionRange.end : content.length;
     final target = content.substring(targetStart, targetEnd);
 
-    // DeepSeek 每次操作单独确认，不持久化
-    if (isDeepSeek) {
-      if (!mounted) return;
-      var model = 'DeepSeek';
-      for (final s in _aiStatuses) {
-        if (s.name == AiProvider.deepSeek && s.model.isNotEmpty) {
-          model = s.model;
-          break;
-        }
-      }
-      final consent = await showCloudAiConsentDialog(
-        context: context,
-        model: model,
-        recordCount: 1,
-        characterCount: target.length,
-        contentModeLabel: '原文',
-        includedMetadata: const ['标签', '正文'],
-      );
-      if (!consent || !mounted) return;
-    }
+    // 模型由设置里的全局选择决定；选择云端模型本身就是授权，不再逐次确认。
+    // 正文带敏感标签时服务端会自动改用本地模型。
 
     final cancelToken = CancelToken();
     _aiCancelToken = cancelToken;
@@ -1147,7 +1130,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           gateway: gateway,
           target: target,
           existingTags: existingTags,
-          isDeepSeek: isDeepSeek,
           cancelToken: cancelToken,
         );
         if (suggestions == null || !mounted) return;
@@ -1170,7 +1152,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
           gateway: gateway,
           selection: selection,
           target: target,
-          isDeepSeek: isDeepSeek,
           cancelToken: cancelToken,
         );
         if (segments == null || !mounted) return;
@@ -1222,15 +1203,12 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     required AiGateway gateway,
     required String target,
     required List<AiExistingTag> existingTags,
-    required bool isDeepSeek,
     required CancelToken cancelToken,
   }) async {
     try {
       return await gateway.suggestTags(
         content: target,
         existingTags: existingTags,
-        provider: isDeepSeek ? AiProvider.deepSeek : AiProvider.local,
-        cloudConsent: isDeepSeek,
         cancelToken: cancelToken,
       );
     } on AiRequestCancelled {
@@ -1246,7 +1224,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
     required AiGateway gateway,
     required AiActionSelection selection,
     required String target,
-    required bool isDeepSeek,
     required CancelToken cancelToken,
   }) async {
     final mode = switch (selection.type) {
@@ -1260,8 +1237,6 @@ class _MemoEditorPageState extends State<MemoEditorPage> {
       return await gateway.polish(
         content: target,
         mode: mode,
-        provider: isDeepSeek ? AiProvider.deepSeek : AiProvider.local,
-        cloudConsent: isDeepSeek,
         cancelToken: cancelToken,
       );
     } on AiRequestCancelled {

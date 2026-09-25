@@ -45,6 +45,8 @@ class FakeAiGateway implements AiGateway {
   int suggestCalls = 0;
   int polishCalls = 0;
   CancelToken? lastTagToken;
+  AiProvider? lastSuggestProvider;
+  bool? lastSuggestVault;
   CancelToken? lastPolishToken;
 
   @override
@@ -59,12 +61,15 @@ class FakeAiGateway implements AiGateway {
   Future<List<AiTagSuggestion>> suggestTags({
     required String content,
     required List<AiExistingTag> existingTags,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
+    bool vault = false,
     CancelToken? cancelToken,
   }) async {
     suggestCalls++;
     lastTagToken = cancelToken;
+    lastSuggestProvider = provider;
+    lastSuggestVault = vault;
     if (failSuggest) {
       throw const AiApiException('模型返回内容格式无效', statusCode: 502);
     }
@@ -77,8 +82,9 @@ class FakeAiGateway implements AiGateway {
   Future<List<AiPolishSegment>> polish({
     required String content,
     required PolishMode mode,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
+    bool vault = false,
     CancelToken? cancelToken,
   }) async {
     polishCalls++;
@@ -91,8 +97,8 @@ class FakeAiGateway implements AiGateway {
   @override
   Future<MemorySearchResult> memorySearch({
     required String query,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
     int? topK,
     CancelToken? cancelToken,
   }) async {
@@ -111,8 +117,8 @@ class FakeAiGateway implements AiGateway {
   @override
   Future<OnThisDayCompareResult> onThisDayCompare({
     required String memoName,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
     CancelToken? cancelToken,
   }) async {
     throw UnimplementedError();
@@ -266,7 +272,7 @@ void main() {
     expect(find.byType(MemoEditorPage), findsOneWidget);
   });
 
-  testWidgets('DeepSeek 每次请求都弹出确认', (tester) async {
+  testWidgets('使用全局模型：面板不再选模型，也不逐次弹云端确认', (tester) async {
     gateway.tagSuggestions = const [
       AiTagSuggestion(name: '工作', isNew: false, confidence: 0.9, reason: '开发'),
     ];
@@ -274,17 +280,17 @@ void main() {
     await tester.enterText(find.byType(TextField).first, '修复同步');
 
     await openAiActionSheet(tester);
-    await tester.tap(find.text('DeepSeek'));
-    await tester.pumpAndSettle();
+    // 全局模型是云端时，面板里标明这次会用哪个模型
+    expect(find.text('使用 deepseek-chat（云端）'), findsOneWidget);
+    expect(find.text('私有 Qwen'), findsNothing);
+
     await tester.tap(find.text('标签建议'));
     await tester.pumpAndSettle();
 
-    expect(find.text('使用云端模型'), findsOneWidget);
-    expect(gateway.suggestCalls, 0);
-
-    await tester.tap(find.text('仅本次允许'));
-    await tester.pumpAndSettle();
+    expect(find.text('使用云端模型'), findsNothing);
     expect(gateway.suggestCalls, 1);
+    expect(gateway.lastSuggestProvider, isNull);
+    expect(gateway.lastSuggestVault, isFalse);
   });
 
   testWidgets('AI 异常时原文不变并提示错误', (tester) async {

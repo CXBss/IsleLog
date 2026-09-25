@@ -11,71 +11,54 @@ enum AiActionType {
   polishFormatOnly,
 }
 
+/// 根据 `/ai/providers` 的状态描述这次会用哪个模型。
+///
+/// 服务端按用户配置返回：DEEPSEEK 槽位启用表示全局模型是云端模型，
+/// 否则用 LOCAL 槽位的本地模型。[vault] 为 true 时只可能是本地模型。
+String? aiModelLabel(List<AiProviderStatus> statuses, {bool vault = false}) {
+  AiProviderStatus? slot(AiProvider name) =>
+      statuses.where((s) => s.name == name && s.enabled).firstOrNull;
+  final cloud = vault ? null : slot(AiProvider.deepSeek);
+  if (cloud != null) {
+    return '${cloud.model.isEmpty ? '云端模型' : cloud.model}（云端）';
+  }
+  final local = slot(AiProvider.local);
+  if (local != null) {
+    return '${local.model.isEmpty ? '本地模型' : local.model}（本地）';
+  }
+  return null;
+}
+
 /// 用户在操作面板中作出的选择。
 class AiActionSelection {
   final AiActionType type;
-  final AiProvider provider;
 
-  const AiActionSelection(this.type, this.provider);
+  const AiActionSelection(this.type);
 }
 
-/// 展示 AI 操作面板。
+/// 展示 AI 操作面板。点击动作后返回选择，取消返回 null。
 ///
-/// 每次打开默认选择本地模型 [AiProvider.local]；Provider 选择只存在于
-/// 本次面板中，不持久化。点击动作后返回选择，取消返回 null。
+/// 不在这里选模型：所有 AI 功能统一使用设置里选定的全局模型。[modelLabel]
+/// 只用来告诉用户这次会用哪个模型，例如「私有 Qwen3.8」或「DeepSeek（云端）」。
 Future<AiActionSelection?> showAiActionSheet(
   BuildContext context, {
-  required List<AiProviderStatus> providers,
+  String? modelLabel,
 }) {
   return showModalBottomSheet<AiActionSelection>(
     context: context,
-    builder: (ctx) => _AiActionSheet(providers: providers),
+    builder: (ctx) => _AiActionSheet(modelLabel: modelLabel),
   );
 }
 
-class _AiActionSheet extends StatefulWidget {
-  final List<AiProviderStatus> providers;
+class _AiActionSheet extends StatelessWidget {
+  final String? modelLabel;
 
-  const _AiActionSheet({required this.providers});
-
-  @override
-  State<_AiActionSheet> createState() => _AiActionSheetState();
-}
-
-class _AiActionSheetState extends State<_AiActionSheet> {
-  late AiProvider _provider;
-
-  /// 本次可选的已启用 Provider（至少一个；测试或无启用时退化为默认）。
-  ///
-  /// LOCAL_EMBEDDING 只用于状态展示，不是可选的对话模型，排除在外——否则会被
-  /// 误当成一个可选项显示在这里，且下方的 SegmentedButton 会把它标成"DeepSeek"。
-  List<AiProvider> get _enabledProviders => widget.providers
-      .where((p) => p.enabled && p.name != AiProvider.localEmbedding)
-      .map((p) => p.name)
-      .toList();
-
-  /// 默认选择已启用的 Provider；LOCAL 启用时优先 LOCAL。
-  /// 保证 DeepSeek-only 部署不会误请求 LOCAL 而得到 503。
-  AiProvider get _initialProvider {
-    final enabled = _enabledProviders;
-    if (enabled.contains(AiProvider.local)) return AiProvider.local;
-    if (enabled.isNotEmpty) return enabled.first;
-    return AiProvider.local;
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _provider = _initialProvider;
-  }
-
-  void _choose(AiActionType type) {
-    Navigator.pop(context, AiActionSelection(type, _provider));
-  }
+  const _AiActionSheet({this.modelLabel});
 
   @override
   Widget build(BuildContext context) {
-    final enabled = _enabledProviders;
+    void choose(AiActionType type) =>
+        Navigator.pop(context, AiActionSelection(type));
     return SafeArea(
       child: SingleChildScrollView(
         child: Column(
@@ -89,53 +72,43 @@ class _AiActionSheetState extends State<_AiActionSheet> {
                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
               ),
             ),
-            if (enabled.length > 1)
+            if (modelLabel != null)
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-                child: SegmentedButton<AiProvider>(
-                  segments: [
-                    for (final p in enabled)
-                      ButtonSegment(
-                        value: p,
-                        label: Text(
-                          p == AiProvider.local ? '私有 Qwen' : 'DeepSeek',
-                        ),
-                      ),
-                  ],
-                  selected: {_provider},
-                  onSelectionChanged: (selection) =>
-                      setState(() => _provider = selection.first),
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+                child: Text(
+                  '使用 $modelLabel',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
             _ActionTile(
               icon: Icons.local_offer_outlined,
               title: '标签建议',
               subtitle: '根据正文生成候选标签',
-              onTap: () => _choose(AiActionType.suggestTags),
+              onTap: () => choose(AiActionType.suggestTags),
             ),
             _ActionTile(
               icon: Icons.spellcheck_outlined,
               title: '轻度润色',
               subtitle: '只修正病句和错别字',
-              onTap: () => _choose(AiActionType.polishLight),
+              onTap: () => choose(AiActionType.polishLight),
             ),
             _ActionTile(
               icon: Icons.format_quote_outlined,
               title: '中度润色',
               subtitle: '保留原意，改善表达',
-              onTap: () => _choose(AiActionType.polishMedium),
+              onTap: () => choose(AiActionType.polishMedium),
             ),
             _ActionTile(
               icon: Icons.auto_fix_high_outlined,
               title: '深度润色',
               subtitle: '允许较大结构和措辞调整',
-              onTap: () => _choose(AiActionType.polishDeep),
+              onTap: () => choose(AiActionType.polishDeep),
             ),
             _ActionTile(
               icon: Icons.format_align_left_outlined,
               title: '整理格式',
               subtitle: '只调整空白和 Markdown 格式',
-              onTap: () => _choose(AiActionType.polishFormatOnly),
+              onTap: () => choose(AiActionType.polishFormatOnly),
             ),
             const SizedBox(height: 8),
           ],

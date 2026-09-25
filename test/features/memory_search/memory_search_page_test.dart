@@ -34,8 +34,8 @@ class _FakeGateway implements AiGateway {
   @override
   Future<MemorySearchResult> memorySearch({
     required String query,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
     int? topK,
     CancelToken? cancelToken,
   }) async {
@@ -56,8 +56,9 @@ class _FakeGateway implements AiGateway {
   Future<List<AiTagSuggestion>> suggestTags({
     required String content,
     required List<AiExistingTag> existingTags,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
+    bool vault = false,
     CancelToken? cancelToken,
   }) async => throw UnimplementedError();
 
@@ -65,8 +66,9 @@ class _FakeGateway implements AiGateway {
   Future<List<AiPolishSegment>> polish({
     required String content,
     required PolishMode mode,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
+    bool vault = false,
     CancelToken? cancelToken,
   }) async => throw UnimplementedError();
 
@@ -80,8 +82,8 @@ class _FakeGateway implements AiGateway {
   @override
   Future<OnThisDayCompareResult> onThisDayCompare({
     required String memoName,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
     CancelToken? cancelToken,
   }) async => throw UnimplementedError();
 }
@@ -132,7 +134,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(gateway.lastQuery, '去年夏天去过哪里？');
-    expect(gateway.lastProvider, AiProvider.local);
+    // 不指定模型：服务端使用设置里选定的全局模型
+    expect(gateway.lastProvider, isNull);
     expect(find.text('去年夏天去过哪里？'), findsOneWidget);
     expect(find.text('去年夏天你提到去过厦门。'), findsOneWidget);
     expect(find.textContaining('去了厦门'), findsOneWidget);

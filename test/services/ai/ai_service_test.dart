@@ -40,8 +40,9 @@ class _FakeGateway implements AiGateway {
   Future<List<AiTagSuggestion>> suggestTags({
     required String content,
     required List<AiExistingTag> existingTags,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
+    bool vault = false,
     CancelToken? cancelToken,
   }) async {
     throw UnimplementedError();
@@ -51,8 +52,9 @@ class _FakeGateway implements AiGateway {
   Future<List<AiPolishSegment>> polish({
     required String content,
     required PolishMode mode,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
+    bool vault = false,
     CancelToken? cancelToken,
   }) async {
     throw UnimplementedError();
@@ -61,8 +63,8 @@ class _FakeGateway implements AiGateway {
   @override
   Future<MemorySearchResult> memorySearch({
     required String query,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
     int? topK,
     CancelToken? cancelToken,
   }) async {
@@ -81,8 +83,8 @@ class _FakeGateway implements AiGateway {
   @override
   Future<OnThisDayCompareResult> onThisDayCompare({
     required String memoName,
-    required AiProvider provider,
-    required bool cloudConsent,
+    AiProvider? provider,
+    bool cloudConsent = false,
     CancelToken? cancelToken,
   }) async {
     throw UnimplementedError();

@@ -192,8 +192,8 @@ class _AiSettingsEntryState extends State<_AiSettingsEntry> {
         if (snapshot.data != true) return const SizedBox.shrink();
         return _SettingsItem(
           icon: Icons.auto_awesome_outlined,
-          title: 'AI 编辑辅助',
-          subtitle: '标签建议、润色、格式整理',
+          title: 'AI 模型',
+          subtitle: '配置本地 / 云端模型，选择全局使用的模型',
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const AiSettingsPage()),

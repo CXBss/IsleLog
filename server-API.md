@@ -733,21 +733,91 @@ Thread 响应结构相应新增 `summaryLocked`。
 
 ---
 
+## AI 模型配置
+
+> **仅适用于 IsleLog 自建服务**。模型在客户端「设置 → AI 模型」里配置，保存在服务端
+> （夜间事件串分析、日记助手在服务端后台运行，客户端不在线时也要知道用哪个模型）。
+>
+> - 每个用户可以保存多条配置：`LOCAL`（本地推理）或 `CLOUD`（任意 OpenAI 兼容云端服务）。
+> - 从中选一条作为**全局模型**，所有 AI 功能统一使用；选择云端模型本身即视为授权，不再逐次询问。
+> - **例外**：隐私空间的请求（`vault: true`）和正文带敏感标签的编辑器请求，一律改用本地模型；
+>   没有本地模型时返回 403，绝不上云。embedding 固定本地，不进配置管理。
+> - API Key 用 AES-GCM 加密入库，口令依次取 `AI_CONFIG_KEY` → `DATABASE_KEY` → JWT secret；
+>   任何接口都不返回原文，只返回末 4 位 `apiKeyHint`。口令更换后旧 Key 解不开，`keyUnreadable=true`。
+> - 环境变量 `AI_LOCAL_*` / `AI_DEEPSEEK_*` 仅作为种子：用户第一次用到模型配置时自动转成配置，只播种一次。
+
+### 配置列表与全局设置
+`GET /api/v1/ai/profiles`（`GET /api/v1/ai/settings` 与之相同）
+
+```json
+{
+  "profiles": [
+    {
+      "name": "aiProfiles/123",
+      "kind": "CLOUD",
+      "displayName": "DeepSeek V3",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "hasApiKey": true,
+      "apiKeyHint": "…a3f9",
+      "keyUnreadable": false,
+      "model": "deepseek-chat",
+      "contextLength": 65536,
+      "timeoutSeconds": 120,
+      "maxConcurrency": 2,
+      "jsonMode": true,
+      "priceIn": 2,
+      "priceOut": 8,
+      "status": { "available": true, "checkedAt": "2026-09-25T10:00:00Z" }
+    }
+  ],
+  "activeProfile": "aiProfiles/123",
+  "sensitiveTags": ["私密"]
+}
+```
+
+本地配置排在前面。未显式选择全局模型时默认第一条本地配置。`status` 有 10 秒缓存。
+
+### 新建 / 修改 / 删除
+- `POST /api/v1/ai/profiles`：请求体 `{kind, displayName, baseUrl, apiKey, model, contextLength, timeoutSeconds?, maxConcurrency?, priceIn?, priceOut?}`。
+  服务端先做一次真实连接测试（同时探测是否支持 `response_format`，结果记入 `jsonMode`），**测试失败返回 502 且不保存**。
+  `CLOUD` 必须带 `apiKey`；`baseUrl` 必须是 http(s)；`LOCAL` 的 `maxConcurrency` 固定为 1（共用 NAS 推理槽位）。
+- `PATCH /api/v1/ai/profiles/:id`：字段同上；**不传 `apiKey` 表示保持原值**。地址、模型、种类或 Key 变化时重新测试连接。
+- `DELETE /api/v1/ai/profiles/:id`：删除当前全局模型返回 409。
+
+### 测试连接 / 拉取模型列表（不保存）
+- `POST /api/v1/ai/profiles/test`：请求体同新建，响应 `{ok, latencyMs, jsonMode, message?}`。
+- `POST /api/v1/ai/profiles/models`：请求体 `{baseUrl, apiKey?}`，响应 `{models: ["deepseek-chat", ...]}`；
+  服务商不提供 `/models` 时返回 502，客户端改为手动输入模型名。
+
+两者在编辑已有配置、不想重新输入 Key 时，可带 `"profile": "aiProfiles/123"` 借用库里的 Key。
+
+### 修改全局设置
+`PATCH /api/v1/ai/settings`：`{ "activeProfile"?: "aiProfiles/123", "sensitiveTags"?: ["私密","健康"] }`，响应同列表接口。
+
+**敏感标签**：带这些标签（含子标签，如 `私密/健康`）的日记——
+记忆检索、往年今日、事件串夜间分析在取素材时直接排除（往年今日的目标日记本身带敏感标签时返回 403）；
+编辑器润色/标签建议的正文带敏感标签时改用本地模型。默认 `["私密"]`。
+
+---
+
 ## AI 编辑辅助
 
 > **仅适用于 IsleLog 自建服务**，不属于标准 Memos v0.25 API；标准 Memos 服务端返回 404。
 >
-> 需要认证。AI 能力依赖外部模型服务，通过服务端环境变量配置：`AI_LOCAL_*`（私有本地模型，如 llama.cpp 部署的 Qwen）和 `AI_DEEPSEEK_*`（云端 DeepSeek）。未配置时对应 Provider 为未启用状态。
+> 需要认证。**请求不带 `provider` 时使用用户的全局模型**（见「AI 模型配置」），这是新客户端的唯一用法；
+> 带 `provider=LOCAL/DEEPSEEK` 是旧客户端的兼容写法，走环境变量配置的两个固定提供者，DEEPSEEK 仍需本次 `cloudConsent`。
 >
 > **隐私规则：**
-> - `LOCAL` 调用失败不会自动转发 `DEEPSEEK`，任何错误都不会切换模型。
-> - `cloudConsent` 仅对当前请求有效，服务端不持久化该授权。
+> - 模型调用失败不会自动换成其他模型（本地不转云端，云端也不转本地）。
+> - 选择云端模型作为全局模型即视为授权所有 AI 功能（含夜间批处理）；隐私空间与敏感标签例外，只用本地。
 > - AI 接口不会直接修改 memo 或 article，仅返回建议内容供客户端确认。
 
 ### Provider 状态
 `GET /api/v1/ai/providers` **[IsleLog 扩展]**
 
-固定返回 `LOCAL`、`DEEPSEEK` 两项。结果有 10 秒缓存。
+返回 `LOCAL`、`DEEPSEEK` 两项（及可选的 `LOCAL_EMBEDDING`）。按当前用户的模型配置计算：
+`LOCAL` = 第一条本地配置（隐私空间只能用它）；`DEEPSEEK` = 全局模型为云端时的那条配置，否则 `enabled=false`。
+客户端据此判断 AI 入口是否可用、这次会用哪个模型。
 
 **响应**
 ```json
@@ -783,8 +853,7 @@ Thread 响应结构相应新增 `summaryLocked`。
 {
   "content": "今天修复了同步冲突的问题",
   "existingTags": [{ "name": "工作", "count": 12 }],
-  "provider": "LOCAL",
-  "cloudConsent": false
+  "vault": false
 }
 ```
 
@@ -792,8 +861,9 @@ Thread 响应结构相应新增 `summaryLocked`。
 |------|------|
 | `content` | 正文，必填非空 |
 | `existingTags` | 已有标签及使用次数（最多 1000 个，单个名称最长 100 字符），模型优先复用 |
-| `provider` | `LOCAL` / `DEEPSEEK` |
-| `cloudConsent` | `provider=DEEPSEEK` 时必须为 `true`，否则返回 403 |
+| `vault` | 可选，隐私空间的请求传 `true`：只用本地模型，没有本地模型返回 403 |
+| `profile` | 可选，`aiProfiles/{id}`，指定本次用哪条配置（一般不传，用全局模型） |
+| `provider` / `cloudConsent` | 旧客户端兼容字段，新客户端不传 |
 
 **响应**
 ```json
@@ -817,10 +887,11 @@ Thread 响应结构相应新增 `summaryLocked`。
 {
   "content": "第一段。\n\n第二段。",
   "mode": "LIGHT",
-  "provider": "LOCAL",
-  "cloudConsent": false
+  "vault": false
 }
 ```
+
+> `vault` / `profile` / `provider` / `cloudConsent` 含义同标签建议。
 
 | `mode` | 说明 |
 |--------|------|
@@ -855,12 +926,12 @@ Thread 响应结构相应新增 `summaryLocked`。
 | 状态码 | 场景 |
 |--------|------|
 | 400 | 正文为空、Provider/润色模式无效、请求格式错误 |
-| 403 | `DEEPSEEK` 缺少本次 `cloudConsent` |
+| 403 | 旧写法 `DEEPSEEK` 缺少本次 `cloudConsent`；隐私空间请求试图使用云端模型 |
 | 413 | 请求体过大（>2MB）或已有标签数量过多 |
 | 422 | 标签名称过长，或润色结果改变了受保护内容 |
 | 429 | 并发超限（`LOCAL` 为 1，`DEEPSEEK` 为 2），稍后再试 |
 | 502 | 模型返回格式无效或上游不可用 |
-| 503 | 请求的 Provider 未启用 |
+| 503 | 请求的 Provider 未启用；尚未配置 AI 模型；模型的 API Key 需要重新填写 |
 
 ---
 
@@ -870,8 +941,10 @@ Thread 响应结构相应新增 `summaryLocked`。
 >
 > embedding（把日记原文变成向量）永远走本地，不接受 `provider`/`cloudConsent`，由服务端
 > 自动为每条日记建索引，客户端无需关心。只有"问答/生成"这一步（记忆检索问答、往年今日
-> AI 对照）才是用户显式发起的请求，适用与标签建议/润色相同的 `provider` + `cloudConsent`
-> 规则。"相关记忆"完全不调用生成模型，纯向量相似度计算。
+> AI 对照）调用生成模型，使用用户的全局模型（不传 `provider`）。"相关记忆"完全不调用生成模型，
+> 纯向量相似度计算。
+>
+> 候选只取**当前用户**的、不带敏感标签的日记（向量索引全库共用，服务端按 user_id 过滤）。
 >
 > **无依据 ≠ 报错**：候选检索不到、或模型认为候选不足以回答时，接口返回 200 和
 > `insufficientEvidence: true` / `now.available: false`，不是失败。服务端只信任真正
@@ -885,8 +958,6 @@ Thread 响应结构相应新增 `summaryLocked`。
 ```json
 {
   "query": "去年夏天我去过哪些地方？",
-  "provider": "LOCAL",
-  "cloudConsent": false,
   "topK": 8
 }
 ```
@@ -894,9 +965,9 @@ Thread 响应结构相应新增 `summaryLocked`。
 | 字段 | 说明 |
 |------|------|
 | `query` | 问题，必填非空 |
-| `provider` | `LOCAL` / `DEEPSEEK`，只影响"生成答案"这一步；检索候选的 embedding 永远本地 |
-| `cloudConsent` | `provider=DEEPSEEK` 时必须为 `true`，否则返回 403 |
 | `topK` | 可选，召回候选条数，默认 8，最大 20 |
+| `profile` | 可选，指定本次用哪条模型配置（一般不传） |
+| `provider` / `cloudConsent` | 旧客户端兼容字段，新客户端不传 |
 
 **响应（有依据）**
 ```json
@@ -950,8 +1021,11 @@ Thread 响应结构相应新增 `summaryLocked`。
 
 **请求体**
 ```json
-{ "memo": "memos/456", "provider": "LOCAL", "cloudConsent": false }
+{ "memo": "memos/456" }
 ```
+
+- 使用全局模型；`profile` / `provider` / `cloudConsent` 同记忆检索。
+- 目标日记带敏感标签时返回 403；"现在"素材自动排除带敏感标签的日记。
 
 - 服务端自动拉取最近 7 天的日记作为"现在"素材，客户端不需要自己组装、发送近期日记。
 - 最近 7 天没有任何日记，或近期素材不足以总结出有意义的近况时，`now.available` 为

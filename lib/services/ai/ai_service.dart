@@ -57,4 +57,14 @@ class AiService {
 
   /// 创建用于实际 AI 操作的网关。
   Future<AiGateway> createGateway() => _resolveGateway();
+
+  /// 创建模型配置管理网关（设置页使用）。
+  Future<AiProfileGateway> createProfileGateway() async {
+    final url = await SettingsService.serverUrl;
+    final token = await SettingsService.accessToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      throw const AiApiException('尚未配置服务器');
+    }
+    return AiApiClient(baseUrl: url, token: token);
+  }
 }

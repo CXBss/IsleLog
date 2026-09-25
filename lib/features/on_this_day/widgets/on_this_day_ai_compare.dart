@@ -4,13 +4,12 @@ import '../../../services/ai/ai_api_client.dart';
 import '../../../services/ai/ai_models.dart';
 import '../../../services/ai/ai_service.dart';
 import '../../../shared/constants/app_constants.dart';
-import '../../../shared/widgets/memory_cloud_consent_dialog.dart';
 
 /// "往年今日"单条历史记录下方的 AI 对照入口。
 ///
 /// 用户主动点击才发起请求（当天可能有多条历史年份的记录，不会一次性
-/// 批量为每条都调用模型）。默认本地模型；服务端启用 DeepSeek 时才显示
-/// 云端选项，每次单独确认，不持久化。
+/// 批量为每条都调用模型）。使用设置里选定的全局模型；带敏感标签的日记
+/// 服务端不会交给模型。
 class OnThisDayAiCompare extends StatefulWidget {
   final String memoName;
 
@@ -29,18 +28,6 @@ class _OnThisDayAiCompareState extends State<OnThisDayAiCompare> {
   _CompareState _state = _CompareState.collapsed;
   OnThisDayCompareResult? _result;
   String? _error;
-  List<AiProviderStatus>? _statuses;
-
-  @override
-  void initState() {
-    super.initState();
-    // 静默预取一次 provider 状态，只用于决定要不要显示云端选项；
-    // 失败也不影响本地对照的正常使用。
-    _resolveGateway().then((gateway) async {
-      final statuses = await _safeListProviders(gateway);
-      if (mounted) setState(() => _statuses = statuses);
-    });
-  }
 
   Future<AiGateway> _resolveGateway() async {
     final injected = widget.gateway;
@@ -54,38 +41,18 @@ class _OnThisDayAiCompareState extends State<OnThisDayAiCompare> {
       return;
     }
     if (_state == _CompareState.loading) return;
-    await _run(useCloud: false);
+    await _run();
   }
 
-  Future<void> _run({required bool useCloud}) async {
+  Future<void> _run() async {
     final gateway = await _resolveGateway();
-
-    if (useCloud) {
-      final statuses = _statuses ??= await _safeListProviders(gateway);
-      final model = statuses
-              .where((s) => s.name == AiProvider.deepSeek)
-              .map((s) => s.model)
-              .firstOrNull ??
-          'DeepSeek';
-      if (!mounted) return;
-      final consent = await showMemoryCloudConsentDialog(
-        context: context,
-        model: model,
-        scopeDescription: '这条日记及最近 7 天的日记原文可能会发送给云端模型用于生成对照。',
-      );
-      if (!consent || !mounted) return;
-    }
-
+    if (!mounted) return;
     setState(() {
       _state = _CompareState.loading;
       _error = null;
     });
     try {
-      final result = await gateway.onThisDayCompare(
-        memoName: widget.memoName,
-        provider: useCloud ? AiProvider.deepSeek : AiProvider.local,
-        cloudConsent: useCloud,
-      );
+      final result = await gateway.onThisDayCompare(memoName: widget.memoName);
       if (!mounted) return;
       setState(() {
         _result = result;
@@ -98,22 +65,6 @@ class _OnThisDayAiCompareState extends State<OnThisDayAiCompare> {
         _state = _CompareState.failed;
       });
     }
-  }
-
-  Future<List<AiProviderStatus>> _safeListProviders(AiGateway gateway) async {
-    try {
-      return await gateway.listProviders();
-    } on AiApiException {
-      return const [];
-    }
-  }
-
-  bool get _deepSeekEnabled {
-    final statuses = _statuses;
-    if (statuses == null) return false;
-    return statuses.any(
-      (s) => s.name == AiProvider.deepSeek && s.enabled,
-    );
   }
 
   @override
@@ -162,14 +113,6 @@ class _OnThisDayAiCompareState extends State<OnThisDayAiCompare> {
                   ),
                 ),
               ),
-              if (_state == _CompareState.collapsed && _deepSeekEnabled)
-                IconButton(
-                  icon: const Icon(Icons.cloud_outlined, size: 16),
-                  color: Colors.grey[500],
-                  tooltip: '用云端模型生成（更准确）',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _run(useCloud: true),
-                ),
             ],
           ),
           if (_state == _CompareState.ready) _buildResult(context),

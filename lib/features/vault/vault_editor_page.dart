@@ -28,7 +28,6 @@ import '../../data/models/vault_entry.dart';
 import '../../services/vault/vault_controller.dart';
 import '../../shared/widgets/image_grid.dart';
 import '../memo_editor/ai/ai_action_sheet.dart';
-import '../memo_editor/ai/cloud_ai_consent_dialog.dart';
 import '../memo_editor/ai/polish_preview_page.dart';
 import '../memo_editor/ai/tag_insertion.dart';
 import '../memo_editor/ai/tag_suggestions_sheet.dart';
@@ -943,9 +942,7 @@ class _VaultEditorPageState extends State<VaultEditorPage>
       if (mounted) {
         setState(() {
           _aiStatuses = statuses;
-          _aiAvailable = statuses.any(
-            (s) => s.enabled && s.name != AiProvider.localEmbedding,
-          );
+          _aiAvailable = _localModelReady(statuses);
         });
       }
     } catch (e) {
@@ -959,21 +956,27 @@ class _VaultEditorPageState extends State<VaultEditorPage>
     }
   }
 
+  /// 隐私空间只允许本地模型：本地模型没配置或连不上时，AI 功能整体不可用，
+  /// 绝不退而求其次去用云端模型。
+  static bool _localModelReady(List<AiProviderStatus> statuses) => statuses.any(
+    (s) => s.name == AiProvider.local && s.enabled && s.available,
+  );
+
   Future<void> _showAiActions() async {
     if (_aiRequesting) return;
-    // 状态为空（探测失败或离线）时重新探测一次，网络恢复后无需重开编辑器
-    if (widget.aiCapabilityOverride == null && _aiStatuses.isEmpty) {
+    // 每次都重新探测：本地模型可能刚恢复，也可能刚掉线
+    if (widget.aiCapabilityOverride == null) {
       await _loadAiStatuses();
       if (!mounted) return;
     }
-    if (widget.aiCapabilityOverride != true &&
-        !_aiStatuses.any(
-            (s) => s.enabled && s.name != AiProvider.localEmbedding,
-          )) {
-      _showAiSnack('AI 模型服务暂时不可用，请稍后再试');
+    if (widget.aiCapabilityOverride != true && !_localModelReady(_aiStatuses)) {
+      _showAiSnack('隐私空间只使用本地模型，本地模型当前不可用');
       return;
     }
-    final selection = await showAiActionSheet(context, providers: _aiStatuses);
+    final selection = await showAiActionSheet(
+      context,
+      modelLabel: aiModelLabel(_aiStatuses, vault: true),
+    );
     if (selection == null || !mounted) return;
     await _runAiAction(selection);
   }
@@ -987,7 +990,6 @@ class _VaultEditorPageState extends State<VaultEditorPage>
       return;
     }
 
-    final isDeepSeek = selection.provider == AiProvider.deepSeek;
     final content = _contentCtrl.text;
     final selectionRange = _contentCtrl.selection;
     final hasSelection =
@@ -998,26 +1000,7 @@ class _VaultEditorPageState extends State<VaultEditorPage>
     final targetEnd = hasSelection ? selectionRange.end : content.length;
     final target = content.substring(targetStart, targetEnd);
 
-    // DeepSeek 每次操作单独确认，不持久化
-    if (isDeepSeek) {
-      if (!mounted) return;
-      var model = 'DeepSeek';
-      for (final s in _aiStatuses) {
-        if (s.name == AiProvider.deepSeek && s.model.isNotEmpty) {
-          model = s.model;
-          break;
-        }
-      }
-      final consent = await showCloudAiConsentDialog(
-        context: context,
-        model: model,
-        recordCount: 1,
-        characterCount: target.length,
-        contentModeLabel: '原文',
-        includedMetadata: const ['标签', '正文'],
-      );
-      if (!consent || !mounted) return;
-    }
+    // 隐私空间的请求一律带 vault 标记，服务端只会用本地模型处理
 
     final cancelToken = CancelToken();
     _aiCancelToken = cancelToken;
@@ -1032,7 +1015,6 @@ class _VaultEditorPageState extends State<VaultEditorPage>
           gateway: gateway,
           target: target,
           existingTags: existingTags,
-          isDeepSeek: isDeepSeek,
           cancelToken: cancelToken,
         );
         if (suggestions == null || !mounted) return;
@@ -1055,7 +1037,6 @@ class _VaultEditorPageState extends State<VaultEditorPage>
           gateway: gateway,
           selection: selection,
           target: target,
-          isDeepSeek: isDeepSeek,
           cancelToken: cancelToken,
         );
         if (segments == null || !mounted) return;
@@ -1107,15 +1088,13 @@ class _VaultEditorPageState extends State<VaultEditorPage>
     required AiGateway gateway,
     required String target,
     required List<AiExistingTag> existingTags,
-    required bool isDeepSeek,
     required CancelToken cancelToken,
   }) async {
     try {
       return await gateway.suggestTags(
         content: target,
         existingTags: existingTags,
-        provider: isDeepSeek ? AiProvider.deepSeek : AiProvider.local,
-        cloudConsent: isDeepSeek,
+        vault: true,
         cancelToken: cancelToken,
       );
     } on AiRequestCancelled {
@@ -1131,7 +1110,6 @@ class _VaultEditorPageState extends State<VaultEditorPage>
     required AiGateway gateway,
     required AiActionSelection selection,
     required String target,
-    required bool isDeepSeek,
     required CancelToken cancelToken,
   }) async {
     final mode = switch (selection.type) {
@@ -1145,8 +1123,7 @@ class _VaultEditorPageState extends State<VaultEditorPage>
       return await gateway.polish(
         content: target,
         mode: mode,
-        provider: isDeepSeek ? AiProvider.deepSeek : AiProvider.local,
-        cloudConsent: isDeepSeek,
+        vault: true,
         cancelToken: cancelToken,
       );
     } on AiRequestCancelled {

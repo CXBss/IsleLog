@@ -5,7 +5,7 @@ import '../../services/ai/ai_api_client.dart';
 import '../../services/ai/ai_models.dart';
 import '../../services/ai/ai_service.dart';
 import '../../shared/constants/app_constants.dart';
-import '../../shared/widgets/memory_cloud_consent_dialog.dart';
+import '../memo_editor/ai/ai_action_sheet.dart' show aiModelLabel;
 import '../memo_detail/memo_detail_page.dart';
 
 /// 记忆检索问答页
@@ -25,12 +25,11 @@ class MemorySearchPage extends StatefulWidget {
 
 class _QaTurn {
   final String query;
-  final bool useCloud;
   bool loading = true;
   String? error;
   MemorySearchResult? result;
 
-  _QaTurn({required this.query, required this.useCloud});
+  _QaTurn({required this.query});
 }
 
 class _MemorySearchPageState extends State<MemorySearchPage> {
@@ -40,7 +39,6 @@ class _MemorySearchPageState extends State<MemorySearchPage> {
 
   List<AiProviderStatus> _statuses = [];
   bool _loadingStatuses = true;
-  bool _useCloud = false;
   bool _sending = false;
 
   @override
@@ -74,10 +72,8 @@ class _MemorySearchPageState extends State<MemorySearchPage> {
     return status != null && status.enabled && status.available;
   }
 
-  bool get _deepSeekEnabled {
-    final status = _statusFor(AiProvider.deepSeek);
-    return status != null && status.enabled;
-  }
+  /// 这次会用哪个模型（设置里的全局模型），仅用于展示。
+  String? get _modelLabel => aiModelLabel(_statuses);
 
   Future<void> _loadStatuses() async {
     setState(() => _loadingStatuses = true);
@@ -96,18 +92,8 @@ class _MemorySearchPageState extends State<MemorySearchPage> {
     final query = _inputCtrl.text.trim();
     if (query.isEmpty || _sending) return;
 
-    if (_useCloud) {
-      final model = _statusFor(AiProvider.deepSeek)?.model ?? 'DeepSeek';
-      final consent = await showMemoryCloudConsentDialog(
-        context: context,
-        model: model,
-        scopeDescription: '检索到的相关日记原文（最多 8 条）可能会发送给云端模型用于生成回答。',
-      );
-      if (!consent || !mounted) return;
-    }
-
     final gateway = await _resolveGateway();
-    final turn = _QaTurn(query: query, useCloud: _useCloud);
+    final turn = _QaTurn(query: query);
     setState(() {
       _turns.add(turn);
       _inputCtrl.clear();
@@ -116,11 +102,8 @@ class _MemorySearchPageState extends State<MemorySearchPage> {
     _scrollToBottom();
 
     try {
-      final result = await gateway.memorySearch(
-        query: query,
-        provider: _useCloud ? AiProvider.deepSeek : AiProvider.local,
-        cloudConsent: _useCloud,
-      );
+      // 模型由设置里的全局选择决定；带敏感标签的日记服务端不会作为候选
+      final result = await gateway.memorySearch(query: query);
       if (!mounted) return;
       setState(() {
         turn.loading = false;
@@ -198,7 +181,11 @@ class _MemorySearchPageState extends State<MemorySearchPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.psychology_alt_outlined, size: 56, color: Colors.grey[300]),
+            Icon(
+              Icons.psychology_alt_outlined,
+              size: 56,
+              color: Colors.grey[300],
+            ),
             const SizedBox(height: 16),
             Text(
               '记忆检索尚未启用',
@@ -230,7 +217,11 @@ class _MemorySearchPageState extends State<MemorySearchPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.psychology_alt_outlined, size: 56, color: Colors.grey[300]),
+              Icon(
+                Icons.psychology_alt_outlined,
+                size: 56,
+                color: Colors.grey[300],
+              ),
               const SizedBox(height: 16),
               Text(
                 '用自己的话问问过去',
@@ -251,10 +242,8 @@ class _MemorySearchPageState extends State<MemorySearchPage> {
       controller: _scrollCtrl,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       itemCount: _turns.length,
-      itemBuilder: (context, i) => _TurnView(
-        turn: _turns[i],
-        onOpenSource: _openSource,
-      ),
+      itemBuilder: (context, i) =>
+          _TurnView(turn: _turns[i], onOpenSource: _openSource),
     );
   }
 
@@ -268,24 +257,12 @@ class _MemorySearchPageState extends State<MemorySearchPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (_deepSeekEnabled)
+              if (_modelLabel != null)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Row(
-                    children: [
-                      Switch(
-                        value: _useCloud,
-                        activeTrackColor: AppColors.primary,
-                        onChanged: _sending
-                            ? null
-                            : (v) => setState(() => _useCloud = v),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '使用云端模型（更准确）',
-                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                      ),
-                    ],
+                  padding: const EdgeInsets.only(left: 4, bottom: 6),
+                  child: Text(
+                    '使用 $_modelLabel',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                   ),
                 ),
               Row(
