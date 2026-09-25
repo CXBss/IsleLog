@@ -1081,8 +1081,18 @@ Thread 响应结构相应新增 `summaryLocked`。
 > **执行阶段只读，审阅前不会写入任何真实数据**；审批时冻结写入白名单，执行期不能新增写入种类。
 > 应用走与手动操作相同的写入路径（同一事务写变更日志），客户端通过增量同步拿到结果。
 >
-> 当前（P1）规划器只识别模板指令「把 #标签 的日记放进事件串「名称」」，其他消息一律当作问答
-> （即记忆检索，使用全局模型）。P2 接入 LLM 规划器，走同一条执行路径。
+> 规划：先试内置模板（「把 #标签 的日记放进事件串「名称」」，不调用模型），再交给 LLM 规划器
+> （用户的全局模型；只看文件夹、事件串、非敏感标签的名字，看不到日记正文）。规划器判定为提问、
+> 或模型不可用时，走记忆检索问答。计划未通过校验时把错误回灌给模型修一次，仍失败则退回问答。
+>
+> 可用操作：`memos.query`（条件筛选）、`memos.search`（关键词 + 语义，`expand` 时让模型补充叫法再搜一次）、
+> `llm.judge`（逐篇判断：kept / unsure / dropped）、`llm.cluster`（归纳主题）、`llm.summarize`（写总结，
+> 引用渲染为 `islelog://memo/memos/{id}` 内链，编造的引用剔除，正文 `#` 转义为 `＃`，文末附来源说明）、
+> `resolve.folder` / `resolve.thread`、`stage.article.create`、`stage.thread.add_members`、
+> `foreach`（只能遍历 `llm.cluster` 的 groups，次数上限 = maxGroups，写入白名单据此推导）。
+>
+> 模型步骤按上下文长度分批（能一次放下就一次处理），完成后产物即 checkpoint；被前台 AI 请求
+> 抢占或服务重启后从 checkpoint 继续，不重复调用。实际发给模型的日记记在运行的 `transmitted_memo_ids`。
 >
 > 路由里的动作一律是子路径（`/runs/:run/approve`），**不能**写成 `/runs/:run:approve`：
 > Echo 只把 `/` 当参数结束符，后者会让几条 POST 路由静默互相覆盖。
@@ -1110,7 +1120,7 @@ Thread 响应结构相应新增 `summaryLocked`。
   "title": "把 #跑步 的日记放进事件串「跑步记录」",
   "steps": [{"id":"s1","op":"memos.query","label":"找到带 #跑步 的日记 23 篇（另有 1 篇因敏感标签跳过）","status":"DONE"}],
   "allowlist": {"thread.create": 1, "thread.add_members": 1},
-  "estimate": {"memos": 23, "sensitiveExcluded": 1, "llmCalls": 0},
+  "estimate": {"memos": 23, "sensitiveExcluded": 1, "llmCalls": 3, "inputTokens": 18000, "model": "私有 Qwen3.8", "cloud": false},
   "coverage": {"ignored": true},
   "changes": [{
     "name": "agentChanges/9", "seq": 1, "op": "thread.create", "status": "PROPOSED",

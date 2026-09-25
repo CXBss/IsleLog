@@ -12,6 +12,7 @@ import '../../services/ai/ai_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../services/sync/sync_service.dart';
 import '../../shared/constants/app_constants.dart';
+import '../articles/article_editor_page.dart';
 import '../memo_detail/memo_detail_page.dart';
 import '../memo_editor/ai/ai_action_sheet.dart' show aiModelLabel;
 import '../threads/thread_detail_page.dart';
@@ -67,7 +68,11 @@ class _AssistantPageState extends State<AssistantPage>
   String? _modelLabel;
   Timer? _poll;
 
-  static const _examples = ['去年夏天我去过哪些地方？', '把 #跑步 的日记放进事件串「跑步记录」'];
+  static const _examples = [
+    '去年夏天我去过哪些地方？',
+    '总结过去两个月的日记，分类整理成文章放到「文章总结」目录',
+    '找出与大模型相关的所有日记，放进一个事件串',
+  ];
 
   @override
   void initState() {
@@ -369,6 +374,25 @@ class _AssistantPageState extends State<AssistantPage>
   Future<void> _openResult(AgentChange change) async {
     final result = change.result;
     if (result == null) return;
+    if (change.op == AgentChangeOp.articleCreate) {
+      // 本地文章按 memos/{id} 记录远端名（文章复用 memos 表）
+      final article = await DatabaseService.getArticleByArticleName(
+        result.replaceFirst('articles/', 'memos/'),
+      );
+      if (!mounted) return;
+      if (article == null) {
+        _snack('还在同步结果，请稍后再试');
+        return;
+      }
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              ArticleEditorPage(editingArticle: article, openInPreview: true),
+        ),
+      );
+      return;
+    }
     final thread = await DatabaseService.getThreadByThreadName(result);
     if (!mounted) return;
     if (thread == null) {

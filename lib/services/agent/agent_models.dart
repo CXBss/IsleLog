@@ -142,10 +142,13 @@ class AgentStep {
   final String id;
   final String label;
 
-  /// PENDING / DONE / FAILED
+  /// PENDING / RUNNING / DONE / FAILED
   final String status;
   final String? summary;
   final String? error;
+
+  /// foreach 每一项的进度（「写成《工作》（引用 12 篇）」）
+  final List<String> details;
 
   const AgentStep({
     required this.id,
@@ -153,6 +156,7 @@ class AgentStep {
     required this.status,
     this.summary,
     this.error,
+    this.details = const [],
   });
 
   factory AgentStep.fromJson(Map<String, dynamic> json) => AgentStep(
@@ -161,6 +165,8 @@ class AgentStep {
     status: json['status'] as String? ?? 'PENDING',
     summary: json['summary'] as String?,
     error: json['error'] as String?,
+    details:
+        (json['details'] as List?)?.whereType<String>().toList() ?? const [],
   );
 }
 
@@ -173,12 +179,20 @@ class AgentMemoCandidate {
   final DateTime? displayTime;
   final String? reason;
 
+  /// 模型拿不准（默认不勾）
+  final bool unsure;
+
+  /// 模型判断为不相关（默认不勾）
+  final bool excluded;
+
   const AgentMemoCandidate({
     required this.memo,
     required this.include,
     required this.snippet,
     this.displayTime,
     this.reason,
+    this.unsure = false,
+    this.excluded = false,
   });
 
   factory AgentMemoCandidate.fromJson(Map<String, dynamic> json) {
@@ -192,6 +206,8 @@ class AgentMemoCandidate {
           ? DateTime.fromMillisecondsSinceEpoch(ts.toInt() * 1000)
           : null,
       reason: json['reason'] as String?,
+      unsure: json['unsure'] == true,
+      excluded: json['excluded'] == true,
     );
   }
 }
@@ -322,6 +338,13 @@ class AgentRun {
     this.error,
     this.changes = const [],
   });
+
+  /// 预计调用模型的次数（0 表示不调用模型）。
+  int get llmCalls => (estimate['llmCalls'] as num?)?.toInt() ?? 0;
+
+  /// 这次会用的模型名，以及是否云端。
+  String? get modelName => estimate['model'] as String?;
+  bool get cloudModel => estimate['cloud'] == true;
 
   /// 因敏感标签被跳过的篇数。
   int get sensitiveExcluded =>

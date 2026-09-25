@@ -97,6 +97,12 @@ class RunCard extends StatelessWidget {
       case AgentRunStatus.awaitingApproval:
         return [
           ..._steps(showStatus: false),
+          if (run.llmCalls > 0)
+            _note(
+              '预计调用模型约 ${run.llmCalls} 次'
+              '${run.modelName != null ? ' · ${run.modelName}（${run.cloudModel ? '云端，相关日记会发送给服务商' : '本地'}）' : ''}',
+              warn: run.cloudModel,
+            ),
           ..._notes(),
           const SizedBox(height: 8),
           const Text(
@@ -179,19 +185,43 @@ class RunCard extends StatelessWidget {
                       switch (s.status) {
                         'DONE' => Icons.check,
                         'FAILED' => Icons.close,
+                        'RUNNING' => Icons.autorenew,
                         _ => Icons.more_horiz,
                       },
                       size: 14,
-                      color: s.status == 'FAILED'
-                          ? Colors.redAccent
-                          : Colors.grey,
+                      color: switch (s.status) {
+                        'FAILED' => Colors.redAccent,
+                        'RUNNING' => AppColors.primary,
+                        _ => Colors.grey,
+                      },
                     )
                   : Text('${i + 1}.', style: const TextStyle(fontSize: 13)),
             ),
             Expanded(
-              child: Text(
-                s.summary ?? s.label,
-                style: const TextStyle(fontSize: 13),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    // 进行中的模型步骤显示「说明（进行中 2/5）」
+                    s.status == 'RUNNING' && s.summary != null
+                        ? '${s.label}（${s.summary}）'
+                        : (s.summary ?? s.label),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  for (final d in s.details)
+                    Text(
+                      '· $d',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  if (s.error != null)
+                    Text(
+                      s.error!,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.redAccent,
+                      ),
+                    ),
+                ],
               ),
             ),
           ],
@@ -292,15 +322,30 @@ class _ChangeTileState extends State<_ChangeTile> {
                 ],
               ),
             ),
-            if (memos.isNotEmpty)
+            if (memos.isNotEmpty || c.op == AgentChangeOp.articleCreate)
               IconButton(
                 icon: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
-                tooltip: _expanded ? '收起' : '逐篇查看',
+                tooltip: _expanded
+                    ? '收起'
+                    : (memos.isNotEmpty ? '逐篇查看' : '预览全文'),
                 onPressed: () => setState(() => _expanded = !_expanded),
               ),
           ],
         ),
-        if (_expanded)
+        if (_expanded && c.op == AgentChangeOp.articleCreate)
+          Container(
+            margin: const EdgeInsets.only(left: 40, bottom: 8),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight.withValues(alpha: 0.4),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: SelectableText(
+              c.payload['content'] as String? ?? '',
+              style: const TextStyle(fontSize: 12, height: 1.5),
+            ),
+          ),
+        if (_expanded && memos.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(left: 40),
             child: Column(
@@ -320,12 +365,18 @@ class _ChangeTileState extends State<_ChangeTile> {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12),
                     ),
-                    subtitle: m.displayTime == null
-                        ? null
-                        : Text(
-                            formatDate(m.displayTime!),
-                            style: const TextStyle(fontSize: 11),
-                          ),
+                    subtitle: Text(
+                      [
+                        if (m.displayTime != null) formatDate(m.displayTime!),
+                        if (m.unsure) '拿不准',
+                        if (m.excluded) '判断为不相关',
+                        if (m.reason != null && m.reason!.isNotEmpty) m.reason!,
+                      ].join(' · '),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: m.excluded ? Colors.grey : null,
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -359,7 +410,8 @@ class _OutcomeTile extends StatelessWidget {
         change.status == AgentChangeStatus.applied &&
         change.result != null &&
         (change.op == AgentChangeOp.threadCreate ||
-            change.op == AgentChangeOp.threadAddMembers);
+            change.op == AgentChangeOp.threadAddMembers ||
+            change.op == AgentChangeOp.articleCreate);
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(

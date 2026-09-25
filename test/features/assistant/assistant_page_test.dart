@@ -228,7 +228,7 @@ void main() {
   testWidgets('空状态展示示例指令和当前模型', (tester) async {
     await _pump(tester);
     expect(find.text('问问你的日记，或让我帮你整理'), findsOneWidget);
-    expect(find.text('把 #跑步 的日记放进事件串「跑步记录」'), findsOneWidget);
+    expect(find.text('找出与大模型相关的所有日记，放进一个事件串'), findsOneWidget);
     expect(find.text('使用 qwen3.8（本地）'), findsOneWidget);
   });
 
@@ -315,6 +315,8 @@ void main() {
     expect(find.text('已撤销'), findsWidgets);
   });
 
+  _llmTests();
+
   testWidgets('计划卡可以取消', (tester) async {
     final agent = await _pump(tester);
     agent.planNext = true;
@@ -323,5 +325,96 @@ void main() {
     await tester.pumpAndSettle();
     expect(agent.actions, ['cancel']);
     expect(find.text('已取消'), findsOneWidget);
+  });
+}
+
+class _LlmAgent extends _FakeAgent {
+  @override
+  Future<AgentRun> approve(String r) async {
+    actions.add('approve');
+    run = {
+      ..._runJson('AWAITING_REVIEW'),
+      'changes': [
+        {
+          'name': 'agentChanges/1',
+          'seq': 1,
+          'op': 'thread.create',
+          'status': 'PROPOSED',
+          'payload': {
+            'title': '大模型',
+            'memos': [
+              {
+                'id': 1,
+                'include': true,
+                'snippet': '试了本地大模型',
+                'reason': '在用 Qwen',
+              },
+              {
+                'id': 2,
+                'include': false,
+                'unsure': true,
+                'snippet': '看了 AI 画图',
+                'reason': '只是顺带提到',
+              },
+            ],
+          },
+        },
+        {
+          'name': 'agentChanges/2',
+          'seq': 2,
+          'op': 'article.create',
+          'status': 'PROPOSED',
+          'payload': {
+            'title': '九月回顾',
+            'content': '## 小结\n这个月很忙',
+            'folder': '文章总结',
+          },
+        },
+      ],
+    };
+    return AgentRun.fromJson(_runJson('QUEUED'));
+  }
+}
+
+void _llmTests() {
+  testWidgets('审批卡显示模型调用估算；预览卡标出拿不准的日记并能预览文章全文', (tester) async {
+    final agent = _LlmAgent()
+      ..planNext = true
+      ..run = {
+        ..._runJson('AWAITING_APPROVAL'),
+        'estimate': {
+          'memos': 2,
+          'llmCalls': 3,
+          'model': 'DeepSeek',
+          'cloud': true,
+        },
+      };
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AssistantPage(
+          gateway: agent,
+          aiGateway: _FakeAi(),
+          coverageCheck: () async => const SyncCoverage(),
+          afterApply: () async {},
+          pollInterval: const Duration(milliseconds: 10),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _send(tester, '找出与大模型相关的所有日记，放进一个事件串');
+    expect(find.textContaining('预计调用模型约 3 次'), findsOneWidget);
+    expect(find.textContaining('云端，相关日记会发送给服务商'), findsOneWidget);
+
+    await tester.tap(find.text('开始'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('逐篇查看'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('拿不准 · 只是顺带提到'), findsOneWidget);
+    expect(find.textContaining('在用 Qwen'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('预览全文'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('这个月很忙'), findsOneWidget);
+    expect(find.text('新建文章《九月回顾》（放入「文章总结」）'), findsOneWidget);
   });
 }
