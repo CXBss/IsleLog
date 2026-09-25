@@ -9,7 +9,7 @@ import '../../data/models/tag_stat.dart';
 import '../../features/archive/archive_view.dart';
 import '../../features/articles/articles_view.dart';
 import '../../features/memo_detail/memo_detail_page.dart';
-import '../../features/memory_search/memory_search_page.dart';
+import '../../features/assistant/assistant_page.dart';
 import '../../features/on_this_day/on_this_day_page.dart';
 import '../../features/settings/settings_page.dart';
 import '../../services/api/memos_api_service.dart';
@@ -397,12 +397,12 @@ class _HomeViewState extends State<HomeView> {
             tooltip: '搜索',
           ),
           IconButton(
-            icon: const Icon(Icons.psychology_alt_outlined),
+            icon: const Icon(Icons.auto_awesome_outlined),
             onPressed: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const MemorySearchPage()),
+              MaterialPageRoute(builder: (_) => const AssistantPage()),
             ),
-            tooltip: '记忆检索',
+            tooltip: 'AI 助手',
           ),
         ],
       ),

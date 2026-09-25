@@ -123,6 +123,24 @@ class SettingsService {
     await (await _prefs).setString(_keyQweatherKey, key.trim());
   }
 
+  // ── 日记助手 ──────────────────────────────────────────────────
+
+  static const _keyAgentSession = 'agent_last_session';
+
+  /// 最近一次使用的助手会话（`agentSessions/{id}`），重新打开助手时接着看。
+  /// 会话内容在服务端，这里只记名字。
+  static Future<String?> get agentLastSession async =>
+      (await _prefs).getString(_keyAgentSession);
+
+  static Future<void> setAgentLastSession(String? name) async {
+    final prefs = await _prefs;
+    if (name == null) {
+      await prefs.remove(_keyAgentSession);
+    } else {
+      await prefs.setString(_keyAgentSession, name);
+    }
+  }
+
   // ── Tianditu Key ──────────────────────────────────────────────
 
   static const _keyTiandituKey = 'tianditu_key';

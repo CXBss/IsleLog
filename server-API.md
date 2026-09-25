@@ -1072,6 +1072,73 @@ Thread 响应结构相应新增 `summaryLocked`。
 
 ---
 
+## 日记助手（Journal Agent）
+
+> **仅适用于 IsleLog 自建服务**。设计见 `docs/journal-agent-design.md`。
+>
+> 流程：发消息 → 提问直接回答 / 任务产出计划（`AWAITING_APPROVAL`）→ 审批后后台执行 →
+> 产出暂存改动（`AWAITING_REVIEW`）→ 用户勾选后应用（`APPLIED`）→ 可整体撤销。
+> **执行阶段只读，审阅前不会写入任何真实数据**；审批时冻结写入白名单，执行期不能新增写入种类。
+> 应用走与手动操作相同的写入路径（同一事务写变更日志），客户端通过增量同步拿到结果。
+>
+> 当前（P1）规划器只识别模板指令「把 #标签 的日记放进事件串「名称」」，其他消息一律当作问答
+> （即记忆检索，使用全局模型）。P2 接入 LLM 规划器，走同一条执行路径。
+>
+> 路由里的动作一律是子路径（`/runs/:run/approve`），**不能**写成 `/runs/:run:approve`：
+> Echo 只把 `/` 当参数结束符，后者会让几条 POST 路由静默互相覆盖。
+
+### 会话与消息
+- `POST /api/v1/agent/sessions` → `{name: "agentSessions/1", title, createTime, updateTime}`
+- `GET /api/v1/agent/sessions` → `{sessions: [...]}`
+- `GET /api/v1/agent/sessions/:id` → `{session, messages: [...], runs: [...]}`（`runs` 为消息引用到的运行，含步骤与改动）
+- `DELETE /api/v1/agent/sessions/:id`
+- `POST /api/v1/agent/sessions/:id/messages`：
+  ```json
+  { "text": "把 #跑步 的日记放进事件串「跑步记录」",
+    "coverage": { "conflictLocalIds": [3], "pushFailedLocalIds": [4], "ignored": true } }
+  ```
+  响应 `{messages: [用户消息, 助手回复], run?}`。助手回复的 `kind`：
+  `ANSWER`（body 与记忆检索响应同形）、`PLAN`（`run` 指向新运行）、`CLARIFY`（`{question, options}`）、
+  `ERROR`（`{message}`，模型不可用等；接口仍返回 200）。
+  `coverage` 是客户端发送前的覆盖度报告：同步后仍是冲突 / 推送失败的本地日记，服务端看不到最新内容。
+
+### 运行
+`GET /api/v1/agent/runs/:id` → 运行详情（客户端在 `QUEUED/RUNNING/APPLYING` 时每秒轮询）：
+```json
+{
+  "name": "agentRuns/5", "status": "AWAITING_REVIEW",
+  "title": "把 #跑步 的日记放进事件串「跑步记录」",
+  "steps": [{"id":"s1","op":"memos.query","label":"找到带 #跑步 的日记 23 篇（另有 1 篇因敏感标签跳过）","status":"DONE"}],
+  "allowlist": {"thread.create": 1, "thread.add_members": 1},
+  "estimate": {"memos": 23, "sensitiveExcluded": 1, "llmCalls": 0},
+  "coverage": {"ignored": true},
+  "changes": [{
+    "name": "agentChanges/9", "seq": 1, "op": "thread.create", "status": "PROPOSED",
+    "payload": {"title": "跑步记录", "memos": [{"id": 11, "include": true, "snippet": "晨跑…", "displayTs": 1758700000}]},
+    "staleSources": 0
+  }]
+}
+```
+状态：`AWAITING_APPROVAL → QUEUED → RUNNING → AWAITING_REVIEW → APPLYING → APPLIED / PARTIALLY_APPLIED → REVERTED / PARTIALLY_REVERTED`，
+另有 `DONE`（没有需要改动的内容）、`DISCARDED`、`CANCELLED`、`FAILED`。
+
+动作（均为 POST，返回运行详情）：
+- `/agent/runs/:id/approve`：同一用户已有运行在执行或应用中时返回 **423**
+- `/agent/runs/:id/cancel`：应用前任意阶段可取消
+- `/agent/runs/:id/discard`：放弃全部改动
+- `/agent/runs/:id/apply`：请求头 **`Idempotency-Key`**，同 key 重放返回首次结果；响应 `{outcome: {status, changes: [{seq, status, message?, result?}]}, run}`。
+  每条改动单独一个事务，部分失败时为 `PARTIALLY_APPLIED`；依赖的改动未应用时该条 `SKIPPED`
+- `/agent/runs/:id/revert`：倒序撤销；对象在应用后被改过（事件串按**成员集合**判断，不看 updated_ts）的跳过并说明
+
+`PATCH /api/v1/agent/changes/:id`：审阅阶段勾选。`{"include": false}` 整条不应用；`{"memos": {"memos/12": false}}` 逐篇勾选候选日记。
+
+改动种类：`folder.create`、`article.create`、`thread.create`（含成员）、`thread.add_members`（只增不删，应用时读最新成员再合并）。
+**没有删除类改动**。应用后 `result` 为新对象资源名（`threads/77`），客户端同步完成后按它打开本地条目。
+
+错误码：404（不存在或不属于当前用户）、409（当前状态不允许）、423（已有运行在执行）、400（计划无效）。
+
+---
+
 ## 健康检查
 
 `GET /healthz` **[IsleLog 扩展]**
