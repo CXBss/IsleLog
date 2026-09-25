@@ -140,6 +140,9 @@ enum AgentRunStatus {
 
 class AgentStep {
   final String id;
+
+  /// 操作名，如 memos.search、llm.answer
+  final String op;
   final String label;
 
   /// PENDING / RUNNING / DONE / FAILED
@@ -152,6 +155,7 @@ class AgentStep {
 
   const AgentStep({
     required this.id,
+    this.op = '',
     required this.label,
     required this.status,
     this.summary,
@@ -161,6 +165,7 @@ class AgentStep {
 
   factory AgentStep.fromJson(Map<String, dynamic> json) => AgentStep(
     id: json['id'] as String? ?? '',
+    op: json['op'] as String? ?? '',
     label: json['label'] as String? ?? '',
     status: json['status'] as String? ?? 'PENDING',
     summary: json['summary'] as String?,
@@ -327,6 +332,9 @@ class AgentRun {
   final String? error;
   final List<AgentChange> changes;
 
+  /// 提问类计划的答案（与记忆检索结果同形），运行完成后才有。
+  final MemorySearchResult? answer;
+
   const AgentRun({
     required this.name,
     required this.status,
@@ -337,7 +345,11 @@ class AgentRun {
     required this.coverage,
     this.error,
     this.changes = const [],
+    this.answer,
   });
+
+  /// 只读的提问计划：没有写入步骤。
+  bool get isQuestion => steps.any((s) => s.op == 'llm.answer');
 
   /// 预计调用模型的次数（0 表示不调用模型）。
   int get llmCalls => (estimate['llmCalls'] as num?)?.toInt() ?? 0;
@@ -376,6 +388,9 @@ class AgentRun {
           ? json['coverage'] as Map<String, dynamic>
           : const {},
       error: json['error'] as String?,
+      answer: json['answer'] is Map<String, dynamic>
+          ? MemorySearchResult.fromJson(json['answer'] as Map<String, dynamic>)
+          : null,
       changes: changes is List
           ? changes
                 .whereType<Map<String, dynamic>>()

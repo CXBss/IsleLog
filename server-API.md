@@ -1082,11 +1082,17 @@ Thread 响应结构相应新增 `summaryLocked`。
 > 应用走与手动操作相同的写入路径（同一事务写变更日志），客户端通过增量同步拿到结果。
 >
 > 规划：先试内置模板（「把 #标签 的日记放进事件串「名称」」，不调用模型），再交给 LLM 规划器
-> （用户的全局模型；只看文件夹、事件串、非敏感标签的名字，看不到日记正文）。规划器判定为提问、
-> 或模型不可用时，走记忆检索问答。计划未通过校验时把错误回灌给模型修一次，仍失败则退回问答。
+> （用户的全局模型；只看文件夹、事件串、非敏感标签的名字，看不到日记正文）。
+> - 就日记内容提问也产出计划：先按时间 / 主题找日记，最后 `llm.answer` 回答。这类计划没有写入步骤，
+>   预计模型调用 ≤ 8 次时**免审批直接执行**（`POST messages` 返回的运行已是 `QUEUED`），完成后运行详情带
+>   `answer` 字段（与记忆检索响应同形：`answer`、`sources`、`insufficientEvidence`）。
+> - 关于这次对话本身的问题（「你用了哪些关键词」）直接回复，消息 `kind: TEXT`、body `{text}`；
+>   规划器能看到之前运行各步骤的执行说明。
+> - 模型不可用时退回记忆检索问答；计划未通过校验时把错误回灌给模型修一次，仍失败则退回问答。
+> - 交给模型的日记带记录地点（`place`），用短编号代替雪花 ID，返回后映射回真实 ID。
 >
 > 可用操作：`memos.query`（条件筛选）、`memos.search`（关键词 + 语义，`expand` 时让模型补充叫法再搜一次）、
-> `llm.judge`（逐篇判断：kept / unsure / dropped）、`llm.cluster`（归纳主题）、`llm.summarize`（写总结，
+> `llm.judge`（逐篇判断：kept / unsure / dropped）、`llm.answer`（读完日记回答问题，带来源）、`llm.cluster`（归纳主题）、`llm.summarize`（写总结，
 > 引用渲染为 `islelog://memo/memos/{id}` 内链，编造的引用剔除，正文 `#` 转义为 `＃`，文末附来源说明）、
 > `resolve.folder` / `resolve.thread`、`stage.article.create`、`stage.thread.add_members`、
 > `foreach`（只能遍历 `llm.cluster` 的 groups，次数上限 = maxGroups，写入白名单据此推导）。

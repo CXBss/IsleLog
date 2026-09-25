@@ -17,6 +17,7 @@ class RunCard extends StatelessWidget {
   final void Function(AgentChange change, AgentMemoCandidate memo, bool include)
   onToggleMemo;
   final void Function(AgentChange change) onOpenResult;
+  final void Function(String memoName) onOpenSource;
 
   const RunCard({
     super.key,
@@ -30,10 +31,33 @@ class RunCard extends StatelessWidget {
     required this.onToggleChange,
     required this.onToggleMemo,
     required this.onOpenResult,
+    required this.onOpenSource,
   });
 
   @override
   Widget build(BuildContext context) {
+    // 提问：完成后直接显示答案，找日记的过程收在答案下方
+    final answer = run.answer;
+    if (run.isQuestion && answer != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AnswerView(result: answer, onOpenSource: onOpenSource),
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              dense: true,
+              title: Text(
+                '查找过程',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              children: _steps(showStatus: true),
+            ),
+          ),
+        ],
+      );
+    }
     return AssistantBubble(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -79,7 +103,7 @@ class RunCard extends StatelessWidget {
   String get _heading => switch (run.status) {
     AgentRunStatus.awaitingApproval => '我打算这样做',
     AgentRunStatus.queued => '排队中…',
-    AgentRunStatus.running => '执行中…',
+    AgentRunStatus.running => run.isQuestion ? '正在翻日记…' : '执行中…',
     AgentRunStatus.awaitingReview => '请确认以下改动',
     AgentRunStatus.applying => '正在应用…',
     AgentRunStatus.applied => '已应用',

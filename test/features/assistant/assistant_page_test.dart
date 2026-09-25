@@ -316,6 +316,7 @@ void main() {
   });
 
   _llmTests();
+  _qaTests();
 
   testWidgets('计划卡可以取消', (tester) async {
     final agent = await _pump(tester);
@@ -416,5 +417,100 @@ void _llmTests() {
     await tester.pumpAndSettle();
     expect(find.textContaining('这个月很忙'), findsOneWidget);
     expect(find.text('新建文章《九月回顾》（放入「文章总结」）'), findsOneWidget);
+  });
+}
+
+class _QaAgent extends _FakeAgent {
+  _QaAgent() {
+    planNext = true;
+    run = _qaRun('QUEUED');
+  }
+
+  static Map<String, dynamic> _qaRun(String status, {bool done = false}) => {
+    ..._runJson(status),
+    'title': '去年夏天去过的地方',
+    'steps': [
+      {
+        'id': 's1',
+        'op': 'memos.query',
+        'label': '找到 2025-06-01 ~ 2025-08-31 42 篇日记',
+        'status': 'DONE',
+      },
+      {
+        'id': 's2',
+        'op': 'llm.answer',
+        'label': '读完找到的日记后回答问题',
+        'status': done ? 'DONE' : 'RUNNING',
+      },
+    ],
+    if (done)
+      'answer': {
+        'answer': '你去了厦门和黄山。',
+        'sources': [
+          {
+            'memo': 'memos/1',
+            'displayTime': '2025-07-12T10:00:00Z',
+            'snippet': '海边走了一下午',
+            'similarity': 0,
+          },
+        ],
+        'insufficientEvidence': false,
+        'indexIncomplete': false,
+      },
+  };
+
+  int polls = 0;
+
+  @override
+  Future<AgentRun> getRun(String name) async {
+    polls++;
+    return AgentRun.fromJson(
+      _qaRun(polls > 1 ? 'DONE' : 'RUNNING', done: polls > 1),
+    );
+  }
+
+  @override
+  Future<AgentPostResult> postMessage(
+    String session,
+    String text,
+    SyncCoverage coverage,
+  ) async {
+    if (text.contains('关键词')) {
+      posted.add((text, coverage));
+      return AgentPostResult(
+        messages: [
+          _msg('USER', 'TEXT', {'text': text}),
+          _msg('ASSISTANT', 'TEXT', {'text': '用了 LLM、GPT，又补充了千问'}),
+        ],
+      );
+    }
+    return super.postMessage(session, text, coverage);
+  }
+}
+
+void _qaTests() {
+  testWidgets('提问自动执行，完成后直接显示答案与来源；追问对话本身直接回复', (tester) async {
+    final agent = _QaAgent();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AssistantPage(
+          gateway: agent,
+          aiGateway: _FakeAi(),
+          coverageCheck: () async => const SyncCoverage(),
+          afterApply: () async {},
+          pollInterval: const Duration(milliseconds: 10),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _send(tester, '去年夏天我去过哪些地方？');
+
+    expect(find.text('开始'), findsNothing, reason: '提问不需要审批');
+    expect(find.text('你去了厦门和黄山。'), findsOneWidget);
+    expect(find.text('海边走了一下午'), findsOneWidget);
+    expect(find.text('查找过程'), findsOneWidget);
+
+    await _send(tester, '你用了哪些关键词？');
+    expect(find.text('用了 LLM、GPT，又补充了千问'), findsOneWidget);
   });
 }

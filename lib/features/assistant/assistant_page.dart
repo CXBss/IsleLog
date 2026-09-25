@@ -203,6 +203,8 @@ class _AssistantPageState extends State<AssistantPage>
         final run = result.run;
         if (run != null) _runs[run.name] = run;
       });
+      // 提问类计划会直接开始执行，要马上轮询进度
+      _ensurePolling();
     } on AgentApiException catch (e) {
       if (mounted) {
         _input.text = text; // 发送失败时把原文还给用户
@@ -514,6 +516,7 @@ class _AssistantPageState extends State<AssistantPage>
           onToggleChange: (c, v) => _toggleChange(run, c, v),
           onToggleMemo: (c, memo, v) => _toggleMemo(run, c, memo, v),
           onOpenResult: _openResult,
+          onOpenSource: _openSource,
         );
       case AgentMessageKind.clarify:
         return AssistantBubble(
@@ -530,6 +533,10 @@ class _AssistantPageState extends State<AssistantPage>
           ),
         );
       case AgentMessageKind.text:
+        // 助手直接回答（关于这次对话的问题，比如「你用了哪些关键词」）
+        return AssistantBubble(
+          child: Text(m.text, style: const TextStyle(fontSize: 14)),
+        );
       case AgentMessageKind.unknown:
         return const SizedBox.shrink();
     }
