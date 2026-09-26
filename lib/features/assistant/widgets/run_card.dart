@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../services/agent/agent_models.dart';
 import '../../../shared/constants/app_constants.dart';
+import '../../../shared/widgets/diff_text.dart';
 import 'answer_view.dart';
 
 /// 一次运行的卡片：随状态依次显示为计划卡、进度卡、改动预览卡、完成卡。
@@ -16,8 +17,13 @@ class RunCard extends StatelessWidget {
   final void Function(AgentChange change, bool include) onToggleChange;
   final void Function(AgentChange change, AgentMemoCandidate memo, bool include)
   onToggleMemo;
+  final void Function(AgentChange change, int segment, bool accept)
+  onToggleSegment;
   final void Function(AgentChange change) onOpenResult;
   final void Function(String memoName) onOpenSource;
+
+  /// 本机有未同步修改的日记（`memos/{id}`）：改写它们的改动不能应用
+  final Set<String> localPending;
 
   const RunCard({
     super.key,
@@ -30,8 +36,10 @@ class RunCard extends StatelessWidget {
     required this.onRevert,
     required this.onToggleChange,
     required this.onToggleMemo,
+    required this.onToggleSegment,
     required this.onOpenResult,
     required this.onOpenSource,
+    this.localPending = const {},
   });
 
   @override
@@ -155,6 +163,8 @@ class RunCard extends StatelessWidget {
               editable: !busy,
               onToggle: (v) => onToggleChange(c, v),
               onToggleMemo: (m, v) => onToggleMemo(c, m, v),
+              onToggleSegment: (i, v) => onToggleSegment(c, i, v),
+              localPending: localPending.contains(c.targetMemo),
             ),
           ..._notes(),
           const SizedBox(height: 8),
@@ -172,7 +182,12 @@ class RunCard extends StatelessWidget {
         return [
           for (final c in run.changes)
             if (c.status != AgentChangeStatus.rejected)
-              _OutcomeTile(change: c, onOpen: () => onOpenResult(c)),
+              _OutcomeTile(
+                change: c,
+                onOpen: () => c.op.touchesMemo
+                    ? onOpenSource(c.result!)
+                    : onOpenResult(c),
+              ),
           if (run.status.revertible) ...[
             const SizedBox(height: 8),
             _buttons([_Btn('撤销本次', onRevert, primary: false)]),
@@ -303,12 +318,16 @@ class _ChangeTile extends StatefulWidget {
   final bool editable;
   final ValueChanged<bool> onToggle;
   final void Function(AgentMemoCandidate memo, bool include) onToggleMemo;
+  final void Function(int segment, bool accept) onToggleSegment;
+  final bool localPending;
 
   const _ChangeTile({
     required this.change,
     required this.editable,
     required this.onToggle,
     required this.onToggleMemo,
+    required this.onToggleSegment,
+    this.localPending = false,
   });
 
   @override
@@ -343,15 +362,32 @@ class _ChangeTileState extends State<_ChangeTile> {
                       '有 ${c.staleSources} 篇来源日记在生成后被修改过',
                       style: TextStyle(fontSize: 11, color: Colors.orange[800]),
                     ),
+                  if (widget.localPending)
+                    Text(
+                      '本机有未同步的修改，先同步后才能应用',
+                      style: TextStyle(fontSize: 11, color: Colors.orange[800]),
+                    ),
+                  if (c.op == AgentChangeOp.memoRewrite &&
+                      c.segments.any((s) => s.changed && s.protectedChanged))
+                    Text(
+                      '⚠ 有改动碰到了标签、链接、日期或数字，默认没勾选',
+                      style: TextStyle(fontSize: 11, color: Colors.orange[800]),
+                    ),
                 ],
               ),
             ),
-            if (memos.isNotEmpty || c.op == AgentChangeOp.articleCreate)
+            if (memos.isNotEmpty ||
+                c.op == AgentChangeOp.articleCreate ||
+                c.op.touchesMemo)
               IconButton(
                 icon: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
                 tooltip: _expanded
                     ? '收起'
-                    : (memos.isNotEmpty ? '逐篇查看' : '预览全文'),
+                    : switch (c.op) {
+                        AgentChangeOp.memoRewrite => '逐段查看',
+                        _ when memos.isNotEmpty => '逐篇查看',
+                        _ => '预览全文',
+                      },
                 onPressed: () => setState(() => _expanded = !_expanded),
               ),
           ],
@@ -366,6 +402,20 @@ class _ChangeTileState extends State<_ChangeTile> {
             ),
             child: SelectableText(
               c.payload['content'] as String? ?? '',
+              style: const TextStyle(fontSize: 12, height: 1.5),
+            ),
+          ),
+        if (_expanded && c.op == AgentChangeOp.memoRewrite)
+          _RewriteSegments(
+            change: c,
+            editable: widget.editable && c.selected,
+            onToggle: widget.onToggleSegment,
+          ),
+        if (_expanded && c.op == AgentChangeOp.memoMerge) _MergePreview(c),
+        if (_expanded && c.op == AgentChangeOp.memoArchive)
+          _Panel(
+            child: Text(
+              c.snippet,
               style: const TextStyle(fontSize: 12, height: 1.5),
             ),
           ),
@@ -410,6 +460,147 @@ class _ChangeTileState extends State<_ChangeTile> {
   }
 }
 
+class _Panel extends StatelessWidget {
+  final Widget child;
+
+  const _Panel({required this.child});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    margin: const EdgeInsets.only(left: 40, bottom: 8),
+    padding: const EdgeInsets.all(10),
+    decoration: BoxDecoration(
+      color: AppColors.primaryLight.withValues(alpha: 0.4),
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: child,
+  );
+}
+
+/// 改写的逐段对照：只列出有改动的段落，每段可单独接受。
+class _RewriteSegments extends StatelessWidget {
+  final AgentChange change;
+  final bool editable;
+  final void Function(int segment, bool accept) onToggle;
+
+  const _RewriteSegments({
+    required this.change,
+    required this.editable,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final segments = change.segments;
+    final changed = segments.where((s) => s.changed).toList();
+    final unchanged = segments.length - changed.length;
+    return Padding(
+      padding: const EdgeInsets.only(left: 28, bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final s in changed)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Checkbox(
+                  value: s.accept,
+                  onChanged: editable
+                      ? (v) => onToggle(s.index, v ?? false)
+                      : null,
+                ),
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 8, bottom: 6),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: s.protectedChanged
+                          ? Colors.orange.withValues(alpha: 0.08)
+                          : AppColors.primaryLight.withValues(alpha: 0.4),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        DiffText(
+                          original: s.originalText,
+                          revised: s.revisedText,
+                          fontSize: 13,
+                        ),
+                        if (s.protectedChanged)
+                          Text(
+                            '⚠ 改动了受保护内容（标签、链接、待办、日期或数字）',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.orange[800],
+                            ),
+                          ),
+                        if (s.reason != null && s.reason!.isNotEmpty)
+                          Text(
+                            s.reason!,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          if (unchanged > 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 12),
+              child: Text(
+                '另有 $unchanged 段没有改动',
+                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 合并预览：合并后的全文、会被归档的原日记、留在原处的评论。
+class _MergePreview extends StatelessWidget {
+  final AgentChange change;
+
+  const _MergePreview(this.change);
+
+  @override
+  Widget build(BuildContext context) {
+    final addedTags = change.payload['addedTags'];
+    final comments = change.mergeComments;
+    final small = TextStyle(fontSize: 11, color: Colors.grey[600]);
+    return _Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SelectableText(
+            change.payload['content'] as String? ?? '',
+            style: const TextStyle(fontSize: 12, height: 1.5),
+          ),
+          const Divider(height: 16),
+          Text('合并后归档这几篇（附件挪到合并后的日记）：', style: small),
+          for (final m in change.mergeSources)
+            Text(
+              '· ${m.displayTime != null ? '${formatDate(m.displayTime!)} ' : ''}${m.snippet}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: small,
+            ),
+          if (comments > 0) Text('$comments 条评论保留在已归档的原日记上', style: small),
+          if (addedTags is List && addedTags.isNotEmpty)
+            Text('模型漏掉的标签已补在文末：#${addedTags.join(' #')}', style: small),
+        ],
+      ),
+    );
+  }
+}
+
 /// 应用 / 撤销后的一条改动结果。
 class _OutcomeTile extends StatelessWidget {
   final AgentChange change;
@@ -435,7 +626,8 @@ class _OutcomeTile extends StatelessWidget {
         change.result != null &&
         (change.op == AgentChangeOp.threadCreate ||
             change.op == AgentChangeOp.threadAddMembers ||
-            change.op == AgentChangeOp.articleCreate);
+            change.op == AgentChangeOp.articleCreate ||
+            change.op.touchesMemo);
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(

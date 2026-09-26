@@ -170,8 +170,14 @@ class _FakeAgent implements AgentGateway {
     String change, {
     bool? include,
     Map<String, bool>? memos,
+    Map<int, bool>? segments,
   }) async {
-    updates.add({'change': change, 'include': include, 'memos': memos});
+    updates.add({
+      'change': change,
+      'include': include,
+      'memos': memos,
+      'segments': segments,
+    });
     if (memos != null && memos['memos/12'] == false) {
       run = _runJson(
         'AWAITING_REVIEW',
@@ -317,6 +323,7 @@ void main() {
 
   _llmTests();
   _qaTests();
+  _rewriteTests();
 
   testWidgets('计划卡可以取消', (tester) async {
     final agent = await _pump(tester);
@@ -512,5 +519,138 @@ void _qaTests() {
 
     await _send(tester, '你用了哪些关键词？');
     expect(find.text('用了 LLM、GPT，又补充了千问'), findsOneWidget);
+  });
+}
+
+Map<String, dynamic> _rewriteChange(
+  String status, {
+  bool numberAccepted = false,
+  String? result,
+}) => {
+  'name': 'agentChanges/5',
+  'seq': 1,
+  'op': 'memo.rewrite',
+  'status': status,
+  'payload': {
+    'memoId': 42,
+    'displayTs': 1758700000,
+    'snippet': '跑了 5 公里',
+    'original': '跑了 5 公里\n\n写了错别子',
+    'segments': [
+      {
+        'sourceIndexes': [0],
+        'originalText': '跑了 5 公里',
+        'revisedText': '跑了五公里',
+        'protectedElementsChanged': true,
+        'accept': numberAccepted,
+      },
+      {
+        'sourceIndexes': [1],
+        'originalText': '写了错别子',
+        'revisedText': '写了错别字',
+        'reason': '改错字',
+        'accept': true,
+      },
+    ],
+  },
+  'result': ?result,
+};
+
+class _RewriteAgent extends _FakeAgent {
+  _RewriteAgent() {
+    planNext = true;
+    run = _runJson('AWAITING_REVIEW', changes: [_rewriteChange('PROPOSED')]);
+  }
+
+  @override
+  Future<void> updateChange(
+    String change, {
+    bool? include,
+    Map<String, bool>? memos,
+    Map<int, bool>? segments,
+  }) async {
+    await super.updateChange(
+      change,
+      include: include,
+      memos: memos,
+      segments: segments,
+    );
+    if (segments?[0] == true) {
+      run = _runJson(
+        'AWAITING_REVIEW',
+        changes: [_rewriteChange('PROPOSED', numberAccepted: true)],
+      );
+    }
+    if (include == false) {
+      run = _runJson('AWAITING_REVIEW', changes: [_rewriteChange('REJECTED')]);
+    }
+  }
+
+  @override
+  Future<AgentRun> apply(String r, String key) async {
+    actions.add('apply');
+    run = _runJson(
+      'APPLIED',
+      changes: [_rewriteChange('APPLIED', result: 'memos/42')],
+    );
+    return AgentRun.fromJson(run);
+  }
+}
+
+Future<_RewriteAgent> _pumpRewrite(
+  WidgetTester tester, {
+  bool pending = false,
+}) async {
+  final agent = _RewriteAgent();
+  await tester.pumpWidget(
+    MaterialApp(
+      home: AssistantPage(
+        gateway: agent,
+        aiGateway: _FakeAi(),
+        coverageCheck: () async => const SyncCoverage(),
+        afterApply: () async {},
+        pollInterval: const Duration(milliseconds: 10),
+        isLocallyPending: (_) async => pending,
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  await _send(tester, '把错别字改一下');
+  return agent;
+}
+
+void _rewriteTests() {
+  testWidgets('改写逐段对照：受保护内容默认不勾，可以单独接受', (tester) async {
+    final agent = await _pumpRewrite(tester);
+    expect(find.textContaining('采用 1/2 处'), findsOneWidget);
+    expect(find.textContaining('默认没勾选'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('逐段查看'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('改动了受保护内容'), findsOneWidget);
+    expect(find.text('改错字'), findsOneWidget);
+
+    // 第一段（数字）默认没勾，勾上它
+    final boxes = find.byType(Checkbox);
+    expect(tester.widget<Checkbox>(boxes.at(1)).value, isFalse);
+    await tester.tap(boxes.at(1));
+    await tester.pumpAndSettle();
+    expect(agent.updates.single['segments'], {0: true});
+    expect(find.textContaining('采用 2/2 处'), findsOneWidget);
+
+    await tester.tap(find.text('应用所选（1）'));
+    await tester.pumpAndSettle();
+    expect(agent.actions.last, 'apply');
+    expect(find.text('查看'), findsOneWidget, reason: '改写后的日记可以直接打开');
+  });
+
+  testWidgets('要改的日记在本机有未同步修改时取消勾选，不应用', (tester) async {
+    final agent = await _pumpRewrite(tester, pending: true);
+    await tester.tap(find.text('应用所选（1）'));
+    await tester.pumpAndSettle();
+
+    expect(agent.actions, isNot(contains('apply')));
+    expect(agent.updates.single['include'], isFalse);
+    expect(find.textContaining('本机有未同步的修改'), findsWidgets);
   });
 }

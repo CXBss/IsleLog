@@ -1,8 +1,8 @@
-import 'package:diff_match_patch/diff_match_patch.dart';
 import 'package:flutter/material.dart';
 
 import '../../../services/ai/ai_models.dart';
 import 'polish_result_controller.dart';
+import '../../../shared/widgets/diff_text.dart';
 
 /// 润色结果预览页。
 ///
@@ -92,10 +92,7 @@ class _PolishPreviewPageState extends State<PolishPreviewPage> {
                     child: const Text('全部接受'),
                   ),
                   const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: _apply,
-                    child: const Text('应用所选'),
-                  ),
+                  FilledButton(onPressed: _apply, child: const Text('应用所选')),
                 ],
               ),
             ),
@@ -166,7 +163,10 @@ class _SegmentCard extends StatelessWidget {
                     Expanded(
                       child: Text(
                         '标签、日期、数值等内容可能有变化，请仔细核对再决定是否接受',
-                        style: TextStyle(fontSize: 11, color: Colors.orange[800]),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.orange[800],
+                        ),
                       ),
                     ),
                   ],
@@ -174,7 +174,7 @@ class _SegmentCard extends StatelessWidget {
               ),
             Padding(
               padding: const EdgeInsets.only(left: 12),
-              child: _DiffText(
+              child: DiffText(
                 original: segment.originalText,
                 revised: segment.revisedText,
               ),
@@ -191,53 +191,6 @@ class _SegmentCard extends StatelessWidget {
             ],
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _DiffText extends StatelessWidget {
-  final String original;
-  final String revised;
-
-  const _DiffText({required this.original, required this.revised});
-
-  @override
-  Widget build(BuildContext context) {
-    final dmp = DiffMatchPatch();
-    final diffs = dmp.diff(original, revised);
-    final spans = <TextSpan>[];
-    for (final diff in diffs) {
-      switch (diff.operation) {
-        case DIFF_DELETE:
-          spans.add(
-            TextSpan(
-              text: diff.text,
-              style: const TextStyle(
-                color: Colors.red,
-                decoration: TextDecoration.lineThrough,
-              ),
-            ),
-          );
-        case DIFF_INSERT:
-          spans.add(
-            TextSpan(
-              text: diff.text,
-              style: const TextStyle(color: Color(0xFF2E7D32)),
-            ),
-          );
-        case DIFF_EQUAL:
-          spans.add(TextSpan(text: diff.text));
-      }
-    }
-    return RichText(
-      text: TextSpan(
-        style: TextStyle(
-          fontSize: 14,
-          height: 1.6,
-          color: Theme.of(context).colorScheme.onSurface,
-        ),
-        children: spans,
       ),
     );
   }

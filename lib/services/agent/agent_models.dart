@@ -223,7 +223,47 @@ enum AgentChangeOp {
   articleCreate,
   threadCreate,
   threadAddMembers,
-  unknown,
+  memoRewrite,
+  memoMerge,
+  memoArchive,
+  unknown;
+
+  /// 会修改已有日记：本机有未同步修改的日记不能应用，否则下次同步必然冲突。
+  bool get touchesMemo =>
+      this == memoRewrite || this == memoMerge || this == memoArchive;
+}
+
+/// 改写预览里的一段：原文 → 改写，可逐段接受。
+class AgentRewriteSegment {
+  final int index;
+  final String originalText;
+  final String revisedText;
+  final String? reason;
+
+  /// 改动碰到了标签、链接、待办、日期或数值，默认不勾选
+  final bool protectedChanged;
+  final bool accept;
+
+  const AgentRewriteSegment({
+    required this.index,
+    required this.originalText,
+    required this.revisedText,
+    this.reason,
+    this.protectedChanged = false,
+    this.accept = false,
+  });
+
+  bool get changed => originalText != revisedText;
+
+  factory AgentRewriteSegment.fromJson(int index, Map<String, dynamic> json) =>
+      AgentRewriteSegment(
+        index: index,
+        originalText: json['originalText'] as String? ?? '',
+        revisedText: json['revisedText'] as String? ?? '',
+        reason: json['reason'] as String?,
+        protectedChanged: json['protectedElementsChanged'] == true,
+        accept: json['accept'] == true,
+      );
 }
 
 /// 暂存改动状态。
@@ -266,6 +306,51 @@ class AgentChange {
   /// 标题：事件串 / 文件夹 / 文章名。
   String get title => payload['title'] as String? ?? '';
 
+  /// 改写 / 合并 / 归档的目标日记（`memos/{id}`）。
+  String? get targetMemo {
+    final id = payload['memoId'];
+    return op.touchesMemo && id != null ? 'memos/$id' : null;
+  }
+
+  /// 目标日记的摘要与日期（改写、归档用）。
+  String get snippet => payload['snippet'] as String? ?? '';
+  DateTime? get displayTime {
+    final ts = payload['displayTs'];
+    return ts is num
+        ? DateTime.fromMillisecondsSinceEpoch(ts.toInt() * 1000)
+        : null;
+  }
+
+  /// 改写的逐段对照（含未改动的段落）。
+  List<AgentRewriteSegment> get segments {
+    final list = payload['segments'];
+    if (list is! List) return const [];
+    return [
+      for (final (i, s) in list.indexed)
+        if (s is Map<String, dynamic>) AgentRewriteSegment.fromJson(i, s),
+    ];
+  }
+
+  /// 合并时其余被归档的日记。
+  List<AgentMemoCandidate> get mergeSources {
+    final list = payload['sources'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map((m) => AgentMemoCandidate.fromJson({...m, 'include': true}))
+        .toList();
+  }
+
+  /// 被合并日记上的评论总数（评论留在归档的原日记上）。
+  int get mergeComments {
+    final list = payload['sources'];
+    if (list is! List) return 0;
+    return list.whereType<Map<String, dynamic>>().fold(
+      0,
+      (n, m) => n + ((m['comments'] as num?)?.toInt() ?? 0),
+    );
+  }
+
   List<AgentMemoCandidate> get memos {
     final list = payload['memos'];
     if (list is! List) return const [];
@@ -278,7 +363,16 @@ class AgentChange {
   /// 一句话说明这条改动。
   String get description {
     final included = memos.where((m) => m.include).length;
+    final date = displayTime == null ? '' : '${_md(displayTime!)} ';
     return switch (op) {
+      AgentChangeOp.memoRewrite => () {
+        final segs = segments.where((s) => s.changed);
+        final accepted = segs.where((s) => s.accept).length;
+        return '改写 $date「${_short(snippet)}」（采用 $accepted/${segs.length} 处）';
+      }(),
+      AgentChangeOp.memoMerge =>
+        '把 ${mergeSources.length + 1} 篇合并进 $date「${_short(snippet.isEmpty ? (payload['content'] as String? ?? '') : snippet)}」',
+      AgentChangeOp.memoArchive => '归档 $date「${_short(snippet)}」',
       AgentChangeOp.threadCreate => '新建事件串「$title」，放入 $included 篇',
       AgentChangeOp.threadAddMembers =>
         '往事件串「$title」新增 $included 篇（已有 ${payload['existingCount'] ?? 0} 篇）',
@@ -302,6 +396,9 @@ class AgentChange {
         'article.create' => AgentChangeOp.articleCreate,
         'thread.create' => AgentChangeOp.threadCreate,
         'thread.add_members' => AgentChangeOp.threadAddMembers,
+        'memo.rewrite' => AgentChangeOp.memoRewrite,
+        'memo.merge' => AgentChangeOp.memoMerge,
+        'memo.archive' => AgentChangeOp.memoArchive,
         _ => AgentChangeOp.unknown,
       },
       status: switch (json['status']) {
@@ -319,6 +416,13 @@ class AgentChange {
       staleSources: (json['staleSources'] as num?)?.toInt() ?? 0,
     );
   }
+}
+
+String _md(DateTime t) => '${t.month}月${t.day}日';
+
+String _short(String s) {
+  final line = s.trim().split('\n').first;
+  return line.length > 16 ? '${line.substring(0, 16)}…' : line;
 }
 
 class AgentRun {

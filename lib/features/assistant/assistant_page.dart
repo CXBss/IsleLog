@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../../data/database/database_service.dart';
+import '../../data/models/memo_entry.dart' show SyncStatus;
 import '../../services/agent/agent_api_client.dart';
 import '../../services/agent/agent_models.dart';
 import '../../services/ai/ai_api_client.dart';
@@ -38,6 +39,9 @@ class AssistantPage extends StatefulWidget {
   /// 轮询间隔，测试可调小。
   final Duration pollInterval;
 
+  /// 判断日记（`memos/{id}`）在本机是否有未同步的修改，测试可替换。
+  final Future<bool> Function(String memoName)? isLocallyPending;
+
   const AssistantPage({
     super.key,
     this.gateway,
@@ -45,6 +49,7 @@ class AssistantPage extends StatefulWidget {
     this.coverageCheck,
     this.afterApply,
     this.pollInterval = const Duration(seconds: 1),
+    this.isLocallyPending,
   });
 
   @override
@@ -62,6 +67,9 @@ class _AssistantPageState extends State<AssistantPage>
   final Map<String, AgentRun> _runs = {};
   final Set<String> _busyRuns = {};
 
+  /// 本机有未同步修改的日记：改写 / 合并 / 归档它们的改动不能应用
+  final Set<String> _localPending = {};
+
   /// 发出去还没回来的问题，显示为「正在思考」
   String? _pending;
   bool _loading = true;
@@ -72,6 +80,7 @@ class _AssistantPageState extends State<AssistantPage>
     '去年夏天我去过哪些地方？',
     '总结过去两个月的日记，分类整理成文章放到「文章总结」目录',
     '找出与大模型相关的所有日记，放进一个事件串',
+    '把上周日记里的错别字都改一下',
   ];
 
   @override
@@ -292,6 +301,57 @@ class _AssistantPageState extends State<AssistantPage>
     );
   }
 
+  Future<void> _toggleSegment(
+    AgentRun run,
+    AgentChange change,
+    int segment,
+    bool accept,
+  ) async {
+    await _review(
+      run,
+      () => _gateway!.updateChange(change.name, segments: {segment: accept}),
+    );
+  }
+
+  /// 应用前检查：要改的日记在本机有未同步的修改时，应用后下次同步必然冲突，
+  /// 所以先取消勾选这些改动，提示用户同步后再来。
+  Future<void> _apply(AgentRun run) async {
+    final targets = {
+      for (final c in run.changes)
+        if (c.selected && c.targetMemo != null) c.targetMemo!,
+    };
+    if (targets.isNotEmpty && !_busyRuns.contains(run.name)) {
+      final check = widget.isLocallyPending ?? _memoLocallyPending;
+      final pending = <String>{};
+      for (final t in targets) {
+        if (await check(t)) pending.add(t);
+      }
+      if (pending.isNotEmpty) {
+        if (!mounted) return;
+        setState(() => _localPending.addAll(pending));
+        await _review(run, () async {
+          for (final c in run.changes) {
+            if (c.selected && pending.contains(c.targetMemo)) {
+              await _gateway!.updateChange(c.name, include: false);
+            }
+          }
+        });
+        _snack('${pending.length} 篇日记在本机有未同步的修改，已取消勾选。同步后可以重新发起');
+        return;
+      }
+    }
+    await _runAction(
+      run,
+      (g) => g.apply(run.name, _idempotencyKey()),
+      syncAfter: true,
+    );
+  }
+
+  static Future<bool> _memoLocallyPending(String memoName) async {
+    final memo = await DatabaseService.getMemoByMemosName(memoName);
+    return memo != null && memo.syncStatus != SyncStatus.synced;
+  }
+
   Future<void> _toggleMemo(
     AgentRun run,
     AgentChange change,
@@ -506,17 +566,15 @@ class _AssistantPageState extends State<AssistantPage>
           onApprove: () => _runAction(run, (g) => g.approve(run.name)),
           onCancel: () => _runAction(run, (g) => g.cancel(run.name)),
           onDiscard: () => _runAction(run, (g) => g.discard(run.name)),
-          onApply: () => _runAction(
-            run,
-            (g) => g.apply(run.name, _idempotencyKey()),
-            syncAfter: true,
-          ),
+          onApply: () => _apply(run),
           onRevert: () =>
               _runAction(run, (g) => g.revert(run.name), syncAfter: true),
           onToggleChange: (c, v) => _toggleChange(run, c, v),
           onToggleMemo: (c, memo, v) => _toggleMemo(run, c, memo, v),
+          onToggleSegment: (c, i, v) => _toggleSegment(run, c, i, v),
           onOpenResult: _openResult,
           onOpenSource: _openSource,
+          localPending: _localPending,
         );
       case AgentMessageKind.clarify:
         return AssistantBubble(

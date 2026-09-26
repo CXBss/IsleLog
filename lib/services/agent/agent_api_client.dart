@@ -32,11 +32,13 @@ abstract interface class AgentGateway {
 
   Future<AgentRun> revert(String run);
 
-  /// 整体勾选/取消一条改动，或逐篇勾选候选日记（`memos/{id}` → 是否纳入）。
+  /// 整体勾选/取消一条改动，逐篇勾选候选日记（`memos/{id}` → 是否纳入），
+  /// 或逐段接受改写（片段下标 → 是否采用）。
   Future<void> updateChange(
     String change, {
     bool? include,
     Map<String, bool>? memos,
+    Map<int, bool>? segments,
   });
 }
 
@@ -199,11 +201,19 @@ class AgentApiClient implements AgentGateway {
     String change, {
     bool? include,
     Map<String, bool>? memos,
+    Map<int, bool>? segments,
   }) async {
     await _call(
       () => _dio.patch(
         '/api/v1/agent/changes/${_id(change)}',
-        data: {'include': ?include, 'memos': ?memos},
+        data: {
+          'include': ?include,
+          'memos': ?memos,
+          if (segments != null)
+            'segments': {
+              for (final e in segments.entries) '${e.key}': e.value,
+            },
+        },
       ),
     );
   }

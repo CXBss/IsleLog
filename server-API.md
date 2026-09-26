@@ -1095,6 +1095,8 @@ Thread 响应结构相应新增 `summaryLocked`。
 > `llm.judge`（逐篇判断：kept / unsure / dropped）、`llm.answer`（读完日记回答问题，带来源）、`llm.cluster`（归纳主题）、`llm.summarize`（写总结，
 > 引用渲染为 `islelog://memo/memos/{id}` 内链，编造的引用剔除，正文 `#` 转义为 `＃`，文末附来源说明）、
 > `resolve.folder` / `resolve.thread`、`stage.article.create`、`stage.thread.add_members`、
+> `llm.rewrite`（逐篇改写，`mode` 同润色的 `LIGHT/MEDIUM/DEEP/FORMAT_ONLY`，或 `instruction` 自定义要求）+ `stage.memo.rewrite`、
+> `llm.merge`（2~20 篇合并，漏掉的标签由服务端补在文末）+ `stage.memo.merge`、`stage.memo.archive`、
 > `foreach`（只能遍历 `llm.cluster` 的 groups，次数上限 = maxGroups，写入白名单据此推导）。
 >
 > 模型步骤按上下文长度分批（能一次放下就一次处理），完成后产物即 checkpoint；被前台 AI 请求
@@ -1146,10 +1148,23 @@ Thread 响应结构相应新增 `summaryLocked`。
   每条改动单独一个事务，部分失败时为 `PARTIALLY_APPLIED`；依赖的改动未应用时该条 `SKIPPED`
 - `/agent/runs/:id/revert`：倒序撤销；对象在应用后被改过（事件串按**成员集合**判断，不看 updated_ts）的跳过并说明
 
-`PATCH /api/v1/agent/changes/:id`：审阅阶段勾选。`{"include": false}` 整条不应用；`{"memos": {"memos/12": false}}` 逐篇勾选候选日记。
+`PATCH /api/v1/agent/changes/:id`：审阅阶段勾选。`{"include": false}` 整条不应用；`{"memos": {"memos/12": false}}` 逐篇勾选候选日记；
+`{"segments": {"0": false, "2": true}}` 逐段接受改写（片段下标，只对 `memo.rewrite` 生效）。
 
-改动种类：`folder.create`、`article.create`、`thread.create`（含成员）、`thread.add_members`（只增不删，应用时读最新成员再合并）。
-**没有删除类改动**。应用后 `result` 为新对象资源名（`threads/77`），客户端同步完成后按它打开本地条目。
+改动种类：`folder.create`、`article.create`、`thread.create`（含成员）、`thread.add_members`（只增不删，应用时读最新成员再合并）、
+`memo.rewrite`、`memo.merge`、`memo.archive`。**没有删除类改动**。
+
+改写类 payload：
+- `memo.rewrite`：`{memoId, displayTs, snippet, original, segments: [{sourceIndexes, originalText, revisedText, reason?, protectedElementsChanged?, accept}]}`。
+  没改动的段落也在列表里（`originalText == revisedText`，拼回正文用，预览折叠）；受保护内容（标签、链接、待办、日期、数值、代码）
+  有变化的段落 `accept` 默认 false。最终正文 = 勾选的段用改写、其余用原文，段间分隔符取原文（未改处逐字节一致）。
+- `memo.merge`：`{memoId, displayTs, snippet, original, content, sources: [{id, displayTs, snippet, comments}], addedTags?}`，合并进最早那篇；
+  应用时其余日记的附件挪到目标日记。其后跟着依赖它的 `memo.archive`（其余各篇）和 `thread.add_members`（目标继承其余各篇所在的事件串）。
+- `memo.archive`：`{memoId, displayTs, snippet, reason?}`。
+
+应用：日记当前正文与生成时（`original`）不一致就 `SKIPPED`（「日记在生成之后被修改过」），不做三方合并；
+一段都没勾选也 `SKIPPED`。写入走 `MemoService.UpdateTx`，留版本历史。撤销：正文仍是应用后的样子才恢复为应用前（逐字节），
+附件挪回原日记；归档仍是归档状态才恢复。应用后 `result` 为新对象资源名（`threads/77`），客户端同步完成后按它打开本地条目。
 
 错误码：404（不存在或不属于当前用户）、409（当前状态不允许）、423（已有运行在执行）、400（计划无效）。
 
