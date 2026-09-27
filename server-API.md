@@ -1097,7 +1097,11 @@ Thread 响应结构相应新增 `summaryLocked`。
 > `resolve.folder` / `resolve.thread`、`stage.article.create`、`stage.thread.add_members`、
 > `llm.rewrite`（逐篇改写，`mode` 同润色的 `LIGHT/MEDIUM/DEEP/FORMAT_ONLY`，或 `instruction` 自定义要求）+ `stage.memo.rewrite`、
 > `llm.merge`（2~20 篇合并，漏掉的标签由服务端补在文末）+ `stage.memo.merge`、`stage.memo.archive`、
+> `stage.memo.add_tags`（追加在正文末尾一行；标签名优先沿用已有写法，大小写不敏感）、
 > `foreach`（只能遍历 `llm.cluster` 的 groups，次数上限 = maxGroups，写入白名单据此推导）。
+>
+> 多轮引用：参数里可以写 `$r<运行编号>.<步骤id>[.字段]` 引用**同一会话**里之前运行的步骤产物（如 `$r12.s2.unsure`）；
+> 规划器看到的历史里，产出日记集合的步骤会标出可引用的写法。跨会话或其他用户的运行一律视为不存在。
 >
 > 模型步骤按上下文长度分批（能一次放下就一次处理），完成后产物即 checkpoint；被前台 AI 请求
 > 抢占或服务重启后从 checkpoint 继续，不重复调用。实际发给模型的日记记在运行的 `transmitted_memo_ids`。
@@ -1152,7 +1156,7 @@ Thread 响应结构相应新增 `summaryLocked`。
 `{"segments": {"0": false, "2": true}}` 逐段接受改写（片段下标，只对 `memo.rewrite` 生效）。
 
 改动种类：`folder.create`、`article.create`、`thread.create`（含成员）、`thread.add_members`（只增不删，应用时读最新成员再合并）、
-`memo.rewrite`、`memo.merge`、`memo.archive`。**没有删除类改动**。
+`memo.rewrite`、`memo.merge`、`memo.archive`、`memo.add_tags`。**没有删除类改动**。
 
 改写类 payload：
 - `memo.rewrite`：`{memoId, displayTs, snippet, original, segments: [{sourceIndexes, originalText, revisedText, reason?, protectedElementsChanged?, accept}]}`。
@@ -1161,12 +1165,29 @@ Thread 响应结构相应新增 `summaryLocked`。
 - `memo.merge`：`{memoId, displayTs, snippet, original, content, sources: [{id, displayTs, snippet, comments}], addedTags?}`，合并进最早那篇；
   应用时其余日记的附件挪到目标日记。其后跟着依赖它的 `memo.archive`（其余各篇）和 `thread.add_members`（目标继承其余各篇所在的事件串）。
 - `memo.archive`：`{memoId, displayTs, snippet, reason?}`。
+- `memo.add_tags`：`{tags: ["运动"], memos: [{id, include, snippet, displayTs, unsure?, reason?}]}`，逐篇勾选同事件串。
+  应用时读最新正文再算缺哪些标签（不做 stale 跳过）；撤销时正文仍是应用后的样子才去掉追加的那一行，否则保留并在 message 里说明。
 
 应用：日记当前正文与生成时（`original`）不一致就 `SKIPPED`（「日记在生成之后被修改过」），不做三方合并；
 一段都没勾选也 `SKIPPED`。写入走 `MemoService.UpdateTx`，留版本历史。撤销：正文仍是应用后的样子才恢复为应用前（逐字节），
 附件挪回原日记；归档仍是归档状态才恢复。应用后 `result` 为新对象资源名（`threads/77`），客户端同步完成后按它打开本地条目。
 
 错误码：404（不存在或不属于当前用户）、409（当前状态不允许）、423（已有运行在执行）、400（计划无效）。
+
+---
+
+## AI 发送记录
+
+> **仅适用于 IsleLog 自建服务**。每次把日记内容交给模型（本地或云端）记一条：日记助手每次执行、润色、标签建议、
+> 记忆检索、往年今日、夜间事件串分析（每个用户每次批次一条）。润色和标签建议发的是客户端提交的正文，只记字数。
+
+`GET /api/v1/ai/transmissions?pageSize=50&pageToken=` →
+```json
+{ "transmissions": [{ "name": "aiTransmissions/9", "time": "2026-09-27T08:00:00Z", "feature": "ASSISTANT",
+    "model": "私有 Qwen3.8", "cloud": false, "memos": ["memos/1"], "chars": 0 }],
+  "nextPageToken": "9" }
+```
+`feature`：`ASSISTANT` / `POLISH` / `SUGGEST_TAGS` / `MEMORY_SEARCH` / `ON_THIS_DAY` / `THREAD_BATCH`。
 
 ---
 

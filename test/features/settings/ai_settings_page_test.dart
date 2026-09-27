@@ -32,6 +32,10 @@ AiModelProfile _profile(
 );
 
 class _FakeProfileGateway implements AiProfileGateway {
+  @override
+  Future<AiTransmissionPage> listTransmissions({String? pageToken}) async =>
+      const AiTransmissionPage(items: []);
+
   AiProfileSettings settings = AiProfileSettings(
     profiles: [
       _profile('1', AiProfileKind.local, '私有 Qwen3.8'),

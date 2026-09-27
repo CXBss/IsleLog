@@ -62,6 +62,9 @@ abstract interface class AiGateway {
 
 /// 模型配置管理网关（设置页使用）。
 abstract interface class AiProfileGateway {
+  /// AI 发送记录，按时间倒序分页。
+  Future<AiTransmissionPage> listTransmissions({String? pageToken});
+
   /// 全部配置（含健康状态）、当前全局模型与敏感标签。
   Future<AiProfileSettings> listProfiles();
 
@@ -322,6 +325,30 @@ class AiApiClient implements AiGateway, AiProfileGateway {
   ) => provider == null
       ? const {}
       : {'provider': provider.serverValue, 'cloudConsent': cloudConsent};
+
+  // ── 发送记录 ──────────────────────────────────────────────────
+
+  @override
+  Future<AiTransmissionPage> listTransmissions({String? pageToken}) async {
+    try {
+      final res = await _dio.get(
+        '/api/v1/ai/transmissions',
+        queryParameters: {'pageSize': 50, 'pageToken': ?pageToken},
+      );
+      final data = res.data;
+      final list = data is Map<String, dynamic> ? data['transmissions'] : null;
+      if (list is! List) throw const AiApiException('发送记录格式无效');
+      return AiTransmissionPage(
+        items: list
+            .whereType<Map<String, dynamic>>()
+            .map(AiTransmission.fromJson)
+            .toList(),
+        nextPageToken: data['nextPageToken'] as String?,
+      );
+    } on DioException catch (e) {
+      throw _wrap(e);
+    }
+  }
 
   // ── 模型配置 ──────────────────────────────────────────────────
 

@@ -129,7 +129,8 @@ class AiPolishSegment {
         originalText is! String ||
         revisedText is! String ||
         reason is! String ||
-        (protectedElementsChanged != null && protectedElementsChanged is! bool)) {
+        (protectedElementsChanged != null &&
+            protectedElementsChanged is! bool)) {
       throw const AiApiException('AI 返回的数据格式无效');
     }
     return AiPolishSegment(
@@ -316,7 +317,10 @@ class RelatedMemoriesResult {
   final List<RelatedMemory> relatedMemos;
   final bool pending;
 
-  const RelatedMemoriesResult({required this.relatedMemos, required this.pending});
+  const RelatedMemoriesResult({
+    required this.relatedMemos,
+    required this.pending,
+  });
 
   factory RelatedMemoriesResult.fromJson(Map<String, dynamic> json) {
     final relatedMemosRaw = json['relatedMemos'];
@@ -368,9 +372,7 @@ class OnThisDayNow {
       summary: summary,
       sources: sourcesRaw
           .map(
-            (e) => e is String
-                ? e
-                : throw const AiApiException('AI 返回的数据格式无效'),
+            (e) => e is String ? e : throw const AiApiException('AI 返回的数据格式无效'),
           )
           .toList(),
     );
@@ -416,4 +418,62 @@ class AiRequestCancelled implements Exception {
 
   @override
   String toString() => 'AI 请求已取消';
+}
+
+/// 一条 AI 发送记录：什么时候、哪个功能、把哪些日记交给了哪个模型。
+class AiTransmission {
+  final String name;
+  final DateTime time;
+  final String feature;
+  final String model;
+  final bool cloud;
+
+  /// 进入模型上下文的日记（`memos/{id}`）
+  final List<String> memos;
+
+  /// 编辑器直接提交的正文字数（润色、标签建议没有日记 ID）
+  final int chars;
+
+  const AiTransmission({
+    required this.name,
+    required this.time,
+    required this.feature,
+    required this.model,
+    required this.cloud,
+    this.memos = const [],
+    this.chars = 0,
+  });
+
+  String get featureLabel => switch (feature) {
+    'ASSISTANT' => 'AI 助手',
+    'POLISH' => '润色',
+    'SUGGEST_TAGS' => '标签建议',
+    'MEMORY_SEARCH' => '记忆检索',
+    'ON_THIS_DAY' => '往年今日',
+    'THREAD_BATCH' => '夜间事件串分析',
+    _ => feature,
+  };
+
+  factory AiTransmission.fromJson(Map<String, dynamic> json) {
+    final memos = json['memos'];
+    return AiTransmission(
+      name: json['name'] as String? ?? '',
+      time:
+          DateTime.tryParse(json['time'] as String? ?? '')?.toLocal() ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      feature: json['feature'] as String? ?? '',
+      model: json['model'] as String? ?? '',
+      cloud: json['cloud'] == true,
+      memos: memos is List ? memos.whereType<String>().toList() : const [],
+      chars: (json['chars'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// 一页发送记录。[nextPageToken] 为 null 表示没有更多。
+class AiTransmissionPage {
+  final List<AiTransmission> items;
+  final String? nextPageToken;
+
+  const AiTransmissionPage({required this.items, this.nextPageToken});
 }

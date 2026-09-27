@@ -17,6 +17,7 @@ import '../articles/article_editor_page.dart';
 import '../memo_detail/memo_detail_page.dart';
 import '../memo_editor/ai/ai_action_sheet.dart' show aiModelLabel;
 import '../threads/thread_detail_page.dart';
+import 'assistant_session_list_page.dart';
 import 'widgets/answer_view.dart';
 import 'widgets/run_card.dart';
 
@@ -81,6 +82,7 @@ class _AssistantPageState extends State<AssistantPage>
     '总结过去两个月的日记，分类整理成文章放到「文章总结」目录',
     '找出与大模型相关的所有日记，放进一个事件串',
     '把上周日记里的错别字都改一下',
+    '给跑步相关的日记都加上 #运动',
   ];
 
   @override
@@ -166,6 +168,40 @@ class _AssistantPageState extends State<AssistantPage>
       _messages.clear();
       _runs.clear();
     });
+  }
+
+  Future<void> _openHistory() async {
+    final picked = await Navigator.push<String?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            AssistantSessionListPage(gateway: _gateway!, current: _session),
+      ),
+    );
+    if (!mounted) return;
+    if (picked == null) {
+      // 当前会话可能在列表里被删了
+      if (_session != null && !await _sessionExists(_session!)) _newSession();
+      return;
+    }
+    if (picked == _session) return;
+    try {
+      await _loadSession(picked);
+      if (widget.gateway == null) {
+        await SettingsService.setAgentLastSession(picked);
+      }
+    } on AgentApiException catch (e) {
+      _snack(e.message);
+    }
+  }
+
+  Future<bool> _sessionExists(String name) async {
+    try {
+      final list = await _gateway!.listSessions();
+      return list.any((s) => s.name == name);
+    } on AgentApiException {
+      return true;
+    }
   }
 
   // ── 发送 ─────────────────────────────────────────────────────
@@ -318,7 +354,7 @@ class _AssistantPageState extends State<AssistantPage>
   Future<void> _apply(AgentRun run) async {
     final targets = {
       for (final c in run.changes)
-        if (c.selected && c.targetMemo != null) c.targetMemo!,
+        if (c.selected) ...c.touchedMemos,
     };
     if (targets.isNotEmpty && !_busyRuns.contains(run.name)) {
       final check = widget.isLocallyPending ?? _memoLocallyPending;
@@ -331,7 +367,17 @@ class _AssistantPageState extends State<AssistantPage>
         setState(() => _localPending.addAll(pending));
         await _review(run, () async {
           for (final c in run.changes) {
-            if (c.selected && pending.contains(c.targetMemo)) {
+            if (!c.selected) continue;
+            if (c.op == AgentChangeOp.memoAddTags) {
+              // 加标签是一条改动带多篇：只取消本机有未同步修改的那几篇
+              final hit = c.touchedMemos.where(pending.contains);
+              if (hit.isNotEmpty) {
+                await _gateway!.updateChange(
+                  c.name,
+                  memos: {for (final m in hit) m: false},
+                );
+              }
+            } else if (pending.contains(c.targetMemo)) {
               await _gateway!.updateChange(c.name, include: false);
             }
           }
@@ -498,6 +544,11 @@ class _AssistantPageState extends State<AssistantPage>
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: '历史对话',
+            onPressed: _gateway == null ? null : _openHistory,
+          ),
           if (_session != null)
             IconButton(
               icon: const Icon(Icons.add_comment_outlined),
@@ -577,10 +628,32 @@ class _AssistantPageState extends State<AssistantPage>
           localPending: _localPending,
         );
       case AgentMessageKind.clarify:
+        final options = m.body['options'];
+        // 只有最后一条澄清的选项可点：之后再点旧的选项容易答非所问
+        final answerable = identical(m, _messages.last) && _pending == null;
         return AssistantBubble(
-          child: Text(
-            m.body['question'] as String? ?? '',
-            style: const TextStyle(fontSize: 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                m.body['question'] as String? ?? '',
+                style: const TextStyle(fontSize: 14),
+              ),
+              if (options is List && options.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    for (final o in options.whereType<String>())
+                      ActionChip(
+                        label: Text(o, style: const TextStyle(fontSize: 13)),
+                        onPressed: answerable ? () => _send(o) : null,
+                      ),
+                  ],
+                ),
+              ],
+            ],
           ),
         );
       case AgentMessageKind.error:

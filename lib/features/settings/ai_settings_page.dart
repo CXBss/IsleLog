@@ -8,6 +8,7 @@ import '../../services/api/memos_api_service.dart';
 import '../../services/settings/settings_service.dart';
 import '../../shared/constants/app_constants.dart';
 import 'ai_profile_edit_page.dart';
+import 'ai_transmissions_page.dart';
 
 /// AI 模型设置页
 ///
@@ -340,6 +341,21 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
                     onTap: _running ? null : _runNow,
                   ),
                 ],
+                const Divider(height: 24),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.receipt_long_outlined),
+                  title: const Text('AI 发送记录'),
+                  subtitle: const Text('哪些日记在什么时候交给了哪个模型'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          AiTransmissionsPage(gateway: widget.profileGateway),
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 8),
                 const _PrivacyNotice(),
               ],

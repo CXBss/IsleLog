@@ -226,6 +226,7 @@ enum AgentChangeOp {
   memoRewrite,
   memoMerge,
   memoArchive,
+  memoAddTags,
   unknown;
 
   /// 会修改已有日记：本机有未同步修改的日记不能应用，否则下次同步必然冲突。
@@ -321,6 +322,21 @@ class AgentChange {
         : null;
   }
 
+  /// 加标签改动要加的标签。
+  List<String> get tags {
+    final list = payload['tags'];
+    return list is List ? list.whereType<String>().toList() : const [];
+  }
+
+  /// 这条改动会修改的全部日记（`memos/{id}`）：加标签按勾选的日记，其余按目标日记。
+  List<String> get touchedMemos => switch (op) {
+    AgentChangeOp.memoAddTags => [
+      for (final m in memos)
+        if (m.include) m.memo,
+    ],
+    _ => [?targetMemo],
+  };
+
   /// 改写的逐段对照（含未改动的段落）。
   List<AgentRewriteSegment> get segments {
     final list = payload['segments'];
@@ -373,6 +389,8 @@ class AgentChange {
       AgentChangeOp.memoMerge =>
         '把 ${mergeSources.length + 1} 篇合并进 $date「${_short(snippet.isEmpty ? (payload['content'] as String? ?? '') : snippet)}」',
       AgentChangeOp.memoArchive => '归档 $date「${_short(snippet)}」',
+      AgentChangeOp.memoAddTags =>
+        '给 $included 篇日记加上 ${tags.map((t) => '#$t').join(' ')}',
       AgentChangeOp.threadCreate => '新建事件串「$title」，放入 $included 篇',
       AgentChangeOp.threadAddMembers =>
         '往事件串「$title」新增 $included 篇（已有 ${payload['existingCount'] ?? 0} 篇）',
@@ -399,6 +417,7 @@ class AgentChange {
         'memo.rewrite' => AgentChangeOp.memoRewrite,
         'memo.merge' => AgentChangeOp.memoMerge,
         'memo.archive' => AgentChangeOp.memoArchive,
+        'memo.add_tags' => AgentChangeOp.memoAddTags,
         _ => AgentChangeOp.unknown,
       },
       status: switch (json['status']) {

@@ -10,6 +10,11 @@ import 'agent_models.dart';
 abstract interface class AgentGateway {
   Future<AgentSession> createSession();
 
+  /// 全部会话，最近更新的在前。
+  Future<List<AgentSession>> listSessions();
+
+  Future<void> deleteSession(String name);
+
   Future<AgentSessionDetail> getSession(String name);
 
   /// 发送一条消息。问答可能要等模型生成，耗时较长。
@@ -96,6 +101,22 @@ class AgentApiClient implements AgentGateway {
   Future<AgentSession> createSession() async => AgentSession.fromJson(
     await _call(() => _dio.post('/api/v1/agent/sessions')),
   );
+
+  @override
+  Future<List<AgentSession>> listSessions() async {
+    final data = await _call(() => _dio.get('/api/v1/agent/sessions'));
+    final list = data['sessions'];
+    if (list is! List) throw const AgentApiException('助手返回的数据格式无效');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(AgentSession.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<void> deleteSession(String name) async {
+    await _call(() => _dio.delete('/api/v1/agent/sessions/${_id(name)}'));
+  }
 
   @override
   Future<AgentSessionDetail> getSession(String name) async {
@@ -210,9 +231,7 @@ class AgentApiClient implements AgentGateway {
           'include': ?include,
           'memos': ?memos,
           if (segments != null)
-            'segments': {
-              for (final e in segments.entries) '${e.key}': e.value,
-            },
+            'segments': {for (final e in segments.entries) '${e.key}': e.value},
         },
       ),
     );

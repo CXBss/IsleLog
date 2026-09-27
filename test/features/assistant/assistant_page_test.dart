@@ -72,6 +72,17 @@ class _FakeAgent implements AgentGateway {
   Future<AgentSession> createSession() async =>
       const AgentSession(name: 'agentSessions/1', title: '');
 
+  final deletedSessions = <String>[];
+
+  @override
+  Future<List<AgentSession>> listSessions() async => [
+    const AgentSession(name: 'agentSessions/1', title: '当前对话'),
+    const AgentSession(name: 'agentSessions/2', title: '上周的整理'),
+  ];
+
+  @override
+  Future<void> deleteSession(String name) async => deletedSessions.add(name);
+
   @override
   Future<AgentSessionDetail> getSession(String name) =>
       throw UnimplementedError();
@@ -324,6 +335,7 @@ void main() {
   _llmTests();
   _qaTests();
   _rewriteTests();
+  _p4Tests();
 
   testWidgets('计划卡可以取消', (tester) async {
     final agent = await _pump(tester);
@@ -652,5 +664,109 @@ void _rewriteTests() {
     expect(agent.actions, isNot(contains('apply')));
     expect(agent.updates.single['include'], isFalse);
     expect(find.textContaining('本机有未同步的修改'), findsWidgets);
+  });
+}
+
+class _ClarifyAgent extends _FakeAgent {
+  @override
+  Future<AgentPostResult> postMessage(
+    String session,
+    String text,
+    SyncCoverage coverage,
+  ) async {
+    posted.add((text, coverage));
+    final user = _msg('USER', 'TEXT', {'text': text});
+    if (posted.length == 1) {
+      return AgentPostResult(
+        messages: [
+          user,
+          _msg('ASSISTANT', 'CLARIFY', {
+            'question': '有 2 个事件串都叫「跑步」，要放进哪一个？',
+            'options': ['跑步（2025）', '跑步（2026）'],
+          }),
+        ],
+      );
+    }
+    return AgentPostResult(
+      messages: [
+        user,
+        _msg('ASSISTANT', 'TEXT', {'text': '好的'}),
+      ],
+    );
+  }
+}
+
+Map<String, dynamic> _tagChange() => {
+  'name': 'agentChanges/7',
+  'seq': 1,
+  'op': 'memo.add_tags',
+  'status': 'PROPOSED',
+  'payload': {
+    'tags': ['运动'],
+    'memos': [
+      {'id': 11, 'include': true, 'snippet': '晨跑', 'displayTs': 1758700000},
+      {'id': 12, 'include': true, 'snippet': '夜跑', 'displayTs': 1758710000},
+    ],
+  },
+};
+
+Future<T> _pumpWith<T extends _FakeAgent>(
+  WidgetTester tester,
+  T agent, {
+  Future<bool> Function(String)? pending,
+}) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      home: AssistantPage(
+        gateway: agent,
+        aiGateway: _FakeAi(),
+        coverageCheck: () async => const SyncCoverage(),
+        afterApply: () async {},
+        pollInterval: const Duration(milliseconds: 10),
+        isLocallyPending: pending,
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  return agent;
+}
+
+void _p4Tests() {
+  testWidgets('澄清的选项可以直接点选作答', (tester) async {
+    final agent = await _pumpWith(tester, _ClarifyAgent());
+    await _send(tester, '把跑步的日记放进事件串');
+    expect(find.text('有 2 个事件串都叫「跑步」，要放进哪一个？'), findsOneWidget);
+    await tester.tap(find.text('跑步（2026）'));
+    await tester.pumpAndSettle();
+    expect(agent.posted.last.$1, '跑步（2026）');
+    expect(find.text('好的'), findsOneWidget);
+  });
+
+  testWidgets('加标签：本机有未同步修改的那几篇单独取消勾选', (tester) async {
+    final agent = _FakeAgent()
+      ..planNext = true
+      ..run = _runJson('AWAITING_REVIEW', changes: [_tagChange()]);
+    await _pumpWith(tester, agent, pending: (m) async => m == 'memos/12');
+    await _send(tester, '给跑步日记加 #运动');
+    expect(find.text('给 2 篇日记加上 #运动'), findsOneWidget);
+
+    await tester.tap(find.text('应用所选（1）'));
+    await tester.pumpAndSettle();
+    expect(agent.actions, isNot(contains('apply')));
+    expect(agent.updates.single['memos'], {'memos/12': false});
+  });
+
+  testWidgets('历史对话：列出、删除、切换', (tester) async {
+    final agent = await _pumpWith(tester, _FakeAgent());
+    await tester.tap(find.byTooltip('历史对话'));
+    await tester.pumpAndSettle();
+    expect(find.text('上周的整理'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('删除').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除').last);
+    await tester.pumpAndSettle();
+    expect(agent.deletedSessions, ['agentSessions/1']);
+    expect(find.text('当前对话'), findsNothing);
   });
 }
