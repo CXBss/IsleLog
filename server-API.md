@@ -1091,7 +1091,8 @@ Thread 响应结构相应新增 `summaryLocked`。
 > - 模型不可用时退回记忆检索问答；计划未通过校验时把错误回灌给模型修一次，仍失败则退回问答。
 > - 交给模型的日记带记录地点（`place`），用短编号代替雪花 ID，返回后映射回真实 ID。
 >
-> 可用操作：`memos.query`（条件筛选）、`memos.search`（关键词 + 语义，`expand` 时让模型补充叫法再搜一次）、
+> 可用操作：`memos.query`（条件筛选：时间、标签的任一 / 全部 / 排除、关键词的任一 / 全部 / 排除、地点、心情、天气、置顶、
+> 附件及类型、评论、待办状态、归档、排序）、`articles.query`、`memos.related`、`threads.members`、`memos.search`（关键词 + 语义，`expand` 时让模型补充叫法再搜一次）、
 > `llm.judge`（逐篇判断：kept / unsure / dropped）、`llm.answer`（读完日记回答问题，带来源）、`llm.cluster`（归纳主题）、`llm.summarize`（写总结，
 > 引用渲染为 `islelog://memo/memos/{id}` 内链，编造的引用剔除，正文 `#` 转义为 `＃`，文末附来源说明）、
 > `resolve.folder` / `resolve.thread`、`stage.article.create`、`stage.thread.add_members`、
@@ -1099,6 +1100,12 @@ Thread 响应结构相应新增 `summaryLocked`。
 > `llm.merge`（2~20 篇合并，漏掉的标签由服务端补在文末）+ `stage.memo.merge`、`stage.memo.archive`、
 > `stage.memo.add_tags`（追加在正文末尾一行；标签名优先沿用已有写法，大小写不敏感）、
 > `foreach`（只能遍历 `llm.cluster` 的 groups，次数上限 = maxGroups，写入白名单据此推导）。
+>
+> 表格类只读操作（确定性，不调用模型，产出 `{rows, total}`；可放进 `llm.answer` / `llm.summarize` 的 `data`，或用 `foreach`
+> 逐行处理，遍历上限为该步的 `limit`）：`tags.list`（篇数、首末使用日期、常一起出现的标签、可选带上下文的用例）、
+> `stats.aggregate`（按年/月/周/星期/时段/标签/心情/天气/地点计数与字数）、`folders.list`、`threads.list`、`comments.list`、
+> `revisions.list`、`attachments.list`、`threadSuggestions.list`、`ai.transmissions`。带敏感标签的日记一律不出现在结果里；
+> 表格交给模型时去掉行内的日记 ID 列表，带原文片段的日记记入发送记录。交给模型的日记附带心情、天气（中文名）与文章标题。
 >
 > 多轮引用：参数里可以写 `$r<运行编号>.<步骤id>[.字段]` 引用**同一会话**里之前运行的步骤产物（如 `$r12.s2.unsure`）；
 > 规划器看到的历史里，产出日记集合的步骤会标出可引用的写法。跨会话或其他用户的运行一律视为不存在。
