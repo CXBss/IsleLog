@@ -184,7 +184,8 @@ class RunCard extends StatelessWidget {
             if (c.status != AgentChangeStatus.rejected)
               _OutcomeTile(
                 change: c,
-                onOpen: () => c.op.touchesMemo
+                onOpen: () =>
+                    c.op.touchesMemo || c.op == AgentChangeOp.memoCreate
                     ? onOpenSource(c.result!)
                     : onOpenResult(c),
               ),
@@ -378,6 +379,7 @@ class _ChangeTileState extends State<_ChangeTile> {
             ),
             if (memos.isNotEmpty ||
                 c.op == AgentChangeOp.articleCreate ||
+                c.op == AgentChangeOp.memoCreate ||
                 c.op.touchesMemo)
               IconButton(
                 icon: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
@@ -392,7 +394,9 @@ class _ChangeTileState extends State<_ChangeTile> {
               ),
           ],
         ),
-        if (_expanded && c.op == AgentChangeOp.articleCreate)
+        if (_expanded &&
+            (c.op == AgentChangeOp.articleCreate ||
+                c.op == AgentChangeOp.memoCreate))
           Container(
             margin: const EdgeInsets.only(left: 40, bottom: 8),
             padding: const EdgeInsets.all(10),
@@ -626,7 +630,10 @@ class _OutcomeTile extends StatelessWidget {
         change.result != null &&
         (change.op == AgentChangeOp.threadCreate ||
             change.op == AgentChangeOp.threadAddMembers ||
+            change.op == AgentChangeOp.threadUpdate ||
+            change.op == AgentChangeOp.threadRemoveMembers ||
             change.op == AgentChangeOp.articleCreate ||
+            change.op == AgentChangeOp.memoCreate ||
             change.op.touchesMemo);
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),

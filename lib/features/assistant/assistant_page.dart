@@ -368,8 +368,10 @@ class _AssistantPageState extends State<AssistantPage>
         await _review(run, () async {
           for (final c in run.changes) {
             if (!c.selected) continue;
-            if (c.op == AgentChangeOp.memoAddTags) {
-              // 加标签是一条改动带多篇：只取消本机有未同步修改的那几篇
+            if (c.op == AgentChangeOp.memoAddTags ||
+                c.op == AgentChangeOp.memoRetag ||
+                c.op == AgentChangeOp.memoSetMeta) {
+              // 一条改动带多篇：只取消本机有未同步修改的那几篇
               final hit = c.touchedMemos.where(pending.contains);
               if (hit.isNotEmpty) {
                 await _gateway!.updateChange(

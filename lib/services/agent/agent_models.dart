@@ -227,6 +227,14 @@ enum AgentChangeOp {
   memoMerge,
   memoArchive,
   memoAddTags,
+  memoRetag,
+  memoSetMeta,
+  memoCreate,
+  articleMove,
+  folderUpdate,
+  threadUpdate,
+  threadRemoveMembers,
+  suggestionReview,
   unknown;
 
   /// 会修改已有日记：本机有未同步修改的日记不能应用，否则下次同步必然冲突。
@@ -330,7 +338,9 @@ class AgentChange {
 
   /// 这条改动会修改的全部日记（`memos/{id}`）：加标签按勾选的日记，其余按目标日记。
   List<String> get touchedMemos => switch (op) {
-    AgentChangeOp.memoAddTags => [
+    AgentChangeOp.memoAddTags ||
+    AgentChangeOp.memoRetag ||
+    AgentChangeOp.memoSetMeta => [
       for (final m in memos)
         if (m.include) m.memo,
     ],
@@ -391,6 +401,36 @@ class AgentChange {
       AgentChangeOp.memoArchive => '归档 $date「${_short(snippet)}」',
       AgentChangeOp.memoAddTags =>
         '给 $included 篇日记加上 ${tags.map((t) => '#$t').join(' ')}',
+      AgentChangeOp.memoRetag =>
+        (payload['to'] as String? ?? '').isEmpty
+            ? '去掉 $included 篇日记里的 #${payload['from']}'
+            : '把 $included 篇日记里的 #${payload['from']} 改成 #${payload['to']}',
+      AgentChangeOp.memoSetMeta => '把 $included 篇日记${payload['label'] ?? '修改'}',
+      AgentChangeOp.memoCreate => () {
+        final ts = payload['displayTs'];
+        final day = ts is num
+            ? '${_md(DateTime.fromMillisecondsSinceEpoch(ts.toInt() * 1000))} '
+            : '';
+        return '新建 $day日记「${_short(payload['content'] as String? ?? '')}」';
+      }(),
+      AgentChangeOp.articleMove =>
+        '把 $included 篇文章移到「${payload['folder'] ?? '根目录'}」',
+      AgentChangeOp.folderUpdate => [
+        '文件夹「${payload['current']}」',
+        if (payload['title'] != null) '改名为「${payload['title']}」',
+        if (payload['toRoot'] == true) '移到根目录',
+        if (payload['parent'] != null) '移到「${payload['parent']}」下',
+      ].join(' '),
+      AgentChangeOp.threadUpdate => [
+        '事件串「${payload['current']}」',
+        if (payload['title'] != null) '改名为「${payload['title']}」',
+        if (payload['status'] == 'RESOLVED') '标为已结束',
+        if (payload['status'] == 'ACTIVE') '标为进行中',
+        if (payload['summary'] != null) '更新简介',
+      ].join(' '),
+      AgentChangeOp.threadRemoveMembers => '从事件串「$title」移出 $included 篇',
+      AgentChangeOp.suggestionReview =>
+        '${payload['decision'] == 'accept' ? '接受' : '忽略'} $included 条事件串建议',
       AgentChangeOp.threadCreate => '新建事件串「$title」，放入 $included 篇',
       AgentChangeOp.threadAddMembers =>
         '往事件串「$title」新增 $included 篇（已有 ${payload['existingCount'] ?? 0} 篇）',
@@ -418,6 +458,14 @@ class AgentChange {
         'memo.merge' => AgentChangeOp.memoMerge,
         'memo.archive' => AgentChangeOp.memoArchive,
         'memo.add_tags' => AgentChangeOp.memoAddTags,
+        'memo.retag' => AgentChangeOp.memoRetag,
+        'memo.set_meta' => AgentChangeOp.memoSetMeta,
+        'memo.create' => AgentChangeOp.memoCreate,
+        'article.move' => AgentChangeOp.articleMove,
+        'folder.update' => AgentChangeOp.folderUpdate,
+        'thread.update' => AgentChangeOp.threadUpdate,
+        'thread.remove_members' => AgentChangeOp.threadRemoveMembers,
+        'suggestion.review' => AgentChangeOp.suggestionReview,
         _ => AgentChangeOp.unknown,
       },
       status: switch (json['status']) {

@@ -1099,6 +1099,9 @@ Thread 响应结构相应新增 `summaryLocked`。
 > `llm.rewrite`（逐篇改写，`mode` 同润色的 `LIGHT/MEDIUM/DEEP/FORMAT_ONLY`，或 `instruction` 自定义要求）+ `stage.memo.rewrite`、
 > `llm.merge`（2~20 篇合并，漏掉的标签由服务端补在文末）+ `stage.memo.merge`、`stage.memo.archive`、
 > `stage.memo.add_tags`（追加在正文末尾一行；标签名优先沿用已有写法，大小写不敏感）、
+> `stage.tag.rename`（改名或去掉标签，含子标签；敏感标签拒绝）、`stage.memo.set_meta`（置顶、心情）、`stage.memo.create`、
+> `stage.article.move`、`stage.folder.update`（改名、移动，禁止成环）、`stage.thread.update`（标题、状态 ACTIVE/RESOLVED、
+> 简介；简介被锁定时不改）、`stage.thread.remove_members`、`stage.threadSuggestion.review`（accept 同时把日记加进事件串）、
 > `foreach`（只能遍历 `llm.cluster` 的 groups，次数上限 = maxGroups，写入白名单据此推导）。
 >
 > 表格类只读操作（确定性，不调用模型，产出 `{rows, total}`；可放进 `llm.answer` / `llm.summarize` 的 `data`，或用 `foreach`
@@ -1163,7 +1166,13 @@ Thread 响应结构相应新增 `summaryLocked`。
 `{"segments": {"0": false, "2": true}}` 逐段接受改写（片段下标，只对 `memo.rewrite` 生效）。
 
 改动种类：`folder.create`、`article.create`、`thread.create`（含成员）、`thread.add_members`（只增不删，应用时读最新成员再合并）、
-`memo.rewrite`、`memo.merge`、`memo.archive`、`memo.add_tags`。**没有删除类改动**。
+`memo.rewrite`、`memo.merge`、`memo.archive`、`memo.add_tags`、`memo.retag`、`memo.set_meta`、`memo.create`、`article.move`、
+`folder.update`、`thread.update`、`thread.remove_members`、`suggestion.review`。**没有删除类改动**。
+
+第二批写入的 payload：带 `memos` 列表的（`memo.retag {from,to}`、`memo.set_meta {pinned?,mood?,label}`、`article.move {folder}`、
+`thread.remove_members {threadId,title}`、`suggestion.review {decision}`）都可以用 `{"memos": {...}}` 逐篇勾选；
+`memo.create {content, displayTs}`、`folder.update {current,title?,parent?,toRoot?}`、`thread.update {current,title?,status?,summary?}`。
+撤销一律先核对对象仍是应用后的样子（正文哈希、置顶与心情、父文件夹、名称、成员集合），被改过的不撤销并在 message 说明。
 
 改写类 payload：
 - `memo.rewrite`：`{memoId, displayTs, snippet, original, segments: [{sourceIndexes, originalText, revisedText, reason?, protectedElementsChanged?, accept}]}`。
